@@ -2,38 +2,228 @@
   "$schema": "https://raw.githubusercontent.com/dhanesh/manifold/main/install/manifold-structure.schema.json",
   "schema_version": 3,
   "feature": "interactive-sysdesign-docs",
-  "phase": "ANCHORED",
+  "phase": "GENERATED",
   "domain": "software",
   "created": "2026-06-04T07:32:49Z",
   "constraints": {
     "business": [
-      { "id": "B1", "type": "goal", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 2 } },
-      { "id": "B2", "type": "invariant", "source": "pre-mortem", "challenger": "stakeholder", "quality": { "specificity": 2, "measurability": 2, "testability": 2 } },
-      { "id": "B3", "type": "goal", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 2, "measurability": 2, "testability": 2 } }
+      {
+        "id": "B1",
+        "type": "goal",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 2
+        }
+      },
+      {
+        "id": "B2",
+        "type": "invariant",
+        "source": "pre-mortem",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 2,
+          "measurability": 2,
+          "testability": 2
+        }
+      },
+      {
+        "id": "B3",
+        "type": "goal",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 2,
+          "measurability": 2,
+          "testability": 2
+        }
+      }
     ],
     "technical": [
-      { "id": "T1", "type": "boundary", "source": "interview", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "T2", "type": "boundary", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "T3", "type": "invariant", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "T4", "type": "goal", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "T5", "type": "boundary", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 2, "testability": 2 } },
-      { "id": "T6", "type": "invariant", "source": "pre-mortem", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } }
+      {
+        "id": "T1",
+        "type": "boundary",
+        "source": "interview",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "T2",
+        "type": "boundary",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "T3",
+        "type": "invariant",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "T4",
+        "type": "goal",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "T5",
+        "type": "boundary",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 2,
+          "testability": 2
+        }
+      },
+      {
+        "id": "T6",
+        "type": "invariant",
+        "source": "pre-mortem",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      }
     ],
     "user_experience": [
-      { "id": "U1", "type": "invariant", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 2, "testability": 2 } },
-      { "id": "U2", "type": "goal", "source": "pre-mortem", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "U3", "type": "invariant", "source": "pre-mortem", "challenger": "stakeholder", "quality": { "specificity": 2, "measurability": 2, "testability": 2 } },
-      { "id": "U4", "type": "goal", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 2, "testability": 2 } }
+      {
+        "id": "U1",
+        "type": "invariant",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 2,
+          "testability": 2
+        }
+      },
+      {
+        "id": "U2",
+        "type": "goal",
+        "source": "pre-mortem",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "U3",
+        "type": "invariant",
+        "source": "pre-mortem",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 2,
+          "measurability": 2,
+          "testability": 2
+        }
+      },
+      {
+        "id": "U4",
+        "type": "goal",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 2,
+          "testability": 2
+        }
+      }
     ],
     "security": [
-      { "id": "S1", "type": "invariant", "source": "interview", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 2, "testability": 3 } },
-      { "id": "S2", "type": "boundary", "source": "interview", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } }
+      {
+        "id": "S1",
+        "type": "invariant",
+        "source": "interview",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 2,
+          "testability": 3
+        }
+      },
+      {
+        "id": "S2",
+        "type": "boundary",
+        "source": "interview",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      }
     ],
     "operational": [
-      { "id": "O1", "type": "invariant", "source": "pre-mortem", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 2, "testability": 3 } },
-      { "id": "O2", "type": "invariant", "source": "pre-mortem", "challenger": "technical-reality", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } },
-      { "id": "O3", "type": "boundary", "source": "pre-mortem", "challenger": "stakeholder", "quality": { "specificity": 2, "measurability": 2, "testability": 2 } },
-      { "id": "O4", "type": "invariant", "source": "interview", "challenger": "stakeholder", "quality": { "specificity": 3, "measurability": 3, "testability": 3 } }
+      {
+        "id": "O1",
+        "type": "invariant",
+        "source": "pre-mortem",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 2,
+          "testability": 3
+        }
+      },
+      {
+        "id": "O2",
+        "type": "invariant",
+        "source": "pre-mortem",
+        "challenger": "technical-reality",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      },
+      {
+        "id": "O3",
+        "type": "boundary",
+        "source": "pre-mortem",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 2,
+          "measurability": 2,
+          "testability": 2
+        }
+      },
+      {
+        "id": "O4",
+        "type": "invariant",
+        "source": "interview",
+        "challenger": "stakeholder",
+        "quality": {
+          "specificity": 3,
+          "measurability": 3,
+          "testability": 3
+        }
+      }
     ]
   },
   "suggested_constraints": [],
@@ -41,35 +231,62 @@
     {
       "id": "TN1",
       "type": "trade_off",
-      "between": ["O3", "B3", "T6"],
+      "between": [
+        "O3",
+        "B3",
+        "T6"
+      ],
       "status": "resolved",
       "validation_criteria": [
         "Skill's bundled template carries a VERSION marker equal to the canonical template's VERSION",
         "CI fails the PR when the bundled copy's content hash differs from the canonical template"
       ],
       "propagation_effects": [
-        { "constraint_id": "O3", "effect": "LOOSENED", "note": "Drift becomes automatically detectable rather than silent" },
-        { "constraint_id": "T6", "effect": "TIGHTENED", "note": "CI must additionally run the template drift check" },
-        { "constraint_id": "B3", "effect": "LOOSENED", "note": "Skill stays self-contained/portable; no runtime fetch needed" }
+        {
+          "constraint_id": "O3",
+          "effect": "LOOSENED",
+          "note": "Drift becomes automatically detectable rather than silent"
+        },
+        {
+          "constraint_id": "T6",
+          "effect": "TIGHTENED",
+          "note": "CI must additionally run the template drift check"
+        },
+        {
+          "constraint_id": "B3",
+          "effect": "LOOSENED",
+          "note": "Skill stays self-contained/portable; no runtime fetch needed"
+        }
       ]
     },
     {
       "id": "TN2",
       "type": "resource_tension",
-      "between": ["B1", "U1"],
+      "between": [
+        "B1",
+        "U1"
+      ],
       "status": "resolved",
       "validation_criteria": [
         "All 5 clusters present and every fixed-skeleton section is substantively filled (exhaustive, not stub-level)",
         "Each opinionated section cites concrete decision criteria and real-world examples"
       ],
       "propagation_effects": [
-        { "constraint_id": "B1", "effect": "TIGHTENED", "note": "Bar raised from 'useful' to 'exhaustive depth'; enlarges m4 generation scope and timeline (accepted)" }
+        {
+          "constraint_id": "B1",
+          "effect": "TIGHTENED",
+          "note": "Bar raised from 'useful' to 'exhaustive depth'; enlarges m4 generation scope and timeline (accepted)"
+        }
       ]
     },
     {
       "id": "TN3",
       "type": "trade_off",
-      "between": ["T5", "U3", "U2"],
+      "between": [
+        "T5",
+        "U3",
+        "U2"
+      ],
       "status": "resolved",
       "validation_criteria": [
         "Each interactive widget renders meaningful, complete content with JavaScript disabled",
@@ -77,135 +294,410 @@
         "Every island is keyboard-navigable"
       ],
       "propagation_effects": [
-        { "constraint_id": "U2", "effect": "LOOSENED", "note": "Deferred hydration protects first-run paint speed" },
-        { "constraint_id": "U3", "effect": "LOOSENED", "note": "Static-first rendering guarantees no-JS readability by construction" },
-        { "constraint_id": "T5", "effect": "TIGHTENED", "note": "Each widget must ship a static fallback in addition to its interactive form" }
+        {
+          "constraint_id": "U2",
+          "effect": "LOOSENED",
+          "note": "Deferred hydration protects first-run paint speed"
+        },
+        {
+          "constraint_id": "U3",
+          "effect": "LOOSENED",
+          "note": "Static-first rendering guarantees no-JS readability by construction"
+        },
+        {
+          "constraint_id": "T5",
+          "effect": "TIGHTENED",
+          "note": "Each widget must ship a static fallback in addition to its interactive form"
+        }
       ]
     },
     {
       "id": "TN4",
       "type": "hidden_dependency",
-      "between": ["B3", "S1"],
+      "between": [
+        "B3",
+        "S1"
+      ],
       "status": "resolved",
       "validation_criteria": [
         "Skill writes only within src/content/docs/** and the single sidebar config file",
         "Skill validates topic input into a safe slug and rejects path-traversal sequences"
       ],
       "propagation_effects": [
-        { "constraint_id": "S1", "effect": "TIGHTENED", "note": "Allowlist must explicitly enumerate the content dir and sidebar config path" },
-        { "constraint_id": "B3", "effect": "LOOSENED", "note": "Auto nav-wiring preserved/enabled within the bounded write surface" }
+        {
+          "constraint_id": "S1",
+          "effect": "TIGHTENED",
+          "note": "Allowlist must explicitly enumerate the content dir and sidebar config path"
+        },
+        {
+          "constraint_id": "B3",
+          "effect": "LOOSENED",
+          "note": "Auto nav-wiring preserved/enabled within the bounded write surface"
+        }
       ]
     }
   ],
   "blocking_dependencies": [
-    { "blocker": "S1", "blocked": "B3", "tension_id": "TN4" }
+    {
+      "blocker": "S1",
+      "blocked": "B3",
+      "tension_id": "TN4"
+    }
   ],
   "anchors": {
     "required_truths": [
       {
-        "id": "RT-1", "status": "NOT_SATISFIED", "maps_to": ["T3", "O1", "U2", "T2"],
+        "id": "RT-1",
+        "status": "PARTIAL",
+        "maps_to": [
+          "T3",
+          "O1",
+          "U2",
+          "T2"
+        ],
         "evidence": [
-          { "id": "E1", "type": "file_exists", "path": "Makefile", "status": "PENDING" },
-          { "id": "E2", "type": "test_passes", "path": "make run (clean clone, documented prereqs only)", "status": "PENDING" }
+          {
+            "id": "E1",
+            "type": "file_exists",
+            "path": "Makefile",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E2",
+            "type": "test_passes",
+            "path": "make run (clean clone, documented prereqs only)",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-2", "status": "NOT_SATISFIED", "maps_to": ["U4", "T1"],
+        "id": "RT-2",
+        "status": "SATISFIED",
+        "maps_to": [
+          "U4",
+          "T1"
+        ],
         "evidence": [
-          { "id": "E3", "type": "file_exists", "path": "astro.config.mjs", "status": "PENDING" },
-          { "id": "E4", "type": "content_match", "path": "astro.config.mjs", "pattern": "sidebar", "status": "PENDING" }
+          {
+            "id": "E3",
+            "type": "file_exists",
+            "path": "astro.config.mjs",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E4",
+            "type": "content_match",
+            "path": "astro.config.mjs",
+            "pattern": "sidebar",
+            "status": "VERIFIED"
+          }
         ]
       },
       {
-        "id": "RT-3", "status": "SPECIFICATION_READY", "maps_to": ["U3", "T5"],
+        "id": "RT-3",
+        "status": "PARTIAL",
+        "maps_to": [
+          "U3",
+          "T5"
+        ],
         "evidence": [
-          { "id": "E5", "type": "content_match", "path": "src/components/", "pattern": "client:visible", "status": "PENDING" },
-          { "id": "E6", "type": "manual_review", "path": "keyboard navigation + no-JS render of each widget", "status": "PENDING" }
+          {
+            "id": "E5",
+            "type": "content_match",
+            "path": "src/content/docs/caching/eviction-policies.mdx",
+            "pattern": "client:visible",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E6",
+            "type": "manual_review",
+            "path": "keyboard navigation + no-JS render of each widget",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-4", "status": "SPECIFICATION_READY", "maps_to": ["U1", "B3", "O3"],
+        "id": "RT-4",
+        "status": "SATISFIED",
+        "maps_to": [
+          "U1",
+          "B3",
+          "O3"
+        ],
         "evidence": [
-          { "id": "E7", "type": "file_exists", "path": "templates/topic.mdx", "status": "PENDING" },
-          { "id": "E8", "type": "content_match", "path": "templates/topic.mdx", "pattern": "When to use", "status": "PENDING" }
+          {
+            "id": "E7",
+            "type": "file_exists",
+            "path": "templates/topic.mdx",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E8",
+            "type": "content_match",
+            "path": "templates/topic.mdx",
+            "pattern": "When to use",
+            "status": "VERIFIED"
+          }
         ]
       },
       {
-        "id": "RT-5", "status": "SPECIFICATION_READY", "maps_to": ["B2"],
+        "id": "RT-5",
+        "status": "SATISFIED",
+        "maps_to": [
+          "B2"
+        ],
         "evidence": [
-          { "id": "E9", "type": "content_match", "path": "src/content/config.ts", "pattern": "last_reviewed", "status": "PENDING" }
+          {
+            "id": "E9",
+            "type": "content_match",
+            "path": "src/content.config.ts",
+            "pattern": "last_reviewed",
+            "status": "VERIFIED"
+          }
         ]
       },
       {
-        "id": "RT-6", "status": "NOT_SATISFIED", "maps_to": ["B1"],
+        "id": "RT-6",
+        "status": "PARTIAL",
+        "maps_to": [
+          "B1"
+        ],
         "evidence": [
-          { "id": "E10", "type": "file_exists", "path": "src/content/docs/", "status": "PENDING" },
-          { "id": "E11", "type": "manual_review", "path": "all 5 clusters present, every skeleton section substantively filled", "status": "PENDING" }
+          {
+            "id": "E10",
+            "type": "file_exists",
+            "path": "src/content/docs/",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E11",
+            "type": "manual_review",
+            "path": "all 5 clusters present, every skeleton section substantively filled",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-7", "status": "NOT_SATISFIED", "maps_to": ["O4", "B3"],
+        "id": "RT-7",
+        "status": "SATISFIED",
+        "maps_to": [
+          "O4",
+          "B3"
+        ],
         "evidence": [
-          { "id": "E12", "type": "file_exists", "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/SKILL.md", "status": "PENDING" }
+          {
+            "id": "E12",
+            "type": "file_exists",
+            "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/SKILL.md",
+            "status": "VERIFIED"
+          }
         ]
       },
       {
-        "id": "RT-8", "status": "SPECIFICATION_READY", "maps_to": ["S1"],
+        "id": "RT-8",
+        "status": "PARTIAL",
+        "maps_to": [
+          "S1"
+        ],
         "evidence": [
-          { "id": "E13", "type": "content_match", "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/SKILL.md", "pattern": "src/content/docs", "status": "PENDING" },
-          { "id": "E14", "type": "test_passes", "path": "skill rejects path-traversal in topic name", "status": "PENDING" }
+          {
+            "id": "E13",
+            "type": "content_match",
+            "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/SKILL.md",
+            "pattern": "src/content/docs",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E14",
+            "type": "test_passes",
+            "path": "skill rejects path-traversal in topic name",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-9", "status": "NOT_SATISFIED", "maps_to": ["T6", "O2"],
+        "id": "RT-9",
+        "status": "PARTIAL",
+        "maps_to": [
+          "T6",
+          "O2"
+        ],
         "evidence": [
-          { "id": "E15", "type": "file_exists", "path": ".github/workflows/ci.yml", "status": "PENDING" },
-          { "id": "E16", "type": "test_passes", "path": "make build on a malformed-MDX fixture fails", "status": "PENDING" }
+          {
+            "id": "E15",
+            "type": "file_exists",
+            "path": ".github/workflows/ci.yml",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E16",
+            "type": "test_passes",
+            "path": "make build on a malformed-MDX fixture fails",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-10", "status": "SPECIFICATION_READY", "maps_to": ["O3"],
+        "id": "RT-10",
+        "status": "PARTIAL",
+        "maps_to": [
+          "O3"
+        ],
         "evidence": [
-          { "id": "E17", "type": "content_match", "path": "templates/topic.mdx", "pattern": "TEMPLATE_VERSION", "status": "PENDING" },
-          { "id": "E18", "type": "test_passes", "path": "drift check fails when bundled copy hash != canonical", "status": "PENDING" }
+          {
+            "id": "E17",
+            "type": "content_match",
+            "path": "templates/topic.mdx",
+            "pattern": "TEMPLATE_VERSION",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E18",
+            "type": "test_passes",
+            "path": "drift check fails when bundled copy hash != canonical",
+            "status": "PENDING"
+          }
         ]
       },
       {
-        "id": "RT-11", "status": "NOT_SATISFIED", "maps_to": ["T4", "T2", "S2"],
+        "id": "RT-11",
+        "status": "PARTIAL",
+        "maps_to": [
+          "T4",
+          "T2",
+          "S2"
+        ],
         "evidence": [
-          { "id": "E19", "type": "test_passes", "path": "make build produces ./dist", "status": "PENDING" },
-          { "id": "E20", "type": "file_exists", "path": "package-lock.json", "status": "PENDING" }
+          {
+            "id": "E19",
+            "type": "test_passes",
+            "path": "make build produces ./dist",
+            "status": "PENDING"
+          },
+          {
+            "id": "E20",
+            "type": "file_exists",
+            "path": "package-lock.json",
+            "status": "VERIFIED"
+          }
         ]
       }
     ],
     "binding_constraint": {
       "required_truth_id": "RT-4",
       "reason": "The canonical topic template/skeleton is the spine: authoring (RT-6), skill scaffolding (RT-7), and drift detection (RT-10) all depend on it existing and being well-shaped. It is the Theory-of-Constraints bottleneck — unblock it and the rest flow.",
-      "dependency_chain": ["RT-6", "RT-7", "RT-10"]
+      "dependency_chain": [
+        "RT-6",
+        "RT-7",
+        "RT-10"
+      ]
     },
     "recommended_option": "A",
     "tension_validation": [
-      { "tension_id": "TN1", "status": "CONFIRMED", "by_option": "A: VERSION marker + CI drift check" },
-      { "tension_id": "TN2", "status": "CONFIRMED", "by_option": "A: exhaustive authoring under the canonical skeleton" },
-      { "tension_id": "TN3", "status": "CONFIRMED", "by_option": "A: Astro partial hydration, static-first widgets" },
-      { "tension_id": "TN4", "status": "CONFIRMED", "by_option": "A: skill allowlist = content dir + sidebar config" }
+      {
+        "tension_id": "TN1",
+        "status": "CONFIRMED",
+        "by_option": "A: VERSION marker + CI drift check"
+      },
+      {
+        "tension_id": "TN2",
+        "status": "CONFIRMED",
+        "by_option": "A: exhaustive authoring under the canonical skeleton"
+      },
+      {
+        "tension_id": "TN3",
+        "status": "CONFIRMED",
+        "by_option": "A: Astro partial hydration, static-first widgets"
+      },
+      {
+        "tension_id": "TN4",
+        "status": "CONFIRMED",
+        "by_option": "A: skill allowlist = content dir + sidebar config"
+      }
     ]
   },
   "draft_required_truths": [
-    { "id": "DRT-1", "seed_from": ["T3", "O1"], "draft_statement": "make run works from a clean clone using only documented prerequisites", "confidence": "high" },
-    { "id": "DRT-2", "seed_from": ["T6", "O2"], "draft_statement": "CI builds every PR and fails on broken MDX or sidebar entries", "confidence": "high" },
-    { "id": "DRT-3", "seed_from": ["O3"], "draft_statement": "A drift-detection mechanism exists between the canonical docs-repo template and the skill's bundled copy", "confidence": "medium" },
-    { "id": "DRT-4", "seed_from": ["B2"], "draft_statement": "Each opinionated topic carries a machine-readable last-reviewed date", "confidence": "high" },
-    { "id": "DRT-5", "seed_from": ["U3"], "draft_statement": "Interactive islands degrade to readable static content without JavaScript", "confidence": "medium" },
-    { "id": "DRT-6", "seed_from": ["U1", "B3"], "draft_statement": "A single canonical topic template defines the section skeleton consumed by both the docs and the skill", "confidence": "high" }
+    {
+      "id": "DRT-1",
+      "seed_from": [
+        "T3",
+        "O1"
+      ],
+      "draft_statement": "make run works from a clean clone using only documented prerequisites",
+      "confidence": "high"
+    },
+    {
+      "id": "DRT-2",
+      "seed_from": [
+        "T6",
+        "O2"
+      ],
+      "draft_statement": "CI builds every PR and fails on broken MDX or sidebar entries",
+      "confidence": "high"
+    },
+    {
+      "id": "DRT-3",
+      "seed_from": [
+        "O3"
+      ],
+      "draft_statement": "A drift-detection mechanism exists between the canonical docs-repo template and the skill's bundled copy",
+      "confidence": "medium"
+    },
+    {
+      "id": "DRT-4",
+      "seed_from": [
+        "B2"
+      ],
+      "draft_statement": "Each opinionated topic carries a machine-readable last-reviewed date",
+      "confidence": "high"
+    },
+    {
+      "id": "DRT-5",
+      "seed_from": [
+        "U3"
+      ],
+      "draft_statement": "Interactive islands degrade to readable static content without JavaScript",
+      "confidence": "medium"
+    },
+    {
+      "id": "DRT-6",
+      "seed_from": [
+        "U1",
+        "B3"
+      ],
+      "draft_statement": "A single canonical topic template defines the section skeleton consumed by both the docs and the skill",
+      "confidence": "high"
+    }
   ],
   "gap_checklist_compliance": [
-    { "gap": "GAP-03", "status": "COMPLETED" },
-    { "gap": "GAP-09", "status": "SKIPPED", "skip_reason": "No authentication or cryptography in a static educational docs site" },
-    { "gap": "GAP-10", "status": "SKIPPED", "skip_reason": "Static site; no unauthenticated runtime endpoints that consume server resources" },
-    { "gap": "GAP-11", "status": "SKIPPED", "skip_reason": "No runtime external HTTP dependencies; only build-time package deps pinned via lockfile" },
-    { "gap": "GAP-14", "status": "COMPLETED" },
-    { "gap": "GAP-17", "status": "SKIPPED", "skip_reason": "Static output; no shared mutable runtime state" }
+    {
+      "gap": "GAP-03",
+      "status": "COMPLETED"
+    },
+    {
+      "gap": "GAP-09",
+      "status": "SKIPPED",
+      "skip_reason": "No authentication or cryptography in a static educational docs site"
+    },
+    {
+      "gap": "GAP-10",
+      "status": "SKIPPED",
+      "skip_reason": "Static site; no unauthenticated runtime endpoints that consume server resources"
+    },
+    {
+      "gap": "GAP-11",
+      "status": "SKIPPED",
+      "skip_reason": "No runtime external HTTP dependencies; only build-time package deps pinned via lockfile"
+    },
+    {
+      "gap": "GAP-14",
+      "status": "COMPLETED"
+    },
+    {
+      "gap": "GAP-17",
+      "status": "SKIPPED",
+      "skip_reason": "Static output; no shared mutable runtime state"
+    }
   ],
   "iterations": [
     {
@@ -214,7 +706,13 @@
       "timestamp": "2026-06-04T07:32:49Z",
       "result": "Discovered 19 constraints across 5 categories via interview + pre-mortem; 4 pre-mortem failure stories encoded; 6 draft required truths seeded for m3",
       "constraints_added": 19,
-      "by_category": { "business": 3, "technical": 6, "user_experience": 4, "security": 2, "operational": 4 }
+      "by_category": {
+        "business": 3,
+        "technical": 6,
+        "user_experience": 4,
+        "security": 2,
+        "operational": 4
+      }
     },
     {
       "number": 2,
@@ -223,7 +721,11 @@
       "result": "Found 4 tensions, resolved 4 (2 trade_off, 1 resource_tension, 1 hidden_dependency). All propagation checks SAFE; TN2 resolved toward exhaustive depth (B1 tightened, longer timeline accepted). 1 blocking dependency exported for m3 (S1 blocks B3).",
       "tensions_found": 4,
       "tensions_resolved": 4,
-      "by_type": { "trade_offs": 2, "resource_tensions": 1, "hidden_dependencies": 1 }
+      "by_type": {
+        "trade_offs": 2,
+        "resource_tensions": 1,
+        "hidden_dependencies": 1
+      }
     },
     {
       "number": 3,
@@ -231,9 +733,22 @@
       "timestamp": "2026-06-04T07:32:49Z",
       "result": "Derived 11 required truths from the outcome. Binding constraint = RT-4 (canonical template/skeleton; unlocks RT-6/7/10). Recommended Option A (bundled-and-synced template + CI drift check); all 4 tensions CONFIRMED, none reopened.",
       "required_truths": 11,
-      "by_status": { "SATISFIED": 0, "PARTIAL": 0, "NOT_SATISFIED": 6, "SPECIFICATION_READY": 5 },
+      "by_status": {
+        "SATISFIED": 0,
+        "PARTIAL": 0,
+        "NOT_SATISFIED": 6,
+        "SPECIFICATION_READY": 5
+      },
       "solution_options": 3,
       "selected_option": "Option A"
+    },
+    {
+      "number": 4,
+      "phase": "generate",
+      "timestamp": "2026-06-04T07:32:49Z",
+      "result": "Generated Option A: Astro+Starlight site (27 content pages across 5 clusters, exhaustive), PE widget library, canonical template (binding RT-4, fixed a copy-build defect), contributor skill (validated write-scope, drift check) + CI gates. Final review APPROVED (0 critical/important). Static evidence VERIFIED; runtime/manual evidence deferred to m5.",
+      "artifacts_generated": 25,
+      "coverage_percentage": 100
     }
   ],
   "convergence": {
@@ -247,5 +762,293 @@
       "conflicts": [],
       "satisfies": []
     }
-  }
+  },
+  "generation": {
+    "option": "A",
+    "timestamp": "2026-06-04T07:32:49Z",
+    "artifacts": [
+      {
+        "path": "package.json",
+        "type": "config",
+        "satisfies": [
+          "RT-1",
+          "RT-11",
+          "T2"
+        ],
+        "status": "generated",
+        "artifact_class": "structural"
+      },
+      {
+        "path": "package-lock.json",
+        "type": "config",
+        "satisfies": [
+          "T2",
+          "S2",
+          "RT-11"
+        ],
+        "status": "generated",
+        "artifact_class": "structural"
+      },
+      {
+        "path": "astro.config.mjs",
+        "type": "config",
+        "satisfies": [
+          "T1",
+          "RT-2",
+          "U4"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content.config.ts",
+        "type": "code",
+        "satisfies": [
+          "B2",
+          "RT-5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "Makefile",
+        "type": "config",
+        "satisfies": [
+          "T3",
+          "U2",
+          "RT-1",
+          "RT-11"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": ".github/workflows/ci.yml",
+        "type": "ops",
+        "satisfies": [
+          "RT-9",
+          "O2",
+          "T6"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "scripts/check-pages-built.mjs",
+        "type": "code",
+        "satisfies": [
+          "RT-9",
+          "T6"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "scripts/check-template-integrity.mjs",
+        "type": "code",
+        "satisfies": [
+          "RT-4",
+          "RT-10",
+          "O3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "templates/topic.mdx",
+        "type": "docs",
+        "satisfies": [
+          "RT-4",
+          "U1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/Mermaid.astro",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "U3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/DecisionTree.tsx",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "T5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/CompareMatrix.tsx",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "T5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/WhenWhyTabs.tsx",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "T5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/TradeoffSlider.tsx",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "T5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/components/useHydrated.ts",
+        "type": "code",
+        "satisfies": [
+          "RT-3",
+          "U3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content/docs/caching/",
+        "type": "content",
+        "satisfies": [
+          "RT-6",
+          "B1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content/docs/design-patterns/",
+        "type": "content",
+        "satisfies": [
+          "RT-6",
+          "B1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content/docs/event-driven/",
+        "type": "content",
+        "satisfies": [
+          "RT-6",
+          "B1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content/docs/databases-cap/",
+        "type": "content",
+        "satisfies": [
+          "RT-6",
+          "B1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "src/content/docs/search/",
+        "type": "content",
+        "satisfies": [
+          "RT-6",
+          "B1"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/SKILL.md",
+        "type": "skill",
+        "satisfies": [
+          "RT-7",
+          "O4",
+          "B3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/scripts/scaffold.mjs",
+        "type": "skill",
+        "satisfies": [
+          "RT-7",
+          "RT-8",
+          "S1",
+          "B3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/scripts/check-drift.mjs",
+        "type": "skill",
+        "satisfies": [
+          "RT-10",
+          "O3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "~/code/grayquest-finance/agent-skills/add-sysdesign-topic/assets/topic.mdx",
+        "type": "skill",
+        "satisfies": [
+          "RT-4",
+          "O3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "~/code/grayquest-finance/agent-skills/.github/workflows/add-sysdesign-topic-ci.yml",
+        "type": "ops",
+        "satisfies": [
+          "RT-10",
+          "O3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      }
+    ],
+    "coverage": {
+      "constraints_addressed": 19,
+      "constraints_total": 19,
+      "percentage": 100
+    }
+  },
+  "reversibility_log": [
+    {
+      "action_step": 1,
+      "description": "git init + feature branch in docs repo",
+      "reversibility": "TWO_WAY"
+    },
+    {
+      "action_step": 2,
+      "description": "Astro+Starlight scaffold, content, widgets, CI (docs repo, branch)",
+      "reversibility": "TWO_WAY"
+    },
+    {
+      "action_step": 3,
+      "description": "Create add-sysdesign-topic skill in external agent-skills repo (uncommitted, staged)",
+      "reversibility": "TWO_WAY"
+    }
+  ]
 }
