@@ -1,0 +1,253 @@
+---
+title: Architectural Patterns
+description: Layered, Hexagonal/Ports & Adapters, MVC/MVVM, CQRS, Event Sourcing, Saga, and Microkernel/plugin — system-level structural patterns and when each one fits.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**Architectural patterns** are design patterns scaled up from classes to *whole
+systems*. They organize modules, services, and data flow rather than objects, and
+they set the boundaries that everything else lives inside. The stakes are higher
+than with GoF patterns: an architectural choice is expensive to reverse, shapes
+team structure and deployment, and constrains every feature built on top of it.
+The same discipline applies — pick the pattern whose forces match your real
+constraints (rate of change, consistency needs, audit requirements, team size,
+scale), and resist adopting heavyweight patterns (CQRS, Event Sourcing, Saga)
+before the problems they solve have actually shown up.
+
+## Mental model
+
+Architectural patterns answer two orthogonal questions:
+
+- **How do I slice the system?** — by *technical layer* (Layered), by *what is
+  core vs. peripheral* (Hexagonal, Microkernel), or by *presentation
+  responsibility* (MVC/MVVM).
+- **How do I manage state and consistency across that slicing?** — keep one model
+  (classic CRUD), split reads from writes (CQRS), store the *changes* instead of
+  the state (Event Sourcing), or coordinate a transaction that spans services
+  without a distributed lock (Saga).
+
+The dependency rule unifies the structural ones: **dependencies should point
+inward, toward stable business logic, never outward toward volatile
+infrastructure.** Layered, Hexagonal, and Microkernel are three ways of enforcing
+that the database, the UI, and the third-party integrations are *details* that
+the core does not depend on. The consistency patterns (CQRS, Event Sourcing,
+Saga) are responses to scale and distribution, and each adds significant
+operational complexity in exchange for a specific capability.
+
+## Types / Variants
+
+**Layered (N-tier).** Organizes the system into horizontal layers
+(presentation → application/service → domain → data access), each depending only
+on the layer below. *Intent:* the default for most line-of-business apps —
+familiar, easy to staff, clear separation. *Weakness:* the domain ends up
+depending on the database layer (dependency points the wrong way), and "thin"
+layers can become pass-through boilerplate. Risk of becoming a "big ball of mud"
+if layers leak.
+
+**Hexagonal (Ports & Adapters) / Clean / Onion.** Puts business logic at the
+center, surrounded by **ports** (interfaces the core defines) and **adapters**
+(implementations for the DB, UI, message bus, external APIs). *Intent:* the core
+domain depends on *nothing* external; all I/O is plugged in from the outside, so
+infrastructure is swappable and the domain is testable in isolation. *When it
+fits:* domains with real business complexity, long-lived systems, strong testing
+needs. *Cost:* more interfaces and indirection than a simple CRUD app warrants.
+
+**MVC / MVVM.** Separates presentation into Model (data/logic), View (display),
+and a Controller (MVC — handles input, updates model) or ViewModel (MVVM — exposes
+bindable state, used with data-binding UIs). *Intent:* decouple UI from business
+logic so each evolves and tests independently. MVC suits server-rendered and
+classic GUI apps; MVVM suits data-binding frameworks (WPF, SwiftUI, Vue/Angular).
+
+**CQRS (Command Query Responsibility Segregation).** Splits the model that
+*writes* (commands) from the model(s) that *read* (queries), often with separate
+data stores optimized for each. *Intent:* when read and write workloads diverge
+sharply — complex writes with simple high-volume reads, or many denormalized read
+views over one write model. *Cost:* two models to maintain and usually
+**eventual consistency** between write and read sides. Overkill for simple CRUD;
+do not adopt reflexively.
+
+**Event Sourcing.** Persists state as an append-only **log of events** (what
+happened) rather than the current state; current state is derived by replaying
+events. *Intent:* full audit trail, time-travel/temporal queries, and the ability
+to rebuild or build new read models from history — valuable in finance, ledgers,
+and compliance-heavy domains. *Cost:* high — schema/event versioning, replay
+performance, snapshotting, and the mental shift; eventual consistency; you can't
+just `UPDATE` a row. Frequently paired with CQRS.
+
+**Saga.** Manages a transaction that spans multiple services as a *sequence of
+local transactions*, each with a **compensating action** to undo it on failure —
+because distributed ACID transactions across services are impractical. Two
+flavors: **choreography** (services react to each other's events, no central
+coordinator) and **orchestration** (a central saga coordinator drives the steps).
+*Intent:* maintain data consistency across microservices without two-phase commit.
+*Cost:* you trade atomicity for eventual consistency plus the burden of writing
+correct compensations; debugging distributed failures is hard.
+
+**Microkernel (Plugin).** A minimal **core** provides the essential runtime, and
+**plugins** add features through a defined extension interface. *Intent:* systems
+where the feature set must be extensible by third parties or vary per
+deployment — IDEs (VS Code, Eclipse), browsers, build tools, ecommerce platforms.
+*Cost:* designing a stable, versioned plugin contract is hard, and plugin
+isolation/security adds complexity.
+
+## When to use / When NOT
+
+- **Layered — use when:** a conventional CRUD/business app, a team that needs a
+  familiar structure, no exotic consistency needs. **Avoid when:** the domain is
+  complex and you want infrastructure-independent, highly testable logic — go
+  Hexagonal.
+- **Hexagonal — use when:** real domain complexity, long-lived system, swappable
+  infrastructure, strong unit-testing of business rules. **Avoid when:** a thin
+  CRUD app — the ports/adapters ceremony outweighs the benefit.
+- **MVC/MVVM — use when:** any non-trivial UI; MVVM specifically with
+  data-binding frameworks. **Avoid when:** there is essentially no UI logic to
+  separate.
+- **CQRS — use when:** read and write workloads diverge sharply, or you need
+  many specialized read models. **Avoid when:** simple CRUD with symmetric
+  reads/writes — it doubles the models and adds eventual consistency for nothing.
+- **Event Sourcing — use when:** you need a complete audit log, temporal queries,
+  or to derive new projections from history (finance, ledgers, compliance).
+  **Avoid when:** you don't need history — the versioning/replay cost is steep.
+- **Saga — use when:** a business transaction spans multiple services and you
+  can't (and shouldn't) use distributed ACID. **Avoid when:** the operation lives
+  in one service/database — use a local transaction.
+- **Microkernel — use when:** extensibility by plugins/third parties is a core
+  requirement. **Avoid when:** the feature set is fixed — the plugin contract is
+  overhead.
+
+## Tradeoffs
+
+| Pattern | Solves | Buys you | Main cost |
+| ------- | ------ | -------- | --------- |
+| Layered | Basic separation of concerns | Familiar, easy to staff | Domain depends on DB; pass-through layers |
+| Hexagonal | Infrastructure coupling | Swappable I/O, testable core | More interfaces/indirection |
+| MVC / MVVM | UI ↔ logic coupling | Independent UI evolution & testing | Boilerplate for trivial UIs |
+| CQRS | Divergent read/write loads | Independently scalable/optimized sides | Two models, eventual consistency |
+| Event Sourcing | No history / weak audit | Full audit, time-travel, rebuildable views | Versioning, replay, complexity |
+| Saga | Cross-service transactions | Consistency without 2PC | Compensations, eventual consistency, hard debugging |
+| Microkernel | Fixed, unextensible core | Third-party/plugin extensibility | Stable plugin contract is hard |
+
+## Diagram
+
+Hexagonal architecture: the domain core depends on nothing; infrastructure plugs
+in through ports as interchangeable adapters.
+
+<Mermaid code={`graph TD
+  UI[UI / REST adapter] --> PIN[Inbound port]
+  MQ[Message consumer adapter] --> PIN
+  PIN --> CORE[Domain core - business logic]
+  CORE --> POUT[Outbound port]
+  POUT --> DB[(DB adapter)]
+  POUT --> EXT[External API adapter]
+  POUT --> BUS[Event bus adapter]`} />
+
+## Try it
+
+Use the decision tree to find the structural pattern, then the matrix to weigh
+the state/consistency patterns.
+
+<DecisionTree
+  client:visible
+  caption="Which architectural pattern?"
+  root={{
+    question: 'What is the dominant concern: structuring the codebase, or managing state/consistency across services?',
+    branches: [
+      {
+        label: 'Structuring the codebase',
+        next: {
+          question: 'Do you need infrastructure-independent, highly testable business logic, or is conventional separation enough?',
+          branches: [
+            {
+              label: 'Infra-independent, testable core',
+              next: { leaf: { recommendation: 'Hexagonal (Ports & Adapters)', detail: 'Domain at the center, all I/O as pluggable adapters behind ports. Best for complex, long-lived domains. Overkill for thin CRUD.' } },
+            },
+            {
+              label: 'Conventional separation is fine',
+              next: { leaf: { recommendation: 'Layered (N-tier)', detail: 'Presentation → service → domain → data. Familiar and easy to staff for standard business apps. Watch for the domain leaking a dependency on the DB.' } },
+            },
+            {
+              label: 'Must be extensible by plugins',
+              next: { leaf: { recommendation: 'Microkernel (Plugin)', detail: 'Minimal core plus plugins via a stable extension contract. For IDEs, browsers, platforms. The contract design is the hard part.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'State / consistency across services',
+        next: {
+          question: 'What is the driving need?',
+          branches: [
+            {
+              label: 'Reads and writes diverge sharply',
+              next: { leaf: { recommendation: 'CQRS', detail: 'Separate write model from read model(s), each optimized and scaled independently. Adds eventual consistency. Skip for symmetric CRUD.' } },
+            },
+            {
+              label: 'Full audit / time-travel / rebuildable views',
+              next: { leaf: { recommendation: 'Event Sourcing (often + CQRS)', detail: 'Persist an append-only event log; derive state by replay. Powerful audit and history; costs versioning, replay, and snapshotting.' } },
+            },
+            {
+              label: 'A transaction spans multiple services',
+              next: { leaf: { recommendation: 'Saga', detail: 'Sequence of local transactions with compensating actions; choreography or orchestration. Consistency without 2PC, at the cost of writing correct compensations.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="State & consistency patterns compared"
+  columns={['Classic CRUD', 'CQRS', 'Event Sourcing', 'Saga']}
+  rows={[
+    {
+      criterion: 'What it stores',
+      cells: ['Current state, one model', 'State, separate read/write models', 'Append-only event log', 'State across services + compensations'],
+    },
+    {
+      criterion: 'Consistency',
+      cells: ['Strong (one DB)', 'Eventual (read lags write)', 'Eventual (projections)', 'Eventual (per-step)'],
+    },
+    {
+      criterion: 'Audit / history',
+      cells: ['Weak (overwrites)', 'Weak unless logged', 'Complete by design', 'Per-step trace'],
+    },
+    {
+      criterion: 'Best for',
+      cells: ['Standard apps', 'Divergent read/write loads', 'Ledgers, compliance', 'Cross-service transactions'],
+    },
+    {
+      criterion: 'Main cost',
+      cells: ['Limited at scale', 'Two models to sync', 'Versioning + replay', 'Compensation logic, debugging'],
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Hexagonal / Clean:** widely adopted in DDD-heavy backends; Netflix and many
+  fintechs structure services with ports/adapters to keep domain logic testable
+  and infrastructure swappable.
+- **CQRS + Event Sourcing:** banking/ledger systems, trading platforms, and audit
+  domains; frameworks like Axon (JVM) and EventStoreDB are built for it.
+- **Saga:** order/checkout flows across inventory, payment, and shipping services;
+  orchestrated sagas via Temporal, AWS Step Functions, or Camunda; choreographed
+  sagas via Kafka events.
+- **Microkernel:** VS Code and Eclipse (extension APIs), Chrome (extensions),
+  Shopify/WordPress (plugin ecosystems), Webpack/Rollup (loaders/plugins).
+- **MVC/MVVM:** Rails/Django/Spring MVC on the server; SwiftUI, WPF, and Vue/Angular
+  using MVVM-style binding on the client.
+
+## Further reading
+
+- [The Clean Architecture (Robert C. Martin)](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html) — the dependency rule behind Hexagonal/Onion/Clean.
+- [Microservices.io — Saga, CQRS, Event Sourcing patterns](https://microservices.io/patterns/index.html) — Chris Richardson's catalogue of distributed data patterns with tradeoffs.
+- [Martin Fowler — CQRS](https://martinfowler.com/bliki/CQRS.html) and [Event Sourcing](https://martinfowler.com/eaaDev/EventSourcing.html) — the definitive "when to use it and when not to" writeups.

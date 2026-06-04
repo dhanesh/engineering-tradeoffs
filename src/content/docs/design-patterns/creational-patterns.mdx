@@ -1,0 +1,226 @@
+---
+title: Creational Patterns
+description: Singleton, Factory Method, Abstract Factory, Builder, Prototype, and Object Pool — patterns that decouple a system from how its objects are created, with the pitfalls (Singleton as hidden global state) called out.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+**Creational patterns** abstract the process of *instantiation*. They answer the
+question "where does this object come from?" in a way that decouples the caller
+from the concrete class, the assembly steps, or the number of instances. The
+naive answer — a bare `new ConcreteThing(...)` scattered through the codebase —
+hard-codes three decisions at once: *which* class, *how* it is assembled, and
+*how many* exist. Each creational pattern peels off one of those decisions so it
+can vary independently. The payoff is real only when one of those decisions
+*actually* varies; otherwise the pattern is construction ceremony with no
+return.
+
+## Mental model
+
+A creational pattern moves a construction decision **out of the call site and
+behind a seam**, so the rest of the code depends on an abstraction rather than a
+concrete `new`. The three things that can vary, and the patterns that isolate
+each:
+
+- **Which concrete type** → Factory Method (one product), Abstract Factory (a
+  *family* of related products), Prototype (clone an existing instance instead
+  of naming a class).
+- **How it is assembled** → Builder (step-by-step construction of a complex
+  object with many optional parts and assembly invariants).
+- **How many exist / lifecycle** → Singleton (exactly one), Object Pool (a fixed
+  set of reusable, expensive-to-create instances).
+
+If none of these vary — one type, simple construction, instances created freely
+— a plain constructor is the correct answer and any creational pattern is
+overhead.
+
+## Types / Variants
+
+**Singleton.** Guarantees a class has exactly one instance and provides a global
+access point to it. *Intent:* one shared coordinator (a config registry, a
+connection pool handle, a logger). *Pitfall — this is the most-abused GoF
+pattern:* a Singleton is **hidden global mutable state**. It couples every
+consumer to a concrete class via a static accessor, which (1) makes unit testing
+hard — you cannot substitute a fake without static-mangling tricks; (2) hides
+dependencies — a method's reliance on the Singleton is invisible in its
+signature; (3) creates lifecycle and ordering hazards in concurrent and
+multi-module systems. In most modern code, **dependency injection of a
+single instance** gives you "one instance" *without* the global accessor and its
+testability cost. Reach for the Singleton pattern proper only when truly global,
+process-wide uniqueness is a hard requirement.
+
+**Factory Method.** Defines an interface for creating an object but lets
+subclasses (or a function) decide which concrete class to instantiate. *Intent:*
+defer the type choice to a point that knows more than the caller. Used when a
+framework must create objects whose concrete type is supplied by client code
+(e.g. a `Document` base class with `createDocument()` overridden per format).
+
+**Abstract Factory.** Provides an interface for creating *families of related
+objects* without specifying their concrete classes. *Intent:* when products come
+in matched sets that must not be mixed — a `WidgetFactory` yielding a `Button`,
+`Scrollbar`, and `Menu` all in the same look-and-feel, or a `CloudFactory`
+yielding storage, queue, and compute clients all for the same provider. Swapping
+one factory swaps the whole family coherently. Cost: adding a new *product type*
+to the family means changing every factory.
+
+**Builder.** Separates the construction of a complex object from its
+representation, so the same construction process can build different
+representations. *Intent:* objects with many optional parameters, assembly
+invariants, or immutability requirements. Solves the "telescoping constructor"
+problem (`new Pizza(12, true, false, true, ...)`) with a fluent, readable,
+validated assembly: `Pizza.builder().size(12).cheese().build()`. The `build()`
+step is the natural place to enforce "all required fields set, invariants hold."
+
+**Prototype.** Creates new objects by *cloning* an existing instance rather than
+instantiating a class by name. *Intent:* when object creation is expensive (heavy
+initialization, DB load) and you have a fully-configured exemplar to copy, or
+when the set of types is decided at runtime. Watch the **deep-vs-shallow copy**
+hazard — a shallow clone shares mutable sub-objects with the original.
+
+**Object Pool.** Maintains a set of pre-initialized, reusable objects and hands
+them out on request, returning them to the pool instead of destroying them.
+*Intent:* when object creation is expensive and instances are needed frequently
+and briefly — database connections, threads, large buffers, game entities.
+Pitfalls: pooled objects must be **reset** on return (stale state leaks
+otherwise), the pool size is a tuning knob, and a pool can become a contention
+point or hide a leak (borrowed objects never returned).
+
+## When to use / When NOT
+
+- **Singleton — use when:** genuinely one process-wide instance is required and
+  global access is acceptable. **Avoid when:** you just want "one instance" —
+  use DI of a single shared object instead, to keep testability and explicit
+  dependencies.
+- **Factory Method — use when:** a class can't anticipate the concrete type it
+  must create, and subclasses/callers should decide. **Avoid when:** there is
+  exactly one product type that will never grow — just call the constructor.
+- **Abstract Factory — use when:** you create *families* of related products
+  that must stay consistent, and you swap whole families. **Avoid when:**
+  products are unrelated or the family has one member — the extra layer buys
+  nothing.
+- **Builder — use when:** construction is multi-step, has many optional parts,
+  or must enforce invariants/immutability. **Avoid when:** the object has a few
+  required fields — a constructor or simple factory is clearer.
+- **Prototype — use when:** instantiation is costly and a configured exemplar
+  exists, or types are chosen at runtime. **Avoid when:** construction is cheap,
+  or deep-copy semantics are error-prone for your object graph.
+- **Object Pool — use when:** instances are expensive to create, short-lived,
+  and high-churn (connections, threads). **Avoid when:** objects are cheap
+  (pooling adds complexity and bug surface for no gain) or the runtime already
+  pools for you (e.g. most DB drivers ship a pool).
+
+## Tradeoffs
+
+| Pattern | Decouples | Buys you | Costs you |
+| ------- | --------- | -------- | --------- |
+| Singleton | Instance count + access | Guaranteed single instance | Hidden global state, hard testing, tight coupling |
+| Factory Method | Which concrete type | Type choice deferred to subclass/caller | A subclass/hook per product type |
+| Abstract Factory | A family of types | Coherent product families, easy family swap | Rigid to new product *kinds*; more classes |
+| Builder | Assembly steps | Readable, validated, immutable construction | Extra builder class/boilerplate |
+| Prototype | Class identity | Cheap creation via cloning; runtime types | Deep-vs-shallow copy hazards |
+| Object Pool | Lifecycle | Reuse of expensive instances; bounded count | Reset bugs, tuning, contention, leak risk |
+
+## Diagram
+
+How the creational patterns relate by the decision they isolate.
+
+<Mermaid code={`graph TD
+  Q[Need to create an object] --> T{What varies?}
+  T -->|Which concrete type| FM[Factory Method]
+  T -->|A family of types| AF[Abstract Factory]
+  T -->|Copy a configured instance| PR[Prototype]
+  T -->|Complex multi-step assembly| BU[Builder]
+  T -->|How many exist| SC{Lifecycle?}
+  SC -->|Exactly one| SG[Singleton]
+  SC -->|Reuse a bounded set| OP[Object Pool]`} />
+
+## Try it
+
+Walk the decision tree to land on the creational pattern that fits the
+construction decision you are actually trying to vary.
+
+<DecisionTree
+  client:visible
+  caption="Which creational pattern?"
+  root={{
+    question: 'Is the problem about how MANY instances exist / their lifecycle, or about WHICH type / HOW it is built?',
+    branches: [
+      {
+        label: 'Instance count / lifecycle',
+        next: {
+          question: 'Do you need exactly one, or a reusable pool of expensive objects?',
+          branches: [
+            {
+              label: 'Exactly one process-wide',
+              next: { leaf: { recommendation: 'Singleton — but prefer DI', detail: 'If you only need a single shared instance, inject one object instead. Use the Singleton pattern proper only when global, process-wide uniqueness is a hard requirement — and accept the testability cost.' } },
+            },
+            {
+              label: 'Reuse expensive, short-lived instances',
+              next: { leaf: { recommendation: 'Object Pool', detail: 'Pre-create and recycle costly instances (connections, threads, buffers). Remember to reset state on return and bound the pool size. Skip it if the objects are cheap.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Which type / how built',
+        next: {
+          question: 'Is construction complex/multi-step, or is the question which concrete type to make?',
+          branches: [
+            {
+              label: 'Complex, many optional parts, invariants',
+              next: { leaf: { recommendation: 'Builder', detail: 'Fluent step-by-step assembly that ends in a validating build(). Solves telescoping constructors and supports immutability.' } },
+            },
+            {
+              label: 'Choose the concrete type',
+              next: {
+                question: 'A single product, a whole family, or a copy of an existing instance?',
+                branches: [
+                  {
+                    label: 'A single product type',
+                    next: { leaf: { recommendation: 'Factory Method', detail: 'Defer the type choice to a subclass or factory function. Skip it if there is one type that will never grow — just use the constructor.' } },
+                  },
+                  {
+                    label: 'A family of related products',
+                    next: { leaf: { recommendation: 'Abstract Factory', detail: 'Produce matched sets (same theme / same provider) and swap the whole family at once. Costs flexibility when adding a new product KIND.' } },
+                  },
+                  {
+                    label: 'Clone a configured exemplar',
+                    next: { leaf: { recommendation: 'Prototype', detail: 'Copy an existing fully-configured instance instead of naming a class. Mind deep-vs-shallow copy semantics.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Builder:** Java's `StringBuilder`, Guava's immutable collection builders,
+  Lombok's `@Builder`, Go's functional-options idiom, and most HTTP client
+  request builders.
+- **Abstract Factory:** JDBC's `DriverManager`/`Connection` family per database;
+  cloud SDKs that yield provider-specific clients from one configured factory;
+  GUI toolkits producing look-and-feel-consistent widgets.
+- **Singleton (and its discontents):** Java's `Runtime.getRuntime()`; the
+  widespread move to DI containers (Spring, Guice, Dagger) exists largely to
+  provide single-instance scoping *without* the Singleton anti-pattern's global
+  accessor.
+- **Object Pool:** HikariCP and other JDBC connection pools; thread pools
+  (`ThreadPoolExecutor`); Netty's `ByteBuf` pooling; game-engine entity pools.
+- **Prototype:** JavaScript's prototype-based object model; deep-clone-based
+  object creation in scene graphs and document templates.
+
+## Further reading
+
+- [Refactoring.Guru — Creational Patterns](https://refactoring.guru/design-patterns/creational-patterns) — example-driven coverage of all five GoF creational patterns.
+- [Effective Java, Item 2 — Builder pattern](https://www.oreilly.com/library/view/effective-java/9780134686097/) — Bloch's canonical treatment of Builder and the telescoping-constructor problem.
+- [Singleton considered harmful](https://web.archive.org/web/20120414132343/http://googletesting.blogspot.com/2008/08/where-have-all-singletons-gone.html) — Google Testing Blog on Singletons, hidden coupling, and testability.

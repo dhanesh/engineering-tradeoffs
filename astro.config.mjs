@@ -16,7 +16,13 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Design Patterns',
-          items: [{ label: 'Overview', slug: 'design-patterns' }],
+          items: [
+            { label: 'Overview', slug: 'design-patterns' },
+            { label: 'Creational patterns', slug: 'design-patterns/creational-patterns' },
+            { label: 'Structural patterns', slug: 'design-patterns/structural-patterns' },
+            { label: 'Behavioral patterns', slug: 'design-patterns/behavioral-patterns' },
+            { label: 'Architectural patterns', slug: 'design-patterns/architectural-patterns' },
+          ],
         },
         {
           label: 'Event-Driven Architecture',

@@ -1,0 +1,216 @@
+---
+title: Structural Patterns
+description: Adapter, Decorator, Facade, Proxy, Composite, Bridge, and Flyweight — patterns for composing objects into larger structures, with real uses like Decorator vs inheritance and Proxy for lazy/remote/protection.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**Structural patterns** are about *composition*: how you assemble classes and
+objects into larger structures while keeping those structures flexible and
+efficient. Where creational patterns answer "where does this object come from?",
+structural patterns answer "how do these objects fit together?" Their common
+move is to put one object **in front of, around, or between** others — to adapt a
+mismatched interface, add behavior without subclassing, simplify a tangle, stand
+in for an expensive or remote object, or share fine-grained state. The right
+structural pattern often replaces a deep, brittle inheritance hierarchy with
+flexible runtime composition.
+
+## Mental model
+
+Every structural pattern is a kind of **wrapper or arrangement** whose
+relationship to what it wraps defines its intent. Ask: *what does the wrapper
+change about the thing inside?*
+
+- **Adapter** — changes the *interface* (makes A look like B) without changing
+  behavior. A plug converter.
+- **Decorator** — changes the *behavior* (adds responsibilities) while keeping
+  the *same interface*. Layers of clothing.
+- **Proxy** — keeps the *same interface and behavior* but controls *access*
+  (lazy, remote, guarded, cached). A stand-in or gatekeeper.
+- **Facade** — provides a *simpler interface* over a complex subsystem. A
+  reception desk.
+- **Composite** — makes a *tree* of objects answer the *same interface* whether
+  leaf or branch. Folders containing files or folders.
+- **Bridge** — *splits* an abstraction from its implementation so the two vary
+  independently. Two dials instead of one combinatorial knob.
+- **Flyweight** — *shares* immutable intrinsic state across many objects to save
+  memory. One glyph object reused for every 'a' on the page.
+
+Adapter, Decorator, and Proxy look identical structurally (an object holding a
+reference of the same interface) — they differ entirely by **intent**.
+
+## Types / Variants
+
+**Adapter.** Converts the interface of a class into another interface clients
+expect. *Intent:* make two incompatible interfaces work together without
+changing either's source. Used to wrap a third-party or legacy API in the
+interface your code already speaks (e.g. wrapping a vendor SDK in your own
+`PaymentGateway` interface so the vendor is swappable). Two flavors: object
+adapter (composition, preferred) and class adapter (multiple inheritance, rare).
+
+**Decorator.** Attaches additional responsibilities to an object dynamically, by
+wrapping it in another object of the same interface. *Intent:* add behavior
+(logging, buffering, compression, caching, retry) **without** subclassing.
+*Decorator vs inheritance* is the central decision: inheritance fixes the added
+behavior at compile time and explodes combinatorially (`BufferedCompressedEncryptedStream`
+as a class), while decorators **stack at runtime** in any combination
+(`new Encrypted(new Compressed(new Buffered(stream)))`). Choose Decorator when
+responsibilities are optional, combinable, and removable; choose inheritance
+when the behavior is intrinsic and fixed.
+
+**Facade.** Provides a unified, simplified interface to a set of interfaces in a
+subsystem. *Intent:* give callers an easy front door to a complex set of
+collaborating classes, without removing access to the lower level for those who
+need it. A `VideoConverter.convert(file, format)` facade hides codecs,
+demuxers, and bitrate calculators. Reduces coupling between clients and
+subsystem internals.
+
+**Proxy.** Provides a surrogate or placeholder for another object to control
+access to it — *same interface, same apparent behavior*, but intercepting the
+calls. The classic uses define the variants:
+- **Virtual / lazy proxy** — defers expensive creation/loading until first use
+  (lazy-loaded image, ORM lazy association).
+- **Remote proxy** — local stand-in for an object living in another process or
+  machine; the proxy marshals the call across the network (RPC stubs, gRPC
+  clients).
+- **Protection proxy** — enforces access control / authorization before
+  forwarding.
+- **Caching / smart proxy** — memoizes results, reference-counts, or adds
+  logging around the real call.
+
+**Composite.** Composes objects into tree structures and lets clients treat
+individual objects and compositions **uniformly** through one interface.
+*Intent:* part-whole hierarchies — a filesystem (files and directories), a UI
+widget tree, an org chart, a graphics scene graph. `render()` or `size()` works
+the same on a leaf or a whole subtree.
+
+**Bridge.** Decouples an abstraction from its implementation so the two can vary
+independently, by composing them rather than binding them with inheritance.
+*Intent:* avoid a combinatorial class explosion when *two* dimensions both vary.
+Instead of `WindowsRedButton`, `MacBlueButton`, …, you have a `Shape` abstraction
+holding a `Renderer` implementation, and each varies on its own axis. Bridge is
+"prefer composition over inheritance" applied to a two-axis problem.
+
+**Flyweight.** Shares fine-grained immutable objects to support large numbers of
+them efficiently, by separating **intrinsic** (shared, context-free) state from
+**extrinsic** (per-use, passed-in) state. *Intent:* memory optimization at huge
+counts — characters in a text editor, tiles in a map, particles, tree models in
+a forest. One shared glyph object holds the font outline (intrinsic); position
+and color are passed in (extrinsic). Pure performance pattern; skip it until
+memory is actually the constraint.
+
+## When to use / When NOT
+
+- **Adapter — use when:** you must integrate an incompatible/third-party/legacy
+  interface and want to isolate it behind your own. **Avoid when:** you control
+  both sides — just change the interface.
+- **Decorator — use when:** responsibilities are optional and combinable, and
+  you want to add them at runtime without subclass explosion. **Avoid when:** the
+  behavior is fixed and intrinsic (inheritance is simpler) or the wrapping depth
+  hurts readability/debuggability.
+- **Facade — use when:** a subsystem is complex and most callers want a simple
+  default path. **Avoid when:** it becomes a god-object hiding everything, or
+  callers genuinely need fine-grained control (keep the subsystem reachable).
+- **Proxy — use when:** you need lazy loading, remote access, access control, or
+  caching *transparently* behind an existing interface. **Avoid when:** the
+  interception adds latency/complexity for no real control need.
+- **Composite — use when:** you have a genuine part-whole tree and want uniform
+  treatment of leaves and branches. **Avoid when:** the structure isn't really
+  recursive — a flat list is simpler.
+- **Bridge — use when:** two independent dimensions both vary and inheritance
+  would multiply them. **Avoid when:** only one axis varies (Strategy/plain
+  composition suffices).
+- **Flyweight — use when:** you have so many similar objects that memory is the
+  bottleneck and state cleanly splits intrinsic/extrinsic. **Avoid when:** counts
+  are modest — it adds complexity for no measurable saving.
+
+## Tradeoffs
+
+| Pattern | Changes about the inner object | Primary payoff | Main cost / smell |
+| ------- | ------------------------------ | -------------- | ----------------- |
+| Adapter | Its interface | Integrate incompatible APIs | One more layer; can hide impedance mismatch |
+| Decorator | Its behavior (same interface) | Runtime, combinable add-ons; no subclass explosion | Deep wrapper stacks hard to debug |
+| Facade | Surfaces a simpler interface | Decouples clients from subsystem | God-object risk; can over-hide |
+| Proxy | Access to it (same interface) | Lazy/remote/guarded/cached transparently | Hidden latency; surprising side effects |
+| Composite | Treats tree uniformly | Uniform part-whole operations | Leaf vs branch interface compromises |
+| Bridge | Splits abstraction from impl | Two axes vary independently | More indirection up front |
+| Flyweight | Shares intrinsic state | Large memory savings at scale | Complexity; only pays off at high counts |
+
+## Diagram
+
+Adapter, Decorator, and Proxy share the same structure — an object implementing
+an interface and holding a reference to the same interface — and differ only by
+intent.
+
+<Mermaid code={`graph LR
+  C[Client] --> I[Interface]
+  I --> W[Wrapper: Adapter / Decorator / Proxy]
+  W --> R[Real / wrapped object]
+  W -. Adapter: change interface .-> R
+  W -. Decorator: add behavior .-> R
+  W -. Proxy: control access .-> R`} />
+
+## Try it
+
+The three "wrapper" patterns are the hardest to tell apart because they look
+identical in code. Compare them by intent. Click a column to isolate one.
+
+<CompareMatrix
+  client:visible
+  caption="Adapter vs Decorator vs Proxy — same shape, different intent"
+  columns={['Adapter', 'Decorator', 'Proxy']}
+  rows={[
+    {
+      criterion: 'Interface vs wrapped object',
+      cells: ['Different (converts)', 'Same', 'Same'],
+    },
+    {
+      criterion: 'Changes behavior?',
+      cells: ['No (just interface)', 'Yes (adds responsibilities)', 'No (controls access)'],
+    },
+    {
+      criterion: 'Core intent',
+      cells: ['Make incompatible APIs fit', 'Add features at runtime', 'Lazy / remote / guard / cache'],
+    },
+    {
+      criterion: 'Stacks/combines?',
+      cells: ['Usually one', 'Yes — stack freely', 'Usually one'],
+    },
+    {
+      criterion: 'Typical use',
+      cells: ['Wrap vendor/legacy SDK', 'Buffered+Compressed stream', 'ORM lazy load, RPC stub, authz'],
+    },
+    {
+      criterion: 'Decision cue',
+      cells: ['Interfaces clash', 'Optional, combinable add-ons', 'Need to intercept access'],
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Decorator:** Java's `java.io` streams (`BufferedInputStream`,
+  `GZIPInputStream` wrapping `FileInputStream`); Python decorators and ASGI/WSGI
+  middleware; React higher-order components.
+- **Proxy:** Hibernate/JPA lazy-loaded associations (virtual proxy); gRPC and
+  Java RMI stubs (remote proxy); Spring AOP transaction/security proxies
+  (protection/smart proxy); CDN edge caches (caching proxy).
+- **Adapter:** SLF4J adapting Log4j/Logback/JUL; the many `*-adapter` packages
+  wrapping vendor APIs; array-to-list and stream adapters.
+- **Facade:** `javax.faces` and most SDK "client" entry points; jQuery as a
+  facade over the DOM/XHR; ORM session APIs over JDBC.
+- **Composite:** the DOM tree; React/SwiftUI/Flutter view trees; filesystem
+  abstractions; Unix `find` over a directory tree.
+- **Flyweight:** Java's `Integer.valueOf` cache (−128..127); interned strings;
+  glyph/tile sharing in editors and game engines.
+
+## Further reading
+
+- [Refactoring.Guru — Structural Patterns](https://refactoring.guru/design-patterns/structural-patterns) — illustrated coverage of all seven structural patterns.
+- [Decorator vs inheritance (Effective Java / Item 18)](https://www.oreilly.com/library/view/effective-java/9780134686097/) — "favor composition over inheritance," the principle behind Decorator and Bridge.
+- [java.io and the Decorator pattern](https://docs.oracle.com/javase/tutorial/essential/io/) — the canonical real-world decorator stack.

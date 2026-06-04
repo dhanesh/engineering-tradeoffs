@@ -1,0 +1,206 @@
+---
+title: Behavioral Patterns
+description: Strategy, Observer, Command, State, Template Method, Chain of Responsibility, Iterator, Mediator, and Visitor — patterns for how objects communicate and distribute responsibility, including the Strategy-vs-State distinction.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+**Behavioral patterns** describe how objects *communicate* and how
+*responsibility* is distributed between them. Where creational patterns handle
+construction and structural patterns handle composition, behavioral patterns
+handle the **flow of control and data** at runtime: which object runs which
+algorithm, who gets notified when something changes, how a request travels
+through a system, and who owns each step. Their shared theme is isolating the
+part of behavior most likely to vary — the algorithm, the set of listeners, the
+sequence of handlers — behind a stable interface so that variation does not
+ripple through the callers.
+
+## Mental model
+
+Behavioral patterns answer one of three questions about runtime behavior:
+
+- **"Which algorithm runs here?"** → Strategy (pick an interchangeable
+  algorithm), Template Method (fix the skeleton, vary the steps), State (behavior
+  changes with internal mode).
+- **"Who responds when X happens?"** → Observer (broadcast to subscribers),
+  Command (package a request as an object), Chain of Responsibility (pass a
+  request along until someone handles it), Mediator (centralize many-to-many
+  communication).
+- **"How do I traverse / operate over a structure?"** → Iterator (sequential
+  access without exposing internals), Visitor (add operations to a structure
+  without modifying its classes).
+
+The recurring move is **encapsulation of variation in behavior**: turn the thing
+that changes (an algorithm, a request, a transition) into a first-class object or
+interface so it can be swapped, queued, logged, or composed.
+
+## Types / Variants
+
+**Strategy.** Defines a family of interchangeable algorithms, encapsulates each,
+and makes them swappable at runtime. *Intent:* let the caller choose *how* a task
+is done — sort comparators, pricing rules, compression codecs, routing policies.
+The context holds a strategy reference and delegates to it. In languages with
+first-class functions, a Strategy is often just a function/closure passed in.
+
+**State.** Lets an object alter its behavior when its internal state changes, so
+it appears to change class. *Intent:* model a state machine where each state is
+an object encapsulating the behavior *and* the valid transitions for that mode —
+a TCP connection (`Closed`, `Listen`, `Established`), an order
+(`Pending`→`Paid`→`Shipped`), a media player. **Strategy vs State** — they share
+the *same structure* (a context delegating to a swappable object) but differ in
+intent: a **Strategy** is chosen *once* by the client and is unaware of the
+others; a **State** changes *itself* over time, and each state typically knows
+which state comes next. Strategy varies *how*; State varies *which mode*, and the
+modes are aware of the transition graph.
+
+**Observer (Publish/Subscribe).** Defines a one-to-many dependency so that when
+one object changes state, all its dependents are notified automatically.
+*Intent:* decouple the source of an event from the (possibly many, possibly
+changing) reactors to it — UI data binding, event systems, reactive streams,
+domain events. The subject keeps a list of observers and broadcasts; observers
+subscribe/unsubscribe at will. This is the foundation of **event-driven systems**
+and reactive frameworks; at large scale it generalizes to a message broker.
+
+**Command.** Encapsulates a request as an object, letting you parameterize,
+queue, log, and undo operations. *Intent:* decouple the invoker of an action from
+its execution, and treat actions as data — toolbar buttons, menu items,
+transactional/undoable operations, job queues, macro recording. Pairs naturally
+with undo/redo (each command knows how to reverse itself) and with task queues.
+
+**Template Method.** Defines the skeleton of an algorithm in a base method,
+deferring specific steps to subclasses. *Intent:* the overall sequence is fixed
+and shared, but certain steps vary — a `processFile()` that always
+open→parse→validate→close but lets subclasses override `parse`. The inverse of
+Strategy: Template Method varies steps via *inheritance/hooks*; Strategy varies
+the *whole algorithm* via composition.
+
+**Chain of Responsibility.** Passes a request along a chain of handlers until one
+handles it. *Intent:* decouple sender from receiver when multiple objects might
+handle a request and the handler isn't known in advance — middleware pipelines,
+event bubbling, approval workflows, exception/logging filters. Each handler
+either processes the request or forwards it.
+
+**Iterator.** Provides sequential access to the elements of a collection without
+exposing its underlying representation. *Intent:* uniform traversal across
+different container types. Now mostly built into languages (`for…of`,
+`Iterable`/`Iterator`, generators), but the pattern is why those exist.
+
+**Mediator.** Defines an object that centralizes complex communication between a
+set of objects, so they refer to the mediator instead of to each other. *Intent:*
+replace a tangle of many-to-many references with a hub — a dialog coordinating
+its widgets, a chatroom routing messages, an air-traffic controller. Reduces
+coupling but can grow into a god-object if it absorbs too much logic.
+
+**Visitor.** Represents an operation to be performed on the elements of an object
+structure, letting you add new operations without changing the element classes.
+*Intent:* when you have a stable set of element types but a growing set of
+operations over them — AST traversal (type-check, compile, pretty-print), where
+adding a new pass shouldn't touch every node class. The cost is the inverse:
+adding a new *element type* forces a change to every visitor (the
+"expression problem").
+
+## When to use / When NOT
+
+- **Strategy — use when:** an algorithm has interchangeable variants chosen by
+  the caller. **Avoid when:** there's only one algorithm, or a plain
+  function/closure is enough — don't build an interface hierarchy for it.
+- **State — use when:** an object's behavior depends on a mode with explicit
+  transitions you want to make first-class. **Avoid when:** a couple of `if`
+  branches with no real transition graph would be clearer.
+- **Observer — use when:** one source has many, dynamic reactors and you want
+  loose coupling. **Avoid when:** notification order/consistency matters and
+  hidden update cascades would be hard to reason about (consider explicit events
+  or a broker).
+- **Command — use when:** you need to queue, log, undo, or parameterize actions
+  as objects. **Avoid when:** a direct method call suffices — don't objectify
+  every call.
+- **Template Method — use when:** a fixed algorithm skeleton has a few varying
+  steps and inheritance is acceptable. **Avoid when:** you'd prefer composition
+  (use Strategy) or the hierarchy gets deep.
+- **Chain of Responsibility — use when:** several handlers might process a
+  request and you want them decoupled and reorderable. **Avoid when:** exactly
+  one known handler exists — just call it.
+- **Iterator — use when:** you expose a custom collection. **Avoid reinventing**
+  when the language's built-in iteration covers it.
+- **Mediator — use when:** many objects communicate in a tangle you want to
+  centralize. **Avoid when:** the mediator becomes a god-object — split it.
+- **Visitor — use when:** element types are stable but operations grow. **Avoid
+  when:** element types change often (every new type breaks every visitor).
+
+## Tradeoffs
+
+| Pattern | What varies | Buys you | Main cost |
+| ------- | ----------- | -------- | --------- |
+| Strategy | The whole algorithm | Runtime-swappable behavior | Interface/boilerplate vs a closure |
+| State | Behavior per mode + transitions | Clean state machine, no mega-switch | A class per state |
+| Observer | The set of reactors | Loose coupling, dynamic subscribers | Hidden cascades, ordering issues |
+| Command | The request itself | Queue/log/undo/parameterize actions | An object per action |
+| Template Method | Specific steps | Shared skeleton, DRY | Inheritance coupling |
+| Chain of Resp. | Who handles it | Decoupled, reorderable handlers | Request may go unhandled |
+| Iterator | Traversal | Uniform access, hides internals | Usually built-in already |
+| Mediator | Inter-object comms | Centralized, decoupled peers | God-object risk |
+| Visitor | The operations | Add ops without touching elements | Adding element types is costly |
+
+## Diagram
+
+Strategy and State share one structure — a context delegating to a swappable
+object — but differ in *who* drives the swap.
+
+<Mermaid code={`graph TD
+  CtxS[Context] -->|client picks once| Strat[Strategy A / B / C]
+  Strat -->|does the task| CtxS
+  CtxN[Context] -->|delegates| St[Current State]
+  St -->|transitions itself| St2[Next State]
+  St2 -->|new behavior| CtxN`} />
+
+## Try it
+
+Strategy is the most-used behavioral pattern and the easiest to over- or
+under-apply. Here's when it earns its place, why, and when to skip it.
+
+<WhenWhyTabs
+  client:visible
+  caption="Strategy pattern — when, why, why not"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'When a single task has multiple interchangeable algorithms that the caller (or config) selects: sort comparators, pricing/discount rules, compression codecs, retry/backoff policies, payment-routing rules. Use it when you already have two or more implementations, or a concrete near-term need for a second, and you want to swap them at runtime without conditionals scattered through the caller.',
+    },
+    {
+      label: 'Why',
+      content: 'It isolates the part most likely to change — the algorithm — behind a stable interface, so adding a new variant means adding a class/function, not editing a growing switch statement (open/closed principle). It also makes each algorithm independently testable and lets behavior be configured or injected rather than hard-coded.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Skip it when there is only one algorithm and no real second on the horizon — a full interface hierarchy is then pure ceremony. In languages with first-class functions, a Strategy is usually just a function or closure passed as a parameter; building a StrategyFactory + interface + registry around that is over-engineering. And do not confuse it with State: if the swappable object changes itself over time and knows its transitions, you want State, not Strategy.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Strategy:** `Comparator` in Java sorting; pluggable pricing/discount engines;
+  pluggable auth strategies (Passport.js); compression/codec selection.
+- **Observer:** the DOM event model and Node's `EventEmitter`; RxJS/Reactive
+  Streams; React state updates and `useEffect`; domain events on a message bus.
+- **Command:** undo/redo in editors; Redux actions; job/task queues; CQRS command
+  handlers; macro recording.
+- **State:** TCP's connection state machine; workflow/order-status engines;
+  game-character AI states; UI component states.
+- **Chain of Responsibility:** Express/Koa/ASP.NET middleware pipelines; servlet
+  filters; logging handler chains; DOM event bubbling.
+- **Template Method:** `AbstractList`/`AbstractMap` in the JDK; framework
+  lifecycle hooks (`onCreate`, `render`); test setup/teardown.
+- **Visitor:** compiler AST passes (type-check, codegen); the JDK's annotation
+  processing; document model traversals.
+
+## Further reading
+
+- [Refactoring.Guru — Behavioral Patterns](https://refactoring.guru/design-patterns/behavioral-patterns) — illustrated coverage of all nine behavioral patterns.
+- [Strategy vs State (Refactoring.Guru)](https://refactoring.guru/design-patterns/state) — the canonical explanation of the same-structure, different-intent distinction.
+- [Game Programming Patterns — Observer & State](https://gameprogrammingpatterns.com/observer.html) — practical, performance-aware treatments of Observer and State machines.

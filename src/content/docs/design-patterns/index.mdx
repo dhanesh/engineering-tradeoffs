@@ -1,12 +1,192 @@
 ---
 title: Design Patterns
-description: Reusable structural and behavioral patterns for distributed systems.
+description: What design patterns are and aren't — the three GoF categories, patterns as a shared vocabulary, and the over-engineering trap of applying a pattern where it adds cost without payoff.
 last_reviewed: "2026-06-04"
 decision_guidance: true
 ---
 
-Overview of design patterns for distributed systems. Real content lands here
-later — individual topics are authored from `templates/topic.mdx`.
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
 
-This cluster will cover patterns such as circuit breakers, sagas, CQRS,
-sharding, and leader election, each with tradeoffs and decision guidance.
+## Overview
+
+A **design pattern** is a named, reusable solution to a problem that recurs
+across many designs. It is not code you copy — it is a *shape* you recognize and
+re-implement in your own language and context. The value is twofold: patterns
+**compress experience** (someone already hit this problem and found a structure
+that holds up), and they give a team **shared vocabulary** ("wrap it in a
+decorator," "that's a strategy") so a design intent fits in two words instead of
+two paragraphs. The canonical catalogue is the 1994 *Design Patterns* book by
+Gamma, Helm, Johnson, and Vlissides — the "Gang of Four" (GoF) — which named 23
+object-oriented patterns and grouped them into three categories.
+
+Patterns are descriptive, not prescriptive. They describe solutions that
+*emerged* repeatedly in good designs; they are not a checklist to apply
+top-down. The single most common failure mode with patterns is the inverse of
+their purpose: reaching for one **before** the problem it solves actually exists,
+adding indirection and ceremony that buys nothing. This cluster covers the four
+families — creational, structural, behavioral, and architectural — leading every
+page with *when to reach for the pattern and why*, and just as importantly,
+*when not to*.
+
+## Mental model
+
+Think of patterns as a **vocabulary layered on top of the language's grammar**.
+The grammar (classes, functions, interfaces) lets you say anything; the
+vocabulary lets you say common things *quickly and recognizably*. A pattern
+earns its keep only when it names a force you are actually fighting:
+
+- **A pattern is a response to *change*.** Each one isolates the thing most
+  likely to vary — the algorithm (Strategy), the product family (Abstract
+  Factory), the recipient of a request (Command, Observer) — behind a stable
+  seam, so that variation does not ripple through the rest of the code.
+- **No varying axis → no pattern.** If the thing the pattern abstracts will
+  never change, the abstraction is pure overhead. A `StrategyFactory` producing
+  one strategy is just a slow `new`.
+- **Patterns trade direct coupling for indirection.** Indirection is the
+  currency you spend to buy flexibility, testability, or decoupling. Spend it
+  where a real axis of change exists; hoard it everywhere else.
+
+The decision is never "is this a valid pattern?" It is "does the flexibility
+this pattern buys exceed the indirection it costs, *here, today*?"
+
+## Types / Variants
+
+The GoF taxonomy splits the 23 classic patterns by **what they organize**:
+
+**Creational** — patterns about *object construction*. They decouple a system
+from *how* its objects are created, composed, and represented, so construction
+logic can vary without the callers changing. The five GoF creational patterns
+plus the widely-used Object Pool: **Singleton, Factory Method, Abstract Factory,
+Builder, Prototype, Object Pool**. Reach for these when `new` is doing too much
+— choosing concrete types, enforcing invariants during assembly, or controlling
+how many instances exist. See **Creational patterns**.
+
+**Structural** — patterns about *composing objects into larger structures*. They
+describe how to assemble classes and objects so the result is flexible and
+efficient, usually by wrapping, adapting, or sharing. **Adapter, Decorator,
+Facade, Proxy, Composite, Bridge, Flyweight**. Reach for these when you need to
+fit incompatible interfaces together, add behavior without subclassing, simplify
+a complex subsystem, or control access to an object. See **Structural patterns**.
+
+**Behavioral** — patterns about *how objects communicate and distribute
+responsibility*. They describe the patterns of interaction and the assignment of
+responsibility between objects, focusing on the flow of control and data.
+**Strategy, Observer, Command, State, Template Method, Chain of Responsibility,
+Iterator, Mediator, Visitor**. Reach for these when the *algorithm*, the *set of
+listeners*, or the *flow of a request* is what varies. See **Behavioral patterns**.
+
+Beyond object-level GoF patterns lies a fourth family this cluster covers:
+**Architectural patterns** (Layered, Hexagonal, MVC/MVVM, CQRS, Event Sourcing,
+Saga, Microkernel) — the same idea applied at the *system* scale, organizing
+whole modules and services rather than classes. See **Architectural patterns**.
+
+## When to use / When NOT
+
+- **Use a pattern when:** you can name the specific axis of change it isolates,
+  and that axis is *real and present* (you already have two implementations, or
+  a concrete, near-term requirement for a second); the pattern's vocabulary
+  makes the design easier for the team to discuss; or you are refactoring
+  *toward* a pattern because duplication and rigidity have already shown up.
+- **Avoid a pattern when:** you are applying it speculatively ("we might need
+  to swap this later") with no second implementation in sight; the language
+  already gives you the capability for free (first-class functions make many
+  Strategy/Command uses a closure; a module makes Singleton a non-problem); the
+  indirection makes the code *harder* to follow for a flexibility no one will
+  use; or you are reaching for a pattern to demonstrate sophistication rather
+  than to solve a problem.
+
+The over-engineering trap is concrete: a `FactoryProvider` that creates a
+`Factory` that creates one concrete class; an `AbstractStrategyDecoratorFactory`
+nobody can trace; a four-layer wrapper around a one-line call. Every layer of
+indirection is a tax paid on *every read* of the code, forever. A pattern that
+does not pay that tax back in flexibility you actually exercise is a net loss.
+
+## Tradeoffs
+
+The three GoF categories differ in *what varies* and therefore *where the
+indirection lands*. Use this to find the right family fast, then drill into the
+category page for the specific pattern.
+
+| Concern | Creational | Structural | Behavioral |
+| ------- | ---------- | ---------- | ---------- |
+| What it organizes | Object creation | Object composition | Object interaction |
+| Axis of change it isolates | Which concrete types / how assembled | How objects fit together | Which algorithm / who handles a request |
+| Typical question | "How do I build this without hard-coding the type?" | "How do I combine/wrap these objects?" | "How do I vary behavior or who responds?" |
+| Cost when misused | Construction ceremony for a single type | Wrapper layers that obscure the real object | Indirection in control flow that's hard to trace |
+| Example | Builder, Abstract Factory | Adapter, Decorator | Strategy, Observer |
+
+## Diagram
+
+The four families, ordered from the smallest scope (constructing one object) to
+the largest (organizing a whole system).
+
+<Mermaid code={`graph TD
+  P[Design patterns] --> C[Creational: object construction]
+  P --> S[Structural: object composition]
+  P --> B[Behavioral: object interaction]
+  P --> A[Architectural: system structure]
+  C --> C1[Singleton, Factory, Builder, ...]
+  S --> S1[Adapter, Decorator, Proxy, ...]
+  B --> B1[Strategy, Observer, Command, ...]
+  A --> A1[Layered, Hexagonal, CQRS, Saga, ...]`} />
+
+## Try it
+
+Compare the three GoF categories side by side to locate the family that fits the
+problem you are looking at. Click a column to isolate it.
+
+<CompareMatrix
+  client:visible
+  caption="The three GoF categories at a glance"
+  columns={['Creational', 'Structural', 'Behavioral']}
+  rows={[
+    {
+      criterion: 'Organizes',
+      cells: ['Object creation', 'Object composition', 'Object interaction & responsibility'],
+    },
+    {
+      criterion: 'Isolates the variation in…',
+      cells: ['Which type, how assembled', 'How objects connect/wrap', 'Which algorithm / who handles a request'],
+    },
+    {
+      criterion: 'Key patterns',
+      cells: ['Singleton, Factory Method, Abstract Factory, Builder, Prototype', 'Adapter, Decorator, Facade, Proxy, Composite, Bridge, Flyweight', 'Strategy, Observer, Command, State, Template Method, Chain, Iterator, Mediator, Visitor'],
+    },
+    {
+      criterion: 'Reach for it when',
+      cells: ['`new` chooses types or enforces assembly invariants', 'Interfaces clash, or behavior must be added without subclassing', 'Behavior, listeners, or request flow is what varies'],
+    },
+    {
+      criterion: 'Over-engineering smell',
+      cells: ['Factory producing one concrete class', 'Wrapper stack hiding a trivial object', 'Indirected control flow no one can trace'],
+    },
+    {
+      criterion: 'Language often replaces it with',
+      cells: ['Module / constructor / DI container', 'Mixins, composition, std wrappers', 'First-class functions, closures, events'],
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Java standard library** is a pattern museum: `java.util.Iterator`
+  (Iterator), `InputStream`/`Reader` wrappers (Decorator), `java.awt` event
+  listeners (Observer), `Collections.unmodifiableList` (Proxy/Decorator),
+  `StringBuilder` (Builder).
+- **React** is built on behavioral and structural patterns: hooks and render
+  props are Strategy; context is a Mediator/Observer hybrid; higher-order
+  components are Decorators; the component tree is a Composite.
+- **Spring Framework** leans on Proxy (AOP, transactions), Factory/Abstract
+  Factory (the bean container), Singleton (default bean scope), and Template
+  Method (`JdbcTemplate`).
+- **Refactoring's anti-example:** Martin Fowler and others document how teams
+  that apply patterns up front ("pattern-happy" code) produce systems *harder*
+  to change than the naive version — the canonical evidence for the
+  over-engineering trap.
+
+## Further reading
+
+- [Design Patterns: Elements of Reusable Object-Oriented Software (GoF)](https://en.wikipedia.org/wiki/Design_Patterns) — the original 1994 catalogue and category definitions.
+- [Refactoring.Guru — Design Patterns](https://refactoring.guru/design-patterns) — modern, example-driven walkthroughs of all 23 GoF patterns.
+- [Martin Fowler — "Is Design Dead?"](https://martinfowler.com/articles/designDead.html) — the case against speculative pattern application and for evolutionary design.
