@@ -1,0 +1,188 @@
+---
+title: Inverted Index
+description: From documents to terms to postings lists — tokenization, lowercasing, stemming, stop words, synonyms and n-grams; term/document frequency, positional indexes for phrase search, and the analyzer pipeline at index vs query time.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+The inverted index is the data structure that makes full-text search possible.
+It maps each **term** to a **postings list** — the set of documents (and often
+positions) where that term appears. Building it is not just "split on spaces":
+the raw text passes through an **analyzer** that decides *what counts as a term*,
+and the quality of that decision determines whether `Running Shoes` matches a
+search for `run shoe`. Get the analyzer wrong and the index is technically
+correct but useless; get it right and a ten-million-document corpus answers
+free-text queries in single-digit milliseconds. This page walks the pipeline
+end to end: from documents, through analysis, into terms and postings, and how
+positions enable phrase search.
+
+## Mental model
+
+Think of two columns. **Forward index:** `doc → [terms]` ("document 7 contains:
+the, fast, brown, fox"). **Inverted index:** `term → [docs]` ("`fox` appears in:
+doc 7, doc 19, doc 204"). You build the forward representation while parsing each
+document, then *invert* it so lookups are by term. The postings list is the
+payload, and it carries more than document IDs:
+
+- **Document ID** — which doc contains the term.
+- **Term frequency (TF)** — how many times in that doc (feeds ranking).
+- **Positions** — *where* in the doc (offsets), enabling phrase and proximity.
+
+Across the whole index, each term also has a **document frequency (DF)** — in how
+many documents it appears at all. A rare term (high information, low DF) is worth
+more to a match than a common one; this is the seed of TF-IDF and BM25 (see
+*Relevance & ranking*). The analyzer is what turns messy text into the clean,
+normalized terms these lists are keyed on — and **the same analyzer must run on
+the query**, or the query terms won't match the indexed terms.
+
+## Types / Variants
+
+The "variants" here are the **analysis stages** — each is a knob that changes
+what becomes a term:
+
+**Tokenization.** Split a character stream into tokens. For English, roughly on
+whitespace and punctuation; for Chinese/Japanese/Thai there are no spaces, so you
+need dictionary- or ML-based segmentation. Tokenization choices (do you split
+`wi-fi` into one token or two? keep `C++`?) silently make or break recall.
+
+**Lowercasing / normalization.** `Apple` and `apple` should usually be the same
+term. Unicode normalization (NFC/NFKC), accent folding (`café` → `cafe`), and
+case folding collapse surface variants. Over-folding loses meaning (`US` the
+country vs `us`); under-folding splits the hot term.
+
+**Stop words.** Drop ultra-common, low-information words (`the`, `a`, `is`).
+Shrinks the index and speeds queries, but **removing them breaks phrase search**
+("to be or not to be" becomes empty) — modern engines often keep them and let
+BM25 down-weight them instead.
+
+**Stemming vs lemmatization.** Both collapse word forms so `running`, `ran`,
+`runs` match `run`. **Stemming** (Porter/Snowball) chops suffixes by rules — fast,
+crude (`universe`/`university` → `univers`). **Lemmatization** uses a dictionary
+and part-of-speech to map to the true base form (`better` → `good`) — accurate,
+slower, language-resource-heavy. Stemming is the pragmatic default.
+
+**Synonyms.** Expand or normalize equivalents (`tv` ↔ `television`, `nyc` ↔ `new
+york city`). Apply at index time (bigger index, fixed at build) or query time
+(flexible, editable without reindex — usually preferred).
+
+**N-grams and edge-n-grams.** Index overlapping character sequences. **Edge-
+n-grams** (`s`, `se`, `sea`, `sear`...) power **autocomplete/prefix** matching.
+Full **n-grams** enable substring and **typo-tolerant** matching and search for
+languages without word boundaries — at a large index-size cost.
+
+**Positional index.** Store token positions in the postings so the engine can
+verify terms appear *adjacent and in order* — required for **phrase queries**
+(`"machine learning"` as a phrase, not the two words anywhere) and **proximity**
+("these two words within 3 of each other"). Costs more index space than a
+position-free (boolean) index.
+
+## When to use / When NOT
+
+- **Stem when:** general-purpose text where recall matters more than precision
+  (product descriptions, articles). **Avoid/limit stemming when:** exact terms
+  matter — code search, identifiers, legal/medical terminology, where `cat` must
+  not match `category`.
+- **Use a positional index when:** phrase and proximity queries matter (most
+  prose search). **Skip positions when:** you only do bag-of-words matching and
+  want a smaller, faster index (some logging/analytics use cases).
+- **Use edge-n-grams when:** you need fast as-you-type autocomplete. **Avoid full
+  n-grams unless** you specifically need substring or strong typo tolerance — they
+  can multiply index size several-fold.
+- **Remove stop words when:** index size dominates and phrases don't matter.
+  **Keep stop words when:** phrase search matters (the common case today) — let
+  the ranking model discount them instead of deleting information.
+- **Apply synonyms at query time when:** the synonym set changes often and you
+  don't want to reindex; **at index time when:** the set is stable and you want
+  to pay the cost once.
+
+## Tradeoffs
+
+| Analysis choice | Buys you | Costs you |
+| --------------- | -------- | --------- |
+| Stemming | Recall (`run` ↔ `running`) | Precision (`univers` collisions) |
+| Lemmatization | Accurate base forms | Speed, language resources |
+| Stop-word removal | Smaller/faster index | Broken phrase search |
+| Synonyms (index-time) | Fast queries | Reindex to change; bigger index |
+| Synonyms (query-time) | Editable without reindex | Slightly slower queries |
+| Positional index | Phrase/proximity queries | Larger index |
+| Edge-n-grams | Instant autocomplete | Larger index |
+| Full n-grams | Substring + typo tolerance | Much larger index |
+
+## Diagram
+
+The analyzer pipeline — the *same* sequence runs at index time on documents and
+at query time on the query, which is why their terms line up.
+
+<Mermaid code={`graph LR
+  D[Raw text] --> CF[Char filters: strip HTML, normalize Unicode]
+  CF --> TK[Tokenizer: split into tokens]
+  TK --> LC[Lowercase / accent fold]
+  LC --> SW[Stop-word filter]
+  SW --> ST[Stemmer / lemmatizer]
+  ST --> SY[Synonym expansion]
+  SY --> T[Final terms]
+  T --> P[Postings: doc id, term freq, positions]`} />
+
+## Try it
+
+Compare the stages, then weigh whether to analyze synonyms at index time or
+query time.
+
+<CompareMatrix
+  client:visible
+  caption="Stemming vs lemmatization vs n-grams"
+  columns={['Stemming', 'Lemmatization', 'N-grams']}
+  rows={[
+    { criterion: 'Mechanism', cells: ['Rule-based suffix stripping', 'Dictionary + part-of-speech', 'Overlapping char sequences'] },
+    { criterion: 'Example', cells: ['running → run; universe → univers', 'better → good; ran → run', 'search → se, ea, ar, rc, ch'] },
+    { criterion: 'Speed', cells: ['Very fast', 'Slower', 'Fast index, large size'] },
+    { criterion: 'Accuracy', cells: ['Crude (over-stems)', 'High', 'N/A (substring matching)'] },
+    { criterion: 'Main use', cells: ['Default recall booster', 'Linguistically precise recall', 'Autocomplete, typo, substring'] },
+    { criterion: 'Index-size impact', cells: ['Neutral / smaller', 'Neutral', 'Large increase'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Index-time vs query-time analysis"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Index-time analysis bakes the transformation into stored terms — choose it for the stable core (tokenization, lowercasing, stemming) that defines your terms. Query-time analysis transforms the query as it arrives — choose it for things you want to change without reindexing, classically synonyms and some boosting.',
+    },
+    {
+      label: 'Why',
+      content: 'Whatever you do at index time is fixed until you reindex the whole corpus, so it must be stable and run once cheaply. Query-time analysis is re-run per query, so it can be edited live (update a synonym file, no reindex) at the cost of a little per-query work. Crucially, the SHARED stages (tokenizer, lowercaser, stemmer) MUST match on both sides or query terms will not equal indexed terms and recall collapses.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Do not push expensive or frequently-changing logic into index time — a synonym change would force a full reindex of millions of documents. And do not diverge the analyzers: a different stemmer or tokenizer at query time silently breaks matching in ways that are hard to debug because nothing errors, results just go empty or wrong.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Apache Lucene** is the canonical inverted-index implementation; its postings
+  store doc IDs, term frequencies, and positions, and it underlies Elasticsearch,
+  OpenSearch, and Solr.
+- **Elasticsearch analyzers** are explicitly composed of char filters →
+  tokenizer → token filters, exactly the pipeline above, and are configurable
+  per field.
+- **PostgreSQL** `to_tsvector` runs a built-in analyzer (parser + dictionaries +
+  stemmer) and stores the lexeme→positions map that GIN then inverts.
+- **Google** historically used positional inverted indexes (with skip lists and
+  aggressive compression) so that `"to be or not to be"` resolves as a phrase,
+  stop words and all.
+
+## Further reading
+
+- [Introduction to Information Retrieval — Ch. 1–2 (the inverted index & tokenization)](https://nlp.stanford.edu/IR-book/html/htmledition/a-first-take-at-building-an-inverted-index-1.html) — the foundational treatment.
+- [Elasticsearch — Anatomy of an analyzer](https://www.elastic.co/guide/en/elasticsearch/reference/current/analyzer-anatomy.html) — char filters, tokenizer, token filters in practice.
+- [Lucene — index file formats](https://lucene.apache.org/core/9_0_0/core/org/apache/lucene/codecs/lucene90/package-summary.html) — how postings, frequencies, and positions are actually stored.

@@ -1,0 +1,221 @@
+---
+title: Relevance & Ranking
+description: TF-IDF then BM25 (and why BM25 won), vector/semantic search (embeddings, ANN/kNN), hybrid search (BM25 + vectors via RRF), learning-to-rank, faceting, and boosting — with when to use lexical, semantic, or hybrid.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Matching tells you *which* documents contain the query terms; **ranking** tells
+you which ones to show *first*. With a million matches and a screen that fits
+ten, ranking *is* the product. This page covers the two families that dominate
+modern search. **Lexical** ranking scores by term overlap statistics — TF-IDF,
+then its successor **BM25**, which is the default in essentially every search
+engine today. **Semantic** ranking scores by *meaning* using **embeddings** and
+nearest-neighbour search, so `"laptop that won't overheat"` can match a review
+that never uses those words. Neither dominates everywhere, so the strongest
+production systems run **hybrid** search and fuse the two rankings. We finish
+with the levers on top: learning-to-rank, faceting, and boosting.
+
+## Mental model
+
+Ranking is a **scoring function over (query, document) pairs**; you sort by the
+score and cut to top-K. The two families differ in what the score *measures*:
+
+- **Lexical (BM25):** "how statistically surprising is it that this document
+  contains *these exact terms* this many times?" Sparse, exact-token, explainable.
+- **Semantic (vectors):** "how close is this document's *meaning vector* to the
+  query's meaning vector?" Dense, fuzzy, captures synonymy and intent but can
+  drift off literal terms.
+
+Their failure modes are complementary. BM25 nails exact terms, product codes,
+names, and rare keywords — but is blind to synonyms it wasn't told about and to
+paraphrase. Vectors capture intent and synonymy — but can confidently return
+something *about the right topic* yet missing the exact term you needed (a part
+number, a person's name). **Hybrid** search exists because fusing two systems
+that fail differently beats either alone.
+
+## Types / Variants
+
+**TF-IDF.** Score a term by **term frequency** (more occurrences in this doc →
+more relevant) times **inverse document frequency** (rarer across the corpus →
+more discriminating). Intuitive and historically dominant, but it has no
+principled handling of document length and TF grows unboundedly — a doc that
+repeats a word 100 times scores ~100× a single mention, which is rarely right.
+
+**BM25 (Okapi BM25) — and why it won.** A probabilistic refinement of TF-IDF
+that fixes its two flaws: **TF saturation** (the `k1` parameter makes the 10th
+occurrence add far less than the 2nd — diminishing returns) and **length
+normalization** (the `b` parameter discounts long documents so they don't win by
+sheer size). It is robust, needs almost no tuning, and consistently outperforms
+TF-IDF, which is why it is the **default in Lucene/Elasticsearch/OpenSearch/Solr
+and Postgres-adjacent rankers**. If you do nothing, you get BM25, and that is the
+right default.
+
+**Vector / semantic search.** An **embedding model** maps text to a dense vector
+(say 384–1536 dims) where semantic similarity ≈ geometric closeness (cosine /
+dot product). At query time you embed the query and find its **nearest
+neighbours** among document vectors. Exact kNN is O(N) per query, so production
+uses **ANN (approximate nearest neighbour)** indexes — **HNSW** (graph-based, the
+common default), **IVF** (inverted-file clustering), or **PQ** (product
+quantization for memory) — trading a little recall for huge speed.
+
+**Hybrid search (BM25 + vector).** Run both retrievers and **fuse** their result
+lists. The robust, model-free fusion is **Reciprocal Rank Fusion (RRF)**: score
+each doc by `Σ 1/(k + rank_in_each_list)`, which combines on *ranks* not on
+incomparable raw scores (BM25 scores and cosine similarities live on different
+scales — never add them directly). Alternatively, *linear combination* of
+normalized scores, but RRF is simpler and remarkably strong.
+
+**Learning-to-rank (LTR).** Replace the hand-tuned scoring with a model trained
+on judged or click data. Usually a **two-stage** design: a cheap retriever (BM25
+and/or vectors) fetches a few hundred candidates, then a learned reranker
+(gradient-boosted trees like LambdaMART, or a cross-encoder transformer) reorders
+the top set using rich features (BM25 score, freshness, popularity,
+personalization, vector similarity). High ceiling, but needs training data and a
+serving path.
+
+**Faceting & filtering.** **Filters** are boolean constraints that *remove*
+candidates without affecting the relevance score (in-stock, price < 100) — fast
+and cacheable. **Facets** are the aggregated counts per value shown in the UI
+("Brand: Sony (412)"). Filtering is recall control; ranking is the order of
+what's left.
+
+**Boosting.** Bias the score toward business goals: weight the `title` field over
+`body`, boost fresher documents, lift in-stock or sponsored items, raise an exact
+phrase over loose matches. Boosting is how product judgment enters an otherwise
+statistical ranking — apply sparingly and measure, or you drown relevance in
+business rules.
+
+## When to use / When NOT
+
+- **Use lexical (BM25) when:** queries are keyword-like; exact terms, names,
+  codes, identifiers matter; explainability and zero-training simplicity matter;
+  or the corpus is domain-specific where general embeddings are weak. **Avoid
+  pure lexical when:** users phrase intent in words the documents never use
+  (paraphrase, synonymy, natural-language questions).
+- **Use semantic (vectors) when:** matching by meaning matters — Q&A, "find
+  similar," recommendations, cross-lingual, or messy natural-language queries;
+  and you can host an embedding model and an ANN index. **Avoid pure semantic
+  when:** exact-term recall is non-negotiable (it may miss the literal keyword),
+  latency/cost of embedding is prohibitive, or your domain is far from the
+  embedding model's training distribution.
+- **Use hybrid (BM25 + vector, RRF) when:** you want both exact-term precision
+  and semantic recall and can afford two retrievers plus fusion — this is the
+  modern default for high-quality search. **Avoid hybrid when:** the added
+  complexity and second index aren't justified by measured relevance gains.
+- **Add learning-to-rank when:** you have click/judgment data and relevance is a
+  core metric worth a training+serving pipeline. **Skip LTR when:** you lack
+  labels or BM25/hybrid already meets the bar — it is the last 10%, not the first.
+
+## Tradeoffs
+
+| Dimension | Lexical (BM25) | Semantic (vectors) | Hybrid (RRF) |
+| --------- | -------------- | ------------------ | ------------ |
+| Matches on | Exact terms / statistics | Meaning / intent | Both |
+| Synonyms / paraphrase | Blind (unless told) | Strong | Strong |
+| Exact codes / names | Strong | Can miss | Strong |
+| Infra needed | Inverted index | Embedding model + ANN | Both |
+| Cost / latency | Low | Higher (embed + ANN) | Highest |
+| Explainability | High (term scores) | Low (opaque vector) | Mixed |
+| Tuning / training | Minimal (works default) | Model choice matters | Fusion + both |
+| Cold-start with no data | Works immediately | Works (pretrained) | Works |
+
+## Diagram
+
+Hybrid retrieval: two retrievers fail differently, RRF fuses their ranks, an
+optional reranker polishes the top set.
+
+<Mermaid code={`graph TD
+  Q[Query] --> BM[BM25 lexical retriever]
+  Q --> EMB[Embed query]
+  EMB --> ANN[ANN vector retriever]
+  BM --> RRF[Reciprocal Rank Fusion]
+  ANN --> RRF
+  RRF --> RR[Optional learned reranker]
+  RR --> TOP[Top-K results]`} />
+
+## Try it
+
+Slide from pure lexical to pure semantic to see what you gain and lose, then walk
+the decision for your workload.
+
+<TradeoffSlider
+  client:visible
+  caption="Lexical ↔ Semantic"
+  leftAxis="Pure lexical (BM25)"
+  rightAxis="Pure semantic (vectors)"
+  stops={[
+    { label: 'BM25 only', description: 'Exact-term, explainable, zero training, cheap. Blind to synonyms and paraphrase it was not told about. The right default for keyword and code/name search.' },
+    { label: 'BM25 + synonyms/boosts', description: 'Lexical core with curated synonym expansion and field boosting. Stretches recall toward meaning without embeddings — cheap, but every synonym is hand-maintained.' },
+    { label: 'Hybrid (RRF)', description: 'Run BM25 and vectors, fuse on rank with RRF. Exact-term precision AND semantic recall; the modern high-quality default. Costs two indexes and fusion logic.' },
+    { label: 'Vectors + reranker', description: 'Semantic retrieval with a cross-encoder reranker on the top candidates. Strong on intent and paraphrase; heavier latency/cost and can still miss literal keywords.' },
+    { label: 'Vectors only', description: 'Pure meaning-based nearest-neighbour. Best for Q&A, similarity, and natural-language intent; weakest on exact codes/names and hardest to explain.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Lexical, semantic, or hybrid?"
+  root={{
+    question: 'Do users search mostly with keywords/codes, or with natural-language intent and paraphrase?',
+    branches: [
+      {
+        label: 'Keywords, names, codes',
+        next: {
+          question: 'Do exact-term precision and explainability matter more than catching synonyms?',
+          branches: [
+            {
+              label: 'Yes — exactness first',
+              next: { leaf: { recommendation: 'Lexical (BM25)', detail: 'The zero-training default. Strong on exact terms, identifiers, and rare keywords; explainable per-term scores. Add a synonym file and field boosts if recall needs a nudge.' } },
+            },
+            {
+              label: 'But we still miss synonyms a lot',
+              next: { leaf: { recommendation: 'Hybrid (BM25 + vectors, RRF)', detail: 'Keep BM25 precision on exact terms while a vector retriever catches paraphrase; fuse on rank with RRF so the two scales never get added directly.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Natural-language intent / paraphrase',
+        next: {
+          question: 'Is missing an exact keyword (a part number, a name) ever unacceptable?',
+          branches: [
+            {
+              label: 'Yes — exact recall is non-negotiable',
+              next: { leaf: { recommendation: 'Hybrid (RRF), optionally + reranker', detail: 'Vectors give intent/synonym recall, BM25 guarantees the literal term is never lost; a cross-encoder reranker on the fused top-K lifts precision if you have the latency budget.' } },
+            },
+            {
+              label: 'No — meaning is what matters',
+              next: { leaf: { recommendation: 'Semantic (vectors) + ANN', detail: 'Embed query and docs, retrieve nearest neighbours with HNSW/IVF. Best for Q&A, similarity, and recommendations; add a reranker for the last bit of precision.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Elasticsearch/OpenSearch/Solr** all default to **BM25** as the similarity and
+  expose `k1`/`b` knobs; all now ship native **kNN/HNSW** vector fields and
+  built-in **RRF** for hybrid retrieval.
+- **Vespa** was built for two-phase ranking and runs lexical, vector, and
+  learned rankers natively in one engine — a reference design for hybrid + LTR.
+- **RAG pipelines** (retrieval-augmented generation for LLMs) almost universally
+  use hybrid retrieval + a reranker to feed the most relevant chunks to the model.
+- **E-commerce search** (Amazon-class) layers BM25 + vectors + learning-to-rank
+  with heavy boosting for availability, margin, and personalization.
+
+## Further reading
+
+- [The BM25 algorithm and its variants (Elastic — practical scoring)](https://www.elastic.co/blog/practical-bm25-part-1-how-shards-affect-relevance-scoring-in-elasticsearch) — BM25, `k1`, `b`, explained for practitioners.
+- [Reciprocal Rank Fusion (Cormack et al., SIGIR '09)](https://plg.uwaterloo.ca/~gvcormack/cormacksigir09-rrf.pdf) — the original RRF paper behind hybrid fusion.
+- [HNSW — Efficient and robust ANN (Malkov & Yashunin)](https://arxiv.org/abs/1603.09320) — the graph index most vector search uses.
+- [Pretrained Transformers for Text Ranking: BM25 and Beyond](https://arxiv.org/abs/2010.06467) — survey of neural rerankers vs lexical baselines.

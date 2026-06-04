@@ -1,12 +1,152 @@
 ---
 title: Search Indexes
-description: Inverted indexes, ranking, and search infrastructure.
+description: Why a database LIKE '%...%' doesn't scale, search vs query, the inverted index as the core idea, and when you actually need a dedicated search engine over your database's full-text.
 last_reviewed: "2026-06-04"
 decision_guidance: true
 ---
 
-Overview of search indexes. Real content lands here later — individual topics
-are authored from `templates/topic.mdx`.
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
-This cluster will cover inverted indexes, tokenization, ranking, relevance,
-and search-engine infrastructure tradeoffs.
+## Overview
+
+A database is built to answer **queries** — "give me the rows where `status =
+'shipped'` and `user_id = 42`" — and a B-tree index makes that fast by ordering
+rows on a key you look *up* by exact value or range. **Search** is a different
+problem: "find the documents that are *about* `wireless noise-cancelling
+headphones`, ranked best-first, even if nobody wrote that exact phrase." The
+naive SQL answer, `WHERE description LIKE '%headphones%'`, cannot use a normal
+index — a leading wildcard forces a **full table scan**, every row read and
+string-matched, O(rows × text length). At a few thousand rows it is fine; at ten
+million it is a multi-second scan per query, and it still gives you *matching*
+not *ranking*, no typo tolerance, no stemming (`running` won't match `run`), no
+relevance order. This cluster is about the data structure that fixes all of
+that — the **inverted index** — and the engines built around it.
+
+## Mental model
+
+A normal database index is a map **row → values** that you read forwards; the
+**inverted index** flips it: **term → the list of documents containing that
+term** (the *postings list*). It is the same idea as the index at the back of a
+textbook — you don't scan every page for "mitochondria," you jump to the term
+and read off the page numbers. Search then becomes three composable stages:
+
+1. **Match** — intersect/union the postings lists for the query terms to get a
+   *candidate set*. This is the part `LIKE` cannot do efficiently.
+2. **Filter** — narrow candidates by structured constraints (price < 100,
+   in-stock, category = audio). This is the part a database *is* good at.
+3. **Rank** — score each candidate by *relevance* (how well it matches) and
+   return the top-K. This is the part a database has no concept of.
+
+A search engine is a system that does all three over a continuously-updated
+index. The deep skill is knowing which of the three a workload actually needs —
+many "search" features are really just filtering, and you may not need a search
+engine at all.
+
+## Types / Variants
+
+**Full-text search.** The headline use: free-text queries over unstructured text
+with tokenization, stemming, relevance ranking, phrase and proximity matching.
+Requires an inverted index. This is where dedicated engines earn their keep.
+
+**Filtering / structured search (faceted).** "Brand = Sony AND price 100–200 AND
+rating ≥ 4." No relevance, just set membership over structured fields. A database
+with the right indexes does this well; search engines also do it (as *filters*,
+which don't affect score) and add **facets** — the live counts beside each filter
+("Sony (412), Bose (88)").
+
+**Ranking / relevance.** Ordering matched documents best-first by a similarity
+score (BM25), recency, popularity, personalization, or a learned model. This is
+the dimension a relational database simply does not have — `ORDER BY` sorts on a
+column, not on "how well does this row answer the query."
+
+**Where these compose.** Real search is *filter to a candidate set, full-text
+match within it, rank the survivors, attach facet counts.* The mix decides your
+tooling: pure filtering → your DB; full-text + ranking → a search engine;
+meaning-based recall → add vector search (see *Relevance & ranking*).
+
+## When to use / When NOT
+
+- **Use a dedicated search engine when:** you need real full-text (stemming,
+  typo tolerance, phrase/proximity, multi-field relevance ranking); query volume
+  or corpus size makes DB `LIKE`/`ILIKE` scans too slow; you need facets,
+  autocomplete, "did you mean," synonyms, or per-field boosting; or relevance
+  *order* is a product feature, not an afterthought.
+- **Avoid a dedicated engine when:** you only need exact-match or prefix
+  filtering (use a B-tree/GIN index); the corpus is small (tens of thousands of
+  short rows) and Postgres full-text comfortably handles it; or you cannot afford
+  a second stateful system that must be kept in sync with your source of truth
+  (see *Search architecture* — search is a **derived index**, and the dual-write/
+  staleness problem is real).
+- **Reach for your database's built-in full-text first** (Postgres `tsvector` +
+  GIN, MySQL `FULLTEXT`, SQLite FTS5). It gives you ~80% of the capability with
+  zero new infrastructure, transactional consistency for free, and no sync
+  pipeline. Graduate to Elasticsearch/OpenSearch/Solr/Typesense only when you hit
+  a concrete wall: scale, relevance tuning, facets at speed, or analyzer richness.
+
+## Tradeoffs
+
+| Need | Database `LIKE`/`ILIKE` | DB full-text (Postgres GIN) | Dedicated search engine |
+| ---- | ----------------------- | --------------------------- | ----------------------- |
+| Exact / prefix match | Good (with index) | Good | Good |
+| Substring (`%term%`) | Full scan — poor at scale | N/A | N/A (use n-grams) |
+| Stemming / linguistics | None | Basic (per-language configs) | Rich (analyzers, synonyms) |
+| Relevance ranking | None | TF-IDF-ish (`ts_rank`) | BM25, boosting, LTR, vectors |
+| Facets / autocomplete | Hand-rolled | Limited | First-class |
+| Consistency with source | Transactional (it *is* the source) | Transactional | Eventual (derived index) |
+| Extra infra to operate | None | None | A whole stateful cluster |
+
+## Diagram
+
+The query path: analyze the query the same way documents were indexed, match
+against the inverted index, filter, then rank to top-K.
+
+<Mermaid code={`graph LR
+  Q[User query] --> A[Analyze query text]
+  A --> M[Match: postings-list lookup in inverted index]
+  IDX[(Inverted index)] --> M
+  M --> F[Filter by structured fields]
+  F --> R[Rank by relevance score]
+  R --> K[Top-K ranked results]`} />
+
+## Try it
+
+When is a separate search engine worth the operational weight — and when is it
+premature?
+
+<WhenWhyTabs
+  client:visible
+  caption="A dedicated search engine (vs your database)"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'When you need genuine full-text relevance (stemming, typo tolerance, phrase/proximity, multi-field scoring), when DB LIKE/ILIKE scans are too slow for the corpus or query rate, when facets/autocomplete/synonyms/"did you mean" are product features, or when result ordering by relevance is itself the feature rather than an ORDER BY on a column.',
+    },
+    {
+      label: 'Why',
+      content: 'An inverted index turns "find documents about X" from an O(rows) scan into an O(matching-postings) lookup, and adds a real scoring model (BM25) so results come back ranked, not just matched. Analyzers give linguistic recall (run matches running), and facets/autocomplete/boosting are built in rather than hand-rolled per query.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'It is a second stateful system that is NOT your source of truth — you must build an indexing pipeline to keep it in sync, and accept eventual consistency and the dual-write/staleness problem. For small corpora or pure filtering, Postgres full-text (tsvector + GIN) gives most of the value with transactional consistency and zero new infrastructure. Do not adopt a cluster to avoid one slow query.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Wikipedia** serves full-text search over millions of articles with
+  Elasticsearch (CirrusSearch), having outgrown MySQL `LIKE` long ago.
+- **GitHub code search** rebuilt on a custom engine (Blackbird) after
+  Elasticsearch struggled with code-specific tokenization at their scale.
+- **Stack Overflow** used Elasticsearch for site search for years before
+  migrating much of it onto SQL Server full-text where the corpus and query
+  shape allowed it — a real example of *not* always needing a separate engine.
+- **Postgres full-text** (`tsvector`/`tsquery` + GIN) quietly powers search in a
+  huge number of mid-scale products that never needed a dedicated cluster.
+
+## Further reading
+
+- [PostgreSQL — Full Text Search](https://www.postgresql.org/docs/current/textsearch.html) — the built-in you should try before reaching for a cluster.
+- [Elasticsearch — what is full-text search?](https://www.elastic.co/what-is/full-text-search) — vendor framing of the match/rank problem.
+- [Introduction to Information Retrieval (Manning, Raghavan, Schütze)](https://nlp.stanford.edu/IR-book/) — the canonical free textbook on indexes and ranking.

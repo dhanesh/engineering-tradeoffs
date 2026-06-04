@@ -1,0 +1,175 @@
+---
+title: Search Architecture
+description: Search as a derived/secondary index — indexing pipelines, near-real-time refresh, bulk vs streaming, CDC into search, sharding and replicas, zero-downtime reindexing via alias swaps, and keeping search consistent with the primary store.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+The single most important architectural fact about search: **your search index is
+not your source of truth.** It is a **derived, secondary index** built from data
+that lives authoritatively somewhere else (Postgres, MySQL, an event log). The
+search cluster is a fast, lossy, eventually-consistent *projection* optimized for
+retrieval — and if it is lost, you rebuild it from the source. Internalizing this
+reframes every design question: you are not "storing data in Elasticsearch," you
+are running a **pipeline** that continuously transforms the source of truth into a
+searchable shape. This page covers that pipeline — how documents get in (bulk vs
+streaming, CDC), how fresh the index is (near-real-time refresh), how it scales
+(shards/replicas), how you rebuild it without downtime (alias swaps), and the
+hard part: keeping it consistent with the primary store.
+
+## Mental model
+
+A search system has **two stores and a pipeline between them**:
+
+1. **Source of truth** — the database/event log that owns the data and serves
+   transactional writes.
+2. **Pipeline** — the machinery that takes each change and projects it into the
+   search index (transform → analyze → index).
+3. **Search index** — the derived, query-optimized projection.
+
+Because the projection lags the source, search is **eventually consistent** by
+construction. The two recurring problems are therefore: **freshness** (how long
+until a write is searchable?) and **consistency** (does every committed write
+*eventually and reliably* reach the index, with no drift?). The single biggest
+trap is the **dual write** — your app writing to the database *and* to search in
+the same request. If either write fails (and they will, independently), the two
+diverge silently. The robust answer is to make the database the only thing the
+app writes, and derive search from the database's change stream (**CDC**), so
+there is exactly one ordered source of changes to follow.
+
+## Types / Variants
+
+**Bulk (batch) indexing.** Periodically read the source and (re)index in large
+batches via the bulk API. *Strengths:* high throughput, simple, ideal for initial
+load and full reindexes. *Weakness:* freshness is the batch interval — minutes to
+hours stale. Use for the first build and for corpora that don't need real-time.
+
+**Streaming indexing.** Index each change as it happens (per-event or
+micro-batched). *Strengths:* near-real-time freshness. *Weakness:* more moving
+parts; you must handle ordering, retries, and idempotency.
+
+**Application dual-write (the anti-pattern to avoid).** App writes DB then writes
+search in the same code path. *Looks* simplest; is a consistency landmine —
+partial failures, no ordering guarantee, no replay. Acceptable only for
+low-stakes data where occasional drift is tolerable and a periodic full reindex
+heals it.
+
+**CDC (Change Data Capture) into search.** Tail the database's change log (e.g.
+Postgres logical replication / WAL, MySQL binlog) with a connector (Debezium et
+al.), publish to a log (Kafka), and a consumer projects each change into search.
+*Strengths:* the app writes only the DB; changes are ordered, durable, and
+replayable; no dual write. *This is the production-grade pattern* for keeping
+search consistent. (See *Event-Driven Architecture* — this is the outbox/CDC story
+applied to a search projection.)
+
+**Near-real-time (NRT) refresh.** Lucene-based engines don't make a write
+searchable instantly; new documents become visible when a **refresh** flushes the
+in-memory buffer to a searchable segment (Elasticsearch default ~1s). You trade
+freshness for throughput by tuning the refresh interval — longer refresh = higher
+indexing throughput, staler reads.
+
+**Sharding & replicas.** **Shards** partition the index across nodes for capacity
+and parallel query (each shard is a self-contained Lucene index; a query
+scatter-gathers across shards). **Replicas** are copies of each shard for read
+scaling and availability. Shard count is largely fixed at creation, so sizing it
+wrong means a reindex — a classic operational gotcha.
+
+**Reindexing with zero-downtime alias swaps.** Mapping/analyzer changes usually
+require building a *new* index from scratch. The safe pattern: queries hit an
+**alias** (`products`) pointing at `products_v1`; you build `products_v2` in the
+background, backfill and catch up, then **atomically repoint the alias** to
+`products_v2` and drop `v1`. No downtime, instant rollback (repoint back).
+
+## When to use / When NOT
+
+- **Use bulk indexing when:** initial load, full reindexes, or corpora where
+  minutes-to-hours staleness is fine. **Avoid as your only mechanism when:**
+  users expect their writes to be searchable quickly.
+- **Use streaming when:** near-real-time freshness matters (new listings,
+  messages, posts). **Avoid when:** the operational complexity isn't justified
+  and batch freshness is acceptable.
+- **Use CDC when:** consistency between the primary store and search matters and
+  you want to eliminate dual writes — i.e. any serious production search.
+  **Avoid/defer CDC when:** the data is low-stakes, the team can't yet operate a
+  CDC + log pipeline, and a periodic full reindex is an acceptable safety net.
+- **Avoid application dual-writes** for anything where drift is costly — they have
+  no ordering, no atomicity across the two stores, and no replay.
+- **Use alias swaps for every reindex** that changes mappings/analyzers — it is
+  the difference between zero-downtime and a maintenance window.
+- **Tune refresh interval up when:** indexing throughput dominates (bulk loads).
+  **Keep it short when:** read freshness is the priority.
+
+## Tradeoffs
+
+| Concern | Bulk | Streaming | CDC into search |
+| ------- | ---- | --------- | --------------- |
+| Freshness | Batch interval (mins–hrs) | Near-real-time | Near-real-time |
+| Consistency w/ source | Strong after each run | App-dependent | Strong (ordered log) |
+| Dual-write risk | None (rebuild) | Possible if app writes both | Eliminated |
+| Throughput | Highest | Moderate | High |
+| Operational complexity | Low | Medium | Higher (connector + log) |
+| Replay / backfill | Re-run the job | Often manual | Built-in (replay the log) |
+| Best for | Initial load, full reindex | Real-time updates | Serious production search |
+
+## Diagram
+
+CDC pipeline: the app writes only the database; a change-capture connector feeds
+an ordered log, and a consumer projects changes into the search index. Queries
+hit an alias so reindexes swap atomically.
+
+<Mermaid code={`graph LR
+  App[Application] -->|writes only| DB[(Source of truth DB)]
+  DB -->|WAL / binlog| CDC[CDC connector e.g. Debezium]
+  CDC --> LOG[Ordered log e.g. Kafka]
+  LOG --> IDXR[Indexer: transform + analyze]
+  IDXR --> NEW[(Search index v2)]
+  ALIAS{Query alias} -. atomic swap .-> NEW
+  Q[Search queries] --> ALIAS`} />
+
+## Try it
+
+When is a full CDC-into-search pipeline the right investment, and when is it
+overkill?
+
+<WhenWhyTabs
+  client:visible
+  caption="CDC into search (vs dual-write or batch-only)"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'When search must stay consistent with the primary store and you want to eliminate dual writes: any serious production search where stale or dropped updates are visible to users or hurt the business. Also when you need replay/backfill (rebuild the index by re-reading the log) and ordered, durable change propagation across teams and systems.',
+    },
+    {
+      label: 'Why',
+      content: 'The app writes only the database, so there is exactly one ordered, durable source of changes. CDC tails the DB log and projects each change into search, giving near-real-time freshness without the dual-write failure mode. Because the log is replayable, a full reindex or a mapping change is just "rebuild a new index from the log and swap the alias" — no special migration path and instant rollback.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'It is real infrastructure: a CDC connector, a log (Kafka), a consumer, and the ops to run them, plus you must still handle idempotency, ordering per key, and schema evolution. For low-stakes data where occasional drift is tolerable, a periodic full bulk reindex (which also self-heals drift) is far simpler. Do not stand up CDC to keep a tiny corpus fresh when a nightly rebuild would do.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Debezium + Kafka + Elasticsearch** is the canonical CDC-into-search stack:
+  Postgres/MySQL changes → Kafka → an Elasticsearch sink connector.
+- **Elasticsearch aliases** are the standard zero-downtime reindex mechanism;
+  the "build new index, backfill, atomic alias swap" recipe is in their own docs.
+- **Algolia** explicitly models search as a derived index you push records into,
+  and provides connectors precisely because it is *not* your source of truth.
+- **Yelp, Shopify, and many marketplaces** run CDC/event pipelines to keep
+  Elasticsearch/Solr in sync with their transactional stores rather than
+  dual-writing from application code.
+
+## Further reading
+
+- [Designing Data-Intensive Applications — Ch. 3 (derived data & search indexes), Ch. 11 (CDC)](https://dataintensive.net/) — the definitive treatment of search as derived data.
+- [Debezium documentation](https://debezium.io/documentation/) — change data capture connectors for the CDC-into-search pattern.
+- [Elasticsearch — use an index alias to reindex with zero downtime](https://www.elastic.co/guide/en/elasticsearch/reference/current/aliases.html) — the alias-swap recipe.
+- [Elasticsearch — near real-time search & the refresh interval](https://www.elastic.co/guide/en/elasticsearch/reference/current/near-real-time.html) — freshness vs throughput tuning.

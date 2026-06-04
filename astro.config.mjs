@@ -57,7 +57,13 @@ export default defineConfig({
         },
         {
           label: 'Search Indexes',
-          items: [{ label: 'Overview', slug: 'search' }],
+          items: [
+            { label: 'Overview', slug: 'search' },
+            { label: 'Inverted index', slug: 'search/inverted-index' },
+            { label: 'Relevance & ranking', slug: 'search/relevance-ranking' },
+            { label: 'Engine comparison', slug: 'search/engine-comparison' },
+            { label: 'Search architecture', slug: 'search/search-architecture' },
+          ],
         },
       ],
     }),

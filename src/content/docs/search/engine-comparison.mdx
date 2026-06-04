@@ -1,0 +1,285 @@
+---
+title: Engine Comparison
+description: Elasticsearch/OpenSearch, Apache Solr, raw Lucene, Typesense, Meilisearch, Algolia, Vespa, PostgreSQL full-text, and vector DBs (Qdrant/pgvector) — model, strengths, ops cost, hosted vs self, scale, and the sweet spot for each.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Almost every "search engine" choice is really a choice along three axes: **how
+much you self-operate vs hand to a vendor**, **how much relevance/scale control
+you need**, and **whether you need search, vectors, or both**. Most of the field
+descends from one library — **Apache Lucene** — wrapped in different operational
+skins (Elasticsearch, OpenSearch, Solr). A second wave (Typesense, Meilisearch,
+Algolia) trades Lucene's depth for instant-search simplicity and developer
+experience. A third (Vespa, vector DBs) targets large-scale ranking and semantic
+retrieval. And your existing database (Postgres full-text, pgvector) is often the
+correct answer for everything below "we have a real search problem." This page
+gives each option a model, strengths, ops cost, hosting story, scale ceiling, and
+sweet spot — then a decision tree.
+
+## Mental model
+
+Place each engine on two questions:
+
+1. **Who operates it?** Self-hosted Lucene-family clusters (Elasticsearch,
+   OpenSearch, Solr) are powerful but a *real* operational burden — shards,
+   heap/JVM tuning, reindexing, cluster health. Hosted SaaS (Algolia, Typesense
+   Cloud, Elastic Cloud, OpenSearch Service) sells that burden away for money.
+2. **What is the workload's center of gravity?** *Operational/analytics +
+   full-text at scale* → Elasticsearch/OpenSearch. *Maximum relevance/config
+   control* → Solr or raw Lucene. *Instant typo-tolerant UX, fast to ship* →
+   Typesense/Meilisearch/Algolia. *Big-scale learned ranking + vectors in one
+   engine* → Vespa. *Pure semantic retrieval* → a vector DB. *Modest corpus, no
+   new infra* → your database.
+
+The expensive mistake is reaching for an Elasticsearch cluster when Postgres
+full-text would do, or for Algolia's per-record pricing at a scale where
+self-hosting is far cheaper. Match the engine to where the workload actually
+sits, not to the most powerful option.
+
+## Types / Variants
+
+**Elasticsearch / OpenSearch.** Distributed Lucene with a JSON/REST API,
+sharding, replication, aggregations, and a huge ecosystem (Kibana/Dashboards,
+ingest pipelines, log/observability stack). **OpenSearch** is the Apache-2.0 fork
+AWS created after Elastic's 2021 license change (Elasticsearch later re-added an
+AGPL option). *Strengths:* scale, full-text + analytics + vectors in one, vast
+tooling. *Ops cost:* high — you run a stateful cluster (or pay for hosted).
+*Scale:* very large. *Sweet spot:* log/observability analytics and large-scale
+full-text where you also want aggregations.
+
+**Apache Solr.** The other mature Lucene server (SolrCloud for distribution via
+ZooKeeper). *Strengths:* deep relevance configurability, faceting heritage,
+config-file control, strong for classic document/enterprise search. *Ops cost:*
+high (and you manage ZooKeeper). *Scale:* very large. *Sweet spot:* teams wanting
+maximum config-driven relevance control and a stable, non-vendor-driven OSS
+engine. Solr vs Elasticsearch today: ES/OpenSearch win on developer experience,
+analytics, vectors, and momentum; Solr wins on config-level relevance control and
+governance-friendly Apache stewardship.
+
+**Raw Apache Lucene.** The library all of the above embed. *Strengths:* maximum
+control, no cluster overhead, embeddable in-process (e.g. a JVM app). *Ops cost:*
+you build distribution, replication, and APIs yourself. *Scale:* single-node
+unless you build out. *Sweet spot:* embedded search in a JVM app, or a custom
+engine where the wrappers don't fit (GitHub's Blackbird-class problems).
+
+**Typesense.** Open-source, C++, in-memory, built for **instant search** with
+typo tolerance and great defaults. *Strengths:* blazing latency, simple API,
+self-host or cloud, far lighter ops than Lucene clusters. *Ops cost:* low.
+*Scale:* memory-bound (it keeps the index in RAM). *Sweet spot:* fast, typo-
+tolerant app/site search and autocomplete without a Lucene cluster — an
+open-source Algolia alternative.
+
+**Meilisearch.** Open-source, Rust, also instant-search focused with excellent
+DX and typo tolerance out of the box. *Strengths:* trivial setup, great
+relevance defaults, hybrid search support maturing. *Ops cost:* low. *Scale:*
+small-to-mid, RAM-leaning. *Sweet spot:* startup/product search where shipping
+quickly with good defaults beats deep tunability.
+
+**Algolia.** Hosted, proprietary, premium **search-as-a-service**. *Strengths:*
+best-in-class instant-search UX, global edge latency, zero ops, rich
+analytics/merchandising tooling. *Ops cost:* none (it's a SaaS) — but cost
+*scales with records + operations* and gets expensive at volume; vendor lock-in.
+*Scale:* large (their problem). *Sweet spot:* teams that want top-tier
+search/autocomplete UX immediately and will pay to never run infrastructure.
+
+**Vespa.** Open-source engine (ex-Yahoo) for **large-scale serving + ranking**:
+native tensor/vector support, multi-phase ranking, and learning-to-rank in one
+system. *Strengths:* hybrid lexical+vector+learned ranking at very large scale
+with low latency. *Ops cost:* high; steeper learning curve. *Scale:* very large.
+*Sweet spot:* recommendation/large-scale ranking and RAG where you want retrieval
+*and* learned ranking co-located.
+
+**PostgreSQL full-text.** Built-in `tsvector`/`tsquery` + GIN index, `ts_rank`
+for scoring. *Strengths:* zero new infrastructure, **transactional consistency**
+with your data (no sync pipeline), perfectly adequate for modest corpora.
+*Ops cost:* none beyond your existing DB. *Scale:* small-to-mid; weaker analyzers
+and ranking than Lucene. *Sweet spot:* search inside an app that already runs
+Postgres and doesn't yet have a real search problem.
+
+**Vector DB (Qdrant / pgvector).** Purpose-built for **embedding/ANN retrieval**.
+**Qdrant** (Rust) is a dedicated vector engine with HNSW, filtering, and hybrid
+support; **pgvector** is a Postgres extension that adds a vector column + ANN
+index, keeping vectors *next to your relational data*. *Strengths:* semantic/kNN
+retrieval; pgvector adds it with no new system. *Ops cost:* low (pgvector) to
+moderate (dedicated). *Scale:* pgvector mid-scale, dedicated DBs larger. *Sweet
+spot:* semantic search/RAG — pgvector when you're already on Postgres and at
+moderate scale, a dedicated vector DB when vector volume/latency outgrows it.
+
+## When to use / When NOT
+
+- **Elasticsearch/OpenSearch — use when:** large-scale full-text *plus*
+  analytics/aggregations or logs; you can run (or pay for) a cluster. **Not
+  when:** a modest corpus where Postgres FTS suffices, or you want zero ops.
+- **Solr — use when:** you want maximum config-driven relevance control and
+  Apache governance. **Not when:** you want the smoothest DX, native vectors, and
+  momentum (lean ES/OpenSearch), or low ops.
+- **Raw Lucene — use when:** embedding search in a JVM app or building a custom
+  engine. **Not when:** you don't want to build distribution/replication/APIs.
+- **Typesense/Meilisearch — use when:** instant, typo-tolerant app search with
+  low ops and great defaults, self-hostable. **Not when:** you need
+  Lucene-grade analyzers, massive scale, or heavy analytics.
+- **Algolia — use when:** you want premium instant-search UX with zero ops and
+  will pay for it. **Not when:** cost-at-scale or lock-in is a dealbreaker, or you
+  must self-host for compliance.
+- **Vespa — use when:** large-scale ranking/recommendations/RAG with learned
+  ranking and vectors co-located. **Not when:** the team can't absorb its
+  complexity and a simpler engine meets the bar.
+- **Postgres FTS — use when:** you already run Postgres and the search need is
+  modest; transactional consistency matters. **Not when:** you need rich
+  analyzers, facets at speed, or large-scale relevance tuning.
+- **Vector DB / pgvector — use when:** semantic retrieval / RAG. **pgvector** if
+  on Postgres at moderate scale; **dedicated** when vector scale/latency outgrows
+  it. **Not when:** lexical search alone meets the need (don't add vectors for
+  their own sake).
+
+## Tradeoffs
+
+| Concern | Lucene-family (ES/OpenSearch/Solr) | Instant (Typesense/Meili/Algolia) | Vespa | Postgres FTS / pgvector |
+| ------- | ---------------------------------- | --------------------------------- | ----- | ----------------------- |
+| Full-text depth | Highest (rich analyzers) | Good, opinionated | High | Basic–moderate |
+| Native vectors | Yes (HNSW) | Partial/maturing | Yes (first-class) | pgvector yes; FTS no |
+| Ops burden | High (or paid hosted) | Low (Algolia: none) | High | None (your DB) |
+| Hosted option | Elastic/AWS/others | Cloud offerings / Algolia SaaS | Vespa Cloud | Managed Postgres |
+| Scale ceiling | Very large | Mid–large (RAM-leaning) | Very large | Mid |
+| Relevance control | Deep | Defaults-led | Deepest (LTR) | Limited |
+| Consistency w/ source | Eventual (derived) | Eventual (derived) | Eventual | Transactional |
+| Cost model | Infra/cluster | Per-record/ops (Algolia) | Infra | Existing DB |
+
+## Diagram
+
+Where each engine sits on ops-burden vs capability/scale.
+
+<Mermaid code={`graph TD
+  subgraph LowOps[Low ops]
+    PG[Postgres FTS / pgvector]
+    MEI[Meilisearch]
+    TS[Typesense]
+    ALG[Algolia hosted]
+  end
+  subgraph HighOps[Higher ops / higher ceiling]
+    ES[Elasticsearch / OpenSearch]
+    SOLR[Apache Solr]
+    VES[Vespa]
+    LUC[Raw Lucene embedded]
+  end
+  PG -->|outgrow modest corpus| ES
+  TS -->|need analyzers/scale/analytics| ES
+  ES -->|need config-level relevance| SOLR
+  ES -->|need learned ranking + vectors at scale| VES`} />
+
+## Try it
+
+Compare the engines across the criteria that actually decide the choice, then
+walk the tree.
+
+<CompareMatrix
+  client:visible
+  caption="Search engines across decision criteria"
+  columns={['Elasticsearch / OpenSearch', 'Apache Solr', 'Typesense / Meilisearch', 'Algolia', 'Vespa', 'Postgres FTS / pgvector']}
+  rows={[
+    { criterion: 'Core model', cells: ['Distributed Lucene + analytics', 'Distributed Lucene (config-led)', 'In-memory instant search', 'Hosted search-as-a-service', 'Large-scale serving + ranking', 'DB built-in / extension'] },
+    { criterion: 'Full-text depth', cells: ['Highest', 'Highest (config control)', 'Good, opinionated', 'Good (managed)', 'High', 'Basic–moderate'] },
+    { criterion: 'Native vectors', cells: ['Yes (HNSW)', 'Yes', 'Maturing', 'Yes (managed)', 'First-class', 'pgvector: yes'] },
+    { criterion: 'Ops burden', cells: ['High', 'High (+ZooKeeper)', 'Low', 'None (SaaS)', 'High', 'None (your DB)'] },
+    { criterion: 'Hosted vs self', cells: ['Both', 'Mostly self', 'Both', 'Hosted only', 'Both (Vespa Cloud)', 'Managed Postgres'] },
+    { criterion: 'Scale ceiling', cells: ['Very large', 'Very large', 'Mid–large (RAM)', 'Large', 'Very large', 'Mid'] },
+    { criterion: 'Relevance control', cells: ['Deep', 'Deepest config', 'Defaults-led', 'UI/merchandising', 'Deepest (LTR)', 'Limited'] },
+    { criterion: 'Cost model', cells: ['Cluster infra', 'Cluster infra', 'Infra (light)', 'Per-record/ops', 'Infra', 'Existing DB'] },
+    { criterion: 'Sweet spot', cells: ['Logs/analytics + FTS at scale', 'Config-driven relevance', 'Instant typo-tolerant UX', 'Premium UX, zero ops', 'Ranking/RAG at scale', 'Modest corpus, no new infra'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which search engine?"
+  root={{
+    question: 'Is your search need beyond what your existing database can comfortably do?',
+    branches: [
+      {
+        label: 'No — modest corpus, already on a DB',
+        next: {
+          question: 'Do you need semantic/vector retrieval too?',
+          branches: [
+            {
+              label: 'No — lexical is enough',
+              next: { leaf: { recommendation: 'PostgreSQL full-text (tsvector + GIN)', detail: 'Zero new infrastructure, transactional consistency, no sync pipeline. The right first answer until you hit a real wall on scale, analyzers, or facets.' } },
+            },
+            {
+              label: 'Yes — semantic / RAG',
+              next: { leaf: { recommendation: 'pgvector (or a dedicated vector DB if it outgrows it)', detail: 'Keep vectors next to relational data on Postgres at moderate scale; graduate to Qdrant/dedicated when vector volume or latency demands it.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Yes — a real search problem',
+        next: {
+          question: 'Do you want to operate a cluster, or buy zero-ops search?',
+          branches: [
+            {
+              label: 'Buy zero-ops, premium UX',
+              next: { leaf: { recommendation: 'Algolia (or Typesense/Meilisearch Cloud)', detail: 'Algolia for best-in-class instant-search UX with no infra (cost scales with records/ops). Typesense/Meilisearch Cloud for a cheaper, open-source-backed hosted option.' } },
+            },
+            {
+              label: 'Self-operate for control/cost',
+              next: {
+                question: 'What is the center of gravity?',
+                branches: [
+                  {
+                    label: 'Instant typo-tolerant UX, ship fast',
+                    next: { leaf: { recommendation: 'Typesense or Meilisearch', detail: 'In-memory, great defaults, low ops. The open-source instant-search path when you do not need Lucene-grade analyzers or massive scale.' } },
+                  },
+                  {
+                    label: 'Large-scale FTS + analytics/logs',
+                    next: { leaf: { recommendation: 'Elasticsearch / OpenSearch', detail: 'Distributed Lucene with aggregations, vectors, and a vast ecosystem. OpenSearch for the Apache-2.0 fork; Elasticsearch for the original (now AGPL option).' } },
+                  },
+                  {
+                    label: 'Max config-driven relevance control',
+                    next: { leaf: { recommendation: 'Apache Solr', detail: 'Deep config-level relevance and Apache governance. Pick over ES when relevance configurability and stewardship matter more than DX/momentum.' } },
+                  },
+                  {
+                    label: 'Large-scale learned ranking + vectors',
+                    next: { leaf: { recommendation: 'Vespa', detail: 'Lexical + vector + learning-to-rank co-located for recommendations and RAG at very large scale. High power, steep learning curve.' } },
+                  },
+                  {
+                    label: 'Embed search inside a JVM app',
+                    next: { leaf: { recommendation: 'Raw Apache Lucene', detail: 'Maximum control, no cluster, embeddable in-process. You build distribution/replication/APIs yourself.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Elasticsearch** underpins the ELK observability stack at countless companies;
+  **OpenSearch** powers AWS's managed offering and forks after the 2021 license
+  change.
+- **Apache Solr** runs enterprise and library/catalog search (e.g. many DSpace
+  and e-commerce catalog deployments) where config-driven relevance is prized.
+- **Algolia** powers instant search for Stripe docs, Twitch, and many e-commerce
+  storefronts that want the UX without the ops.
+- **Vespa** runs Yahoo's large-scale serving and is a common choice for
+  recommendation and RAG systems needing learned ranking.
+- **pgvector** has become the default "just add semantic search to Postgres"
+  option for a wave of LLM/RAG applications.
+
+## Further reading
+
+- [Elasticsearch vs OpenSearch — origins and licensing](https://opensearch.org/faq/) — the fork, the license change, and what differs.
+- [Apache Solr Reference Guide](https://solr.apache.org/guide/) — config-driven relevance and SolrCloud.
+- [Typesense vs Algolia vs Elasticsearch](https://typesense.org/typesense-vs-algolia-vs-elasticsearch-vs-meilisearch/) — vendor-but-useful feature/ops comparison.
+- [Vespa — the big data serving engine](https://docs.vespa.ai/en/overview.html) — ranking and tensor/vector model.
+- [pgvector](https://github.com/pgvector/pgvector) — vector similarity search inside PostgreSQL.
