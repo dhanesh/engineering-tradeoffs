@@ -1,28 +1,34 @@
+---
+title: Topic Title (replace me)
+description: One-sentence summary of this topic (replace me).
+last_reviewed: "2026-01-01"
+decision_guidance: true
+---
 {/* TEMPLATE_VERSION: 1.0.0 */}
 {/*
   CANONICAL TOPIC TEMPLATE (U1 / RT-4 — BINDING).
   Authors: copy this file into src/content/docs/<cluster>/<topic>.mdx and fill it in.
+
+  Frontmatter MUST stay as the first thing in the file (the `---` block on line 1):
+  Astro content collections require it there. This version marker and the author
+  notes therefore sit BELOW the frontmatter — a verbatim copy of this file builds
+  into a real page as-is. (Do not move the marker above the frontmatter; doing so
+  makes Astro silently skip the page.)
+
   KEEP THE SECTION ORDER FIXED — the nine "##" headings below must stay in this
-  exact sequence so every topic reads consistently and CI drift-checks pass.
+  exact sequence so every topic reads consistently and the CI drift-check passes.
   If you change the section skeleton (add/remove/reorder headings), you MUST bump
-  the TEMPLATE_VERSION marker on line 1, because a CI drift-check greps for it.
-*/}
----
-title: Topic Title (replace me)
-description: One-sentence summary of this topic (replace me).
-last_reviewed: 2026-01-01
-decision_guidance: true
----
+  the TEMPLATE_VERSION marker above, because the drift-check keys off it.
 
-{/*
-  Interactive widgets are added in a later task. When they exist, uncomment the
-  imports below and drop the components into the "## Try it" section.
+  Interactive widgets: uncomment the imports you need and drop the components into
+  the "## Try it" section. Import path depth assumes a page at
+  src/content/docs/<cluster>/<topic>.mdx (components are three levels up):
 
-  import Mermaid from '../../components/Mermaid.astro';
-  import DecisionTree from '../../components/DecisionTree';
-  import CompareMatrix from '../../components/CompareMatrix';
-  import WhenWhyTabs from '../../components/WhenWhyTabs';
-  import TradeoffSlider from '../../components/TradeoffSlider';
+  import Mermaid from '../../../components/Mermaid.astro';
+  import DecisionTree from '../../../components/DecisionTree';
+  import CompareMatrix from '../../../components/CompareMatrix';
+  import WhenWhyTabs from '../../../components/WhenWhyTabs';
+  import TradeoffSlider from '../../../components/TradeoffSlider';
 */}
 
 ## Overview
@@ -65,18 +71,18 @@ graph TD
   Service -->|cache lookup| Cache[(Cache)]
 ```
 
-{/* Alternatively, once the import above is uncommented, use the component:
+{/* Once the Mermaid import above is uncommented you can also use the component:
   <Mermaid code={`graph TD; Client-->Service; Service-->Store[(Data Store)];`} />
 */}
 
 ## Try it
 
-Drop interactive widgets here once they exist (later task). Examples:
+Drop interactive widgets here to make the guidance explorable. Examples:
 
-{/* <DecisionTree /> — guides the reader to a recommendation via Q&A */}
-{/* <CompareMatrix /> — side-by-side comparison of variants */}
-{/* <WhenWhyTabs /> — tabbed "when / why / why not" guidance */}
-{/* <TradeoffSlider /> — interactive consistency-vs-availability style slider */}
+{/* <DecisionTree client:visible root={{ question: '...', branches: [] }} /> */}
+{/* <CompareMatrix client:visible columns={[]} rows={[]} cells={[]} /> */}
+{/* <WhenWhyTabs client:visible tabs={[]} /> */}
+{/* <TradeoffSlider client:visible stops={[]} /> */}
 
 ## Real-world examples
 
