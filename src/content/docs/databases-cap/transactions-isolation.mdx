@@ -1,0 +1,231 @@
+---
+title: Transactions & Isolation
+description: ACID vs BASE, the four SQL isolation levels and exactly which anomalies (dirty read, non-repeatable read, phantom, write skew) each prevents, MVCC/snapshot isolation, and distributed transactions — 2PC and its blocking problem versus the saga alternative.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **transaction** groups multiple operations into one all-or-nothing unit so that
+concurrency and partial failure can't leave the data in a broken state. **Isolation**
+— the "I" in ACID — defines *how much* concurrent transactions are allowed to interfere
+with each other, and it is the single most misunderstood knob in databases. Weaker
+isolation is faster and more concurrent but permits specific **anomalies** (a read
+seeing uncommitted data, a value changing mid-transaction, a constraint silently
+violated). Stronger isolation eliminates anomalies but costs concurrency. The trap:
+most databases **default to a weaker level than people assume** (Postgres and Oracle
+default to Read Committed; MySQL InnoDB to Repeatable Read), so code written as if it
+were Serializable can corrupt data under load. Getting this right means knowing exactly
+which anomaly each level prevents — not vibes. This page also covers what happens when a
+transaction must span *multiple* machines, where atomicity gets genuinely hard.
+
+## Mental model
+
+Two layers:
+
+1. **ACID guarantees what a transaction means on one database.**
+   - **Atomicity** — all operations commit or none do (no partial writes).
+   - **Consistency** — the transaction moves the DB from one valid state to another,
+     preserving invariants/constraints. (This is *not* CAP's consistency.)
+   - **Isolation** — concurrent transactions don't corrupt each other; the *level*
+     tunes how strict this is.
+   - **Durability** — once committed, it survives crashes (WAL/fsync).
+
+2. **BASE is the eventually-consistent alternative** for systems that chose
+   availability over strict transactional correctness: **B**asically **A**vailable,
+   **S**oft state, **E**ventual consistency. Not "worse ACID" — a different contract for
+   AP systems (see *CAP*) that need to stay up and reconcile later.
+
+The isolation question reduces to: **which anomalies can I tolerate?** Each level is
+*defined* by the anomalies it forbids. Pick the weakest level that forbids every anomaly
+your invariants actually care about.
+
+## Types / Variants
+
+### The four anomalies (what can go wrong)
+
+- **Dirty read** — T1 reads a row T2 has written but **not yet committed**; if T2 rolls
+  back, T1 read a value that never existed.
+- **Non-repeatable read** — T1 reads a row, T2 commits an **update** to it, T1 reads it
+  again and gets a **different value** within the same transaction.
+- **Phantom read** — T1 runs a *range* query (e.g. "all orders > $100"), T2 commits an
+  **insert/delete** matching that range, T1 re-runs the query and the **set of rows
+  changes**. (Non-repeatable read is about a changed *row*; phantom is about a changed
+  *set*.)
+- **Write skew** — two transactions each read an overlapping set, make disjoint writes
+  based on what they read, and both commit; individually each is valid but **together
+  they violate an invariant** (the classic: two doctors each check "at least one other
+  is on call" and both go off-call, leaving zero). Snapshot isolation permits it;
+  *serializable* does not.
+
+### The four SQL isolation levels (and exactly what each prevents)
+
+| Level | Dirty read | Non-repeatable read | Phantom read | Write skew |
+| ----- | ---------- | ------------------- | ------------ | ---------- |
+| **Read Uncommitted** | Possible | Possible | Possible | Possible |
+| **Read Committed** | **Prevented** | Possible | Possible | Possible |
+| **Repeatable Read** | **Prevented** | **Prevented** | Possible* | Possible |
+| **Serializable** | **Prevented** | **Prevented** | **Prevented** | **Prevented** |
+
+\* The SQL standard *allows* phantoms at Repeatable Read, but real engines differ:
+MySQL InnoDB's Repeatable Read uses next-key locking and **prevents phantoms**;
+Postgres's Repeatable Read is actually **snapshot isolation**, which prevents phantoms
+in the read sense but **still permits write skew**. This gap between the standard and
+implementations is where most isolation bugs live.
+
+- **Read Uncommitted** — almost no isolation; permits dirty reads. Rarely useful;
+  Postgres doesn't even implement it as distinct from Read Committed.
+- **Read Committed** — you only ever read *committed* data, but each statement sees a
+  fresh snapshot, so values can change between reads in one transaction. The default in
+  **Postgres** and **Oracle**. Good enough for a lot of OLTP, *not* for read-modify-
+  write invariants.
+- **Repeatable Read** — a transaction sees a consistent snapshot for its whole duration;
+  rows you read won't change under you. The default in **MySQL InnoDB**. Still permits
+  write skew (and, per the standard, phantoms).
+- **Serializable** — the result is equivalent to running transactions one at a time in
+  *some* order; forbids **every** anomaly including write skew. The only level safe for
+  arbitrary invariants — at the cost of more aborts/locking.
+
+### How engines implement isolation
+
+- **Locking (2PL — two-phase locking).** Acquire shared/exclusive locks, hold to commit.
+  Strict and correct but readers block writers and vice versa; lower throughput.
+- **MVCC (multi-version concurrency control).** Keep multiple versions of each row;
+  each transaction reads from a consistent **snapshot** as of its start, so **readers
+  never block writers**. Postgres, Oracle, MySQL InnoDB, SQL Server all use MVCC.
+- **Snapshot Isolation (SI).** The MVCC-based level where a transaction sees a frozen
+  snapshot. Prevents dirty/non-repeatable reads and phantoms, but **permits write skew**
+  — many "Repeatable Read" implementations are really SI.
+- **Serializable Snapshot Isolation (SSI).** SI plus runtime detection of dangerous
+  read/write dependency cycles; aborts one offender to achieve true serializability with
+  near-SI performance. This is **Postgres `SERIALIZABLE`** — and the reason serializable
+  is more affordable than its reputation suggests.
+
+### Distributed transactions (atomicity across machines)
+
+When a transaction spans multiple databases/services, single-node ACID isn't enough.
+
+**Two-Phase Commit (2PC).** A coordinator runs (1) **prepare** — ask every participant
+to durably promise it *can* commit — then (2) **commit** — once all vote yes, tell
+everyone to commit. Gives atomicity across nodes, **but**: it is **blocking** — if the
+coordinator crashes after participants voted "yes" but before the commit message,
+participants are stuck holding locks, unable to commit *or* abort, until the coordinator
+recovers. This coordinator-failure blocking is 2PC's fatal flaw and why it scales and
+fails poorly. (3PC and Paxos-Commit reduce blocking at large complexity cost.)
+
+**Saga.** Instead of one atomic distributed transaction, run a **sequence of local
+transactions**, each with a **compensating action** that semantically undoes it. If
+step 4 fails, run the compensations for steps 3→2→1 (refund, release inventory, cancel
+booking). Sagas trade atomicity for availability and avoid distributed locks, but give
+only **eventual** consistency and expose intermediate states — so you must design
+idempotent steps, compensations, and tolerate "in-between" visibility. Orchestrated (a
+central coordinator drives steps) or choreographed (services react to events). The
+default pattern for microservice and long-running business workflows.
+
+## When to use / When NOT
+
+- **Read Committed — use when:** general OLTP where you don't do read-modify-write on
+  invariants. **Avoid when:** you read a value and write based on it (you'll get lost
+  updates/skew) — use SELECT … FOR UPDATE or a higher level.
+- **Repeatable Read / Snapshot — use when:** a transaction needs a stable view (reports,
+  multi-read consistency). **Avoid relying on it for invariants** that two transactions
+  could jointly violate (write skew) — go Serializable.
+- **Serializable — use when:** correctness of an invariant under concurrency is
+  non-negotiable (balances, uniqueness, scheduling, inventory). **Avoid when:** the
+  abort/retry rate or lock contention is unacceptable and the invariant can be enforced
+  another way (a unique constraint, an atomic counter, app-level locking).
+- **2PC — use when:** you truly need atomic commit across a *small, fixed* set of
+  reliable resources (e.g. an XA transaction across two databases) and can tolerate
+  blocking on coordinator failure. **Avoid across services / at scale** — the blocking
+  and lock-holding don't survive real-world failures.
+- **Saga — use when:** a workflow spans multiple services and must stay available
+  without distributed locks (orders, bookings, payments). **Avoid when:** you cannot
+  define a sane compensation, or intermediate visibility/eventual consistency is
+  unacceptable (then keep it in one ACID database).
+- **BASE — use when:** the system is AP and can reconcile later. **Avoid when:**
+  divergence is unrecoverable (money) — keep those flows ACID.
+
+## Tradeoffs
+
+| Concern | Stronger (Serializable / ACID / 2PC) | Weaker (Read Committed / BASE / Saga) |
+| ------- | ------------------------------------ | ------------------------------------- |
+| Correctness | All anomalies prevented | Specific anomalies allowed |
+| Concurrency / throughput | Lower (locks/aborts) | Higher |
+| Latency | Higher (coordination) | Lower |
+| Failure behavior | Blocks (2PC) / aborts | Stays available, reconciles later |
+| Reasoning burden | Low (acts serial) | High (handle anomalies/compensations) |
+| Availability under partition | Worse (CP-leaning) | Better (AP-leaning) |
+| Fits | Ledgers, inventory, identity | Workflows, feeds, multi-service ops |
+
+## Diagram
+
+Snapshot isolation permits **write skew**: both transactions read the same snapshot,
+make disjoint writes, both commit, and the invariant ("≥1 doctor on call") breaks.
+
+<Mermaid code={`sequenceDiagram
+  participant T1 as Txn 1 (Dr. A)
+  participant DB as DB (snapshot)
+  participant T2 as Txn 2 (Dr. B)
+  T1->>DB: read on-call count = 2 (A and B)
+  T2->>DB: read on-call count = 2 (A and B)
+  Note over T1,T2: both see "another doctor is on call"
+  T1->>DB: set A off-call (valid: B still on)
+  T2->>DB: set B off-call (valid: A still on)
+  T1->>DB: COMMIT
+  T2->>DB: COMMIT
+  Note over DB: invariant BROKEN — zero doctors on call`} />
+
+Serializable isolation (e.g. Postgres SSI) detects the read/write dependency cycle and
+**aborts one** of the two transactions, preserving the invariant.
+
+## Try it
+
+The hardest part in distributed systems is committing across machines. Here is when —
+and when not — to reach for a distributed transaction at all.
+
+<WhenWhyTabs
+  client:visible
+  caption="Distributed transactions: 2PC vs saga"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use 2PC when you need true atomic commit across a small, fixed set of reliable resources — e.g. an XA transaction spanning two databases inside one trust boundary — and can tolerate blocking if the coordinator fails mid-commit. Use a saga when a business workflow spans multiple services or long time spans (place order → charge card → reserve inventory → ship) and must stay available without holding distributed locks.',
+    },
+    {
+      label: 'Why',
+      content: '2PC gives genuine all-or-nothing atomicity across nodes: every participant durably promises in the prepare phase, so the commit either lands everywhere or nowhere. Sagas give availability and scalability instead: each step is a fast local ACID transaction, there are no cross-service locks, and failures are handled by running compensating actions in reverse (refund, release, cancel) rather than rolling back a giant distributed lock.',
+    },
+    {
+      label: 'Why NOT',
+      content: '2PC is blocking: if the coordinator crashes after participants vote "yes" but before the commit message, those participants are stuck holding locks — unable to commit or abort — until it recovers. That fragility makes 2PC a poor fit across services or at scale. Sagas, in turn, sacrifice atomicity and isolation: intermediate states are visible, consistency is only eventual, and you must design every step to be idempotent with a correct compensation — which is hard when an action cannot truly be undone (an email already sent, a payment already settled).',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **PostgreSQL** defaults to **Read Committed**, implements Repeatable Read as snapshot
+  isolation, and offers true `SERIALIZABLE` via **SSI** — making serializable cheap
+  enough to actually use for invariant-critical paths.
+- **MySQL InnoDB** defaults to **Repeatable Read** and uses next-key (gap) locking, so
+  it prevents phantoms at that level — a notable divergence from the SQL standard.
+- **Oracle / SQL Server** use MVCC; Oracle's "Serializable" is actually snapshot
+  isolation (so it permits write skew) — a famous footgun for developers expecting true
+  serializability.
+- **Google Spanner / CockroachDB** provide distributed serializable transactions via
+  consensus (Paxos/Raft) instead of classic 2PC, avoiding the single-coordinator
+  blocking problem.
+- **Uber, Amazon, and most microservice platforms** use **sagas** (often orchestrated
+  via workflow engines like Temporal/Cadence or AWS Step Functions) for order, payment,
+  and booking flows that cross service boundaries.
+
+## Further reading
+
+- [Berenson et al. — "A Critique of ANSI SQL Isolation Levels" (1995)](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf) — the paper that exposed snapshot isolation and write skew in the standard.
+- [Martin Kleppmann — *DDIA*, ch. 7 (Transactions) & ch. 9 (Consistency & Consensus)](https://dataintensive.net/) — definitive on isolation levels, 2PC, and their failure modes.
+- [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html) — exactly what each level guarantees in a real engine, including SSI.
+- [Hector Garcia-Molina & Kenneth Salem — "Sagas" (1987)](https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf) — the original saga pattern paper.

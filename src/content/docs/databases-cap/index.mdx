@@ -1,12 +1,174 @@
 ---
-title: Databases & CAP
-description: Consistency, availability, partition tolerance, and storage tradeoffs.
+title: CAP Theorem
+description: What Consistency, Availability, and Partition tolerance actually mean, why the real choice is CP vs AP during a partition (never "pick two"), the common misreadings, and PACELC's latency-versus-consistency extension.
 last_reviewed: "2026-06-04"
 decision_guidance: true
 ---
 
-Overview of databases and the CAP theorem. Real content lands here later —
-individual topics are authored from `templates/topic.mdx`.
+import Mermaid from '../../../components/Mermaid.astro';
+import TradeoffSlider from '../../../components/TradeoffSlider';
 
-This cluster will cover relational vs. NoSQL, consistency models, replication,
-partitioning, and CAP/PACELC tradeoffs.
+## Overview
+
+The **CAP theorem** (Brewer's conjecture, proven by Gilbert & Lynch in 2002) states
+that a distributed data store cannot simultaneously guarantee all three of
+**Consistency**, **Availability**, and **Partition tolerance**. It is the single most
+cited — and most *mis*-cited — result in distributed systems. The popular phrasing
+"pick two of three" is misleading. In any system that spans a network, partitions
+*will* happen (packets drop, switches fail, links saturate), so partition tolerance
+is not something you can choose to forgo. The theorem's real teeth show only **during
+a partition**: when the network splits the nodes into groups that cannot talk, you
+must choose — per request — between answering with possibly-stale data
+(**availability**) or refusing to answer to avoid returning stale data
+(**consistency**). That is the whole decision. Everything else is commentary.
+
+## Mental model
+
+Hold three precise definitions, because the casual meanings of these words are wrong:
+
+- **C — Consistency (here, *linearizability*).** Every read sees the most recent
+  completed write, as if there were a single copy of the data and operations happened
+  one at a time in real-time order. This is **not** the "C" in ACID (that C is about
+  invariants/integrity constraints). CAP's C is a *read* guarantee about ordering.
+- **A — Availability.** Every request to a **non-failed** node receives a
+  non-error response — eventually, but without erroring out. A node that returns "I
+  can't be sure, try later" is *not* available in CAP's sense.
+- **P — Partition tolerance.** The system keeps operating despite the network
+  arbitrarily dropping or delaying messages between nodes.
+
+The load-bearing insight: **P is a fact of the world, not a design option.** You don't
+"choose" partition tolerance any more than you choose for cables to fail. So the
+theorem reduces to a forced choice that only fires *during* a partition:
+
+> When a partition happens, do you keep serving (sacrifice C → **AP**) or stop serving
+> to protect correctness (sacrifice A → **CP**)?
+
+When there is **no** partition — the normal case — a well-built system delivers both C
+and A. CAP says nothing about that regime. (PACELC, below, fills that gap.)
+
+## Types / Variants
+
+**CP — consistency over availability (during a partition).** On a partition, the
+minority side (or any node that can't confirm it has the latest data) refuses
+reads/writes rather than serve stale data. You get correctness at the cost of some
+nodes returning errors or timing out until the partition heals.
+- Examples: a single-leader RDBMS with synchronous replication, HBase, MongoDB
+  (majority writes), ZooKeeper/etcd (consensus-backed, CP by design), Spanner.
+
+**AP — availability over consistency (during a partition).** On a partition, every
+reachable node keeps answering with whatever data it has, accepting that two sides may
+diverge; conflicts are reconciled later (last-write-wins, vector clocks, CRDTs).
+- Examples: Dynamo-style stores (Cassandra, Riak, DynamoDB in eventually-consistent
+  mode), DNS, web caches.
+
+**"CA" — the category that doesn't exist in a distributed system.** A store that gives
+up partition tolerance is just a single node (or a system that becomes incorrect the
+moment the network splits). You only get "CA" by *not being distributed*. Listing CA
+as a real option is the classic CAP error.
+
+**Tunable per-operation.** Modern stores let you choose CP- or AP-leaning behavior
+*per request* via quorum/consistency-level settings (Cassandra `ONE` vs `QUORUM` vs
+`ALL`; DynamoDB strong vs eventual reads). CAP is not a fixed property of the whole
+database — it can be a knob on each call.
+
+## When to use / When NOT
+
+- **Choose CP when:** stale or conflicting reads are unacceptable — money movement,
+  ledgers, inventory/seat reservation, uniqueness constraints, anything where two
+  divergent answers cause real damage. **Accept that** some requests fail or block
+  during a partition, and design clients to retry/queue.
+- **Avoid CP when:** the system must always answer (shopping carts, social feeds,
+  telemetry, presence) and brief staleness is harmless. Forcing CP there trades real
+  availability for a correctness guarantee nobody needed.
+- **Choose AP when:** continuous availability beats momentary correctness — carts,
+  likes, view counts, sensor ingestion, DNS, content delivery. **Accept that** you
+  must reconcile divergent writes (idempotency, CRDTs, conflict resolution).
+- **Avoid AP when:** divergence is unrecoverable or dangerous (double-spend,
+  oversold inventory). No amount of later reconciliation fixes a charge made twice.
+- **Don't pick once for the whole system.** Classify *each* operation. A checkout flow
+  can serve the catalog AP (always show products) while keeping payment CP (never
+  double-charge).
+
+## Tradeoffs
+
+| Dimension | CP (consistency-leaning) | AP (availability-leaning) |
+| --------- | ------------------------ | ------------------------- |
+| During a partition | Minority side errors / blocks | All sides keep serving |
+| Read guarantee | Latest committed value | Possibly stale / divergent |
+| Write on partition | Often rejected (no quorum) | Accepted everywhere |
+| Conflict handling | Prevented up front | Reconciled after the fact |
+| Failure mode | Unavailability (timeouts) | Inconsistency (divergence) |
+| Fits | Money, inventory, identity | Carts, feeds, telemetry, DNS |
+| Normal-operation cost | Higher latency (coordination) | Lower latency |
+
+The deepest tradeoff is **what failure looks like**: CP fails *loudly* (errors you can
+catch and retry); AP fails *silently* (divergence you must detect and reconcile). Pick
+the failure mode your domain can actually tolerate.
+
+## Diagram
+
+A partition forces the choice. The leader and a client are on one side; a replica and
+a second client are stranded on the other.
+
+<Mermaid code={`graph TB
+  subgraph Left["Majority side (has quorum)"]
+    L[Leader]
+    C1[Client A]
+  end
+  subgraph Right["Minority side (no quorum)"]
+    R[Replica]
+    C2[Client B]
+  end
+  C1 -->|write x=2| L
+  L -. network partition .-x R
+  C2 -->|read x| R
+  R -->|"CP: error / block — refuse stale read"| C2
+  R -->|"AP: return x=1 — stale but available"| C2`} />
+
+During the partition, Client A's write reaches the leader. Client B, stranded with the
+replica, gets either an **error** (CP — protect correctness) or the **stale value
+`x=1`** (AP — stay available). There is no third option that both answers *and* answers
+correctly: that is CAP.
+
+## Try it
+
+Slide from pure availability to pure consistency to see where common systems sit and
+what each point costs *during a partition*.
+
+<TradeoffSlider
+  client:visible
+  caption="Consistency ↔ Availability (behaviour during a partition)"
+  leftAxis="Availability (always answer)"
+  rightAxis="Consistency (always correct)"
+  stops={[
+    { label: 'AP — eventual (Cassandra ONE, DynamoDB eventual)', description: 'Every reachable node answers immediately with whatever it has; replicas may diverge and are reconciled later via LWW/CRDTs. Lowest latency, highest availability, weakest read guarantee.' },
+    { label: 'AP — read-repair / quorum-tunable', description: 'Still available on partition, but background read-repair and tunable quorums narrow the staleness window. Availability-leaning with best-effort convergence.' },
+    { label: 'Middle — quorum reads+writes (R+W>N)', description: 'Overlapping read/write quorums give strong-ish consistency while a majority is reachable, but the minority side loses availability. The practical sweet spot for many stores.' },
+    { label: 'CP — majority commit (MongoDB majority, etcd, ZooKeeper)', description: 'Writes need a quorum; the minority partition cannot commit and refuses to serve potentially-stale reads. Correct, but unavailable on the losing side.' },
+    { label: 'CP — linearizable / external consistency (Spanner)', description: 'Strongest: every read sees the latest committed write in real-time order. Bought with coordination latency (consensus, TrueTime) and unavailability when quorum is lost.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google Spanner** is **CP**: it sacrifices availability under partition to keep
+  external consistency (linearizability), using Paxos plus TrueTime. Google argues its
+  network is reliable enough that the lost availability is negligible in practice — a
+  pragmatic, not theoretical, escape.
+- **Amazon DynamoDB / Cassandra** are **AP** by default with **tunable** consistency:
+  per-request consistency levels (`ONE`/`QUORUM`/`ALL`) let one table behave AP for
+  feeds and CP-ish for critical reads.
+- **etcd / ZooKeeper / Consul** are **CP** consensus stores (Raft/ZAB/Paxos): they
+  *must* be correct because they hold cluster coordination state (leader election,
+  locks, config), so they refuse to serve on the minority side of a partition.
+- **DNS** is the canonical **AP** system: it always answers (from caches/TTLs) and
+  tolerates staleness for minutes — availability massively outranks freshness.
+- **A bank ledger** is **CP** by necessity: better to reject a transfer ("try again")
+  than to allow two partitions to both debit the same balance.
+
+## Further reading
+
+- [Brewer's CAP Theorem revisited — "CAP Twelve Years Later: How the Rules Have Changed" (Eric Brewer, 2012)](https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/) — the author's own correction of the "pick two" framing.
+- [Gilbert & Lynch — "Brewer's Conjecture and the Feasibility of Consistent, Available, Partition-Tolerant Web Services" (2002)](https://groups.csail.mit.edu/tds/papers/Gilbert/Brewer2.pdf) — the formal proof.
+- [Daniel Abadi — "Consistency Tradeoffs in Modern Distributed Database System Design" (PACELC)](https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf) — why CAP is incomplete and the else-latency-vs-consistency extension.
+- [Martin Kleppmann — "Please stop calling databases CP or AP"](https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html) — sharp critique of loose CAP labelling.

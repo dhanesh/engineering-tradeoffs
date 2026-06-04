@@ -1,0 +1,269 @@
+---
+title: Database Types
+description: Relational, document, key-value, wide-column, graph, time-series, search, vector, and NewSQL — their data and query models, how they scale, what consistency they offer, and the workload each is actually built for.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+There is no "best" database — only the best fit for a **data model**, a **query
+pattern**, and a **scaling and consistency requirement**. "NoSQL" is not one thing; it
+is a grab-bag of stores that each dropped some relational guarantee (joins, schema,
+strong consistency) to win something else (horizontal scale, flexible shape, write
+throughput, specialized queries). The right way to choose is to start from how your
+data is *shaped* and *queried*, not from a vendor preference. This page lays out the
+nine major families, what each is genuinely good at, and — crucially — when each is the
+*wrong* tool. Most production pain comes from forcing a workload onto the wrong family:
+graph traversals on a relational store, analytical scans on a row store, or
+multi-entity transactions on a key-value store.
+
+## Mental model
+
+Pick along four axes, in order:
+
+1. **Data model — how is an entity shaped and related?** Flat rows with fixed columns
+   (relational), nested self-contained documents (document), opaque blobs by key
+   (key-value), sparse rows of millions of columns (wide-column), nodes-and-edges
+   (graph), timestamped points (time-series), full-text/inverted (search), or
+   high-dimensional embeddings (vector).
+2. **Query model — how do you ask questions?** Ad-hoc joins and aggregations (SQL),
+   key lookups (KV/document), traversals (graph), range scans over time
+   (time-series), relevance ranking (search), nearest-neighbour (vector).
+3. **Scaling model — read-heavy, write-heavy, or huge?** Vertical + read replicas
+   (classic relational), horizontal sharding (most NoSQL, NewSQL), append-optimized
+   (time-series/wide-column).
+4. **Consistency need — strong or eventual?** (See *CAP* and *Consistency models*.)
+
+If the shape is relational and it fits one machine's write load, **use Postgres** —
+the boring default is right far more often than NoSQL evangelism suggests. Reach for a
+specialized store only when one of these axes genuinely doesn't fit.
+
+## Types / Variants
+
+**Relational (RDBMS) — Postgres, MySQL, SQL Server, Oracle.** Rows in typed,
+schema-defined tables; relationships via foreign keys; SQL joins and aggregations;
+ACID transactions. Scales vertically and with read replicas; sharding is bolt-on and
+painful. Strong consistency. **Sweet spot:** structured data with relationships,
+transactional integrity, and rich ad-hoc queries — the default for most applications.
+
+**Document — MongoDB, Couchbase, DynamoDB (doc mode), Firestore.** Self-contained JSON
+/ BSON documents; flexible/evolving schema; query by fields and indexes; usually no
+joins (you embed or denormalize). Scales horizontally by sharding on a key. Tunable
+consistency (often eventual by default). **Sweet spot:** entities that are read/written
+as a whole (user profiles, product catalogs, CMS content), evolving schemas, and
+aggregate-oriented access.
+
+**Key-value — Redis, DynamoDB, Riak, etcd, Memcached.** Opaque value addressed by a
+key; O(1) get/set/delete; no querying inside the value. Scales horizontally trivially
+(hash the key). Consistency ranges from strong (etcd) to eventual (Dynamo).
+**Sweet spot:** caches, sessions, feature flags, rate limiters, anything keyed lookup
+with extreme throughput and no need to query by value.
+
+**Wide-column — Cassandra, ScyllaDB, HBase, Bigtable.** Rows keyed by a partition key,
+each holding a sparse, dynamic set of columns grouped into families; data is modeled
+*per query* (you denormalize aggressively). Massive horizontal write scale,
+linearly; tunable (usually eventual) consistency. **Sweet spot:** write-heavy,
+high-volume, predictable-query workloads at scale — event logs, time-series at
+planetary scale, messaging, IoT.
+
+**Graph — Neo4j, Amazon Neptune, JanusGraph, TigerGraph.** Nodes and edges as
+first-class citizens; relationships are stored, not computed; queries traverse
+(Cypher/Gremlin/SPARQL). Hard to shard (traversals cross partitions). Usually strong
+consistency on a single instance. **Sweet spot:** deeply connected data where the
+*relationships* are the value — social graphs, fraud rings, recommendations, knowledge
+graphs, network/dependency analysis. A 5-hop "friends-of-friends" query that is an
+unbearable self-join in SQL is a cheap traversal here.
+
+**Time-series — InfluxDB, TimescaleDB, Prometheus, QuestDB.** Timestamped measurements,
+append-mostly, queried by time range with downsampling/rollups; heavy compression and
+retention/TTL. Scales by time-partitioning. **Sweet spot:** metrics, monitoring,
+sensor/IoT telemetry, financial ticks — high write rate, time-range reads, automatic
+aging-out of old data.
+
+**Search — Elasticsearch, OpenSearch, Solr, Typesense.** Inverted indexes for
+full-text relevance, faceting, fuzzy/typo-tolerant matching, and aggregations; usually
+fed from a primary store (it's a *secondary* index, not a system of record). Scales
+horizontally by sharding the index; near-real-time, eventually-consistent. **Sweet
+spot:** text search, log analytics, autocomplete, faceted discovery — relevance
+ranking that a `LIKE '%...%'` cannot do.
+
+**Vector — Pinecone, Weaviate, Milvus, Qdrant, pgvector.** Stores high-dimensional
+embeddings and answers **approximate nearest-neighbour** (ANN) queries by similarity
+(cosine/dot/L2) using indexes like HNSW or IVF. Scales horizontally; consistency is
+usually relaxed. **Sweet spot:** semantic search, RAG retrieval, recommendations,
+image/audio similarity — "find the most *similar* items," not exact matches.
+
+**NewSQL — Google Spanner, CockroachDB, YugabyteDB, TiDB, VoltDB.** Relational model
+and SQL with ACID transactions, but **horizontally scalable** via distributed
+consensus (Raft/Paxos) and automatic sharding. Strong (often strict-serializable)
+consistency. **Sweet spot:** you need both SQL/ACID *and* horizontal scale across
+regions — global transactional systems that outgrew a single Postgres but can't drop
+transactions. Cost: higher write latency and operational complexity than single-node
+SQL.
+
+## When to use / When NOT
+
+- **Relational — use when:** data has clear relationships and you need joins,
+  transactions, and ad-hoc queries (most apps). **Avoid when:** write volume exceeds
+  one node and sharding is unavoidable (→ NewSQL/wide-column), or the data is graph-
+  shaped / document-shaped / log-shaped.
+- **Document — use when:** entities are accessed as whole aggregates and schemas
+  evolve. **Avoid when:** you need cross-document transactions and many-to-many joins —
+  you'll reinvent a relational engine badly.
+- **Key-value — use when:** pure keyed lookup at extreme throughput. **Avoid when:**
+  you ever need to query *by value* or scan ranges (you'll bolt on indexes you don't
+  have).
+- **Wide-column — use when:** write-heavy at huge scale with known query patterns.
+  **Avoid when:** you need ad-hoc queries or strong cross-row transactions — the model
+  punishes anything you didn't design the partition key for.
+- **Graph — use when:** relationships and multi-hop traversal are the core workload.
+  **Avoid when:** data is mostly tabular (a graph DB is slower and harder to operate
+  for plain CRUD) or must shard to enormous size.
+- **Time-series — use when:** append-mostly timestamped data read by time range.
+  **Avoid when:** you need updates/deletes of arbitrary rows or relational joins.
+- **Search — use when:** relevance, full-text, faceting, fuzzy matching. **Avoid as a
+  system of record** — it's an index; keep the source of truth elsewhere.
+- **Vector — use when:** similarity/semantic retrieval over embeddings. **Avoid for**
+  exact lookups, filters, or as your only store (often pair `pgvector` with relational
+  metadata).
+- **NewSQL — use when:** you genuinely need SQL + ACID *and* horizontal/global scale.
+  **Avoid when:** a single Postgres still fits — you'd pay distributed-write latency and
+  ops cost for scale you don't use.
+
+## Tradeoffs
+
+| Type | Data model | Query model | Scaling | Consistency | Sweet spot |
+| ---- | ---------- | ----------- | ------- | ----------- | ---------- |
+| Relational | Typed rows + FKs | SQL joins/aggregates | Vertical + read replicas | Strong (ACID) | Structured, transactional |
+| Document | Nested JSON docs | Field/index lookup | Horizontal shard | Tunable (often eventual) | Aggregate entities, flexible schema |
+| Key-value | Key → opaque value | Get/set/delete | Horizontal (hash) | Strong→eventual | Caches, sessions, throughput |
+| Wide-column | Sparse columns/partition | Query-first, by partition key | Horizontal, linear | Tunable (eventual) | Write-heavy at scale |
+| Graph | Nodes + edges | Traversal (Cypher/Gremlin) | Hard to shard | Usually strong | Connected data, multi-hop |
+| Time-series | Timestamped points | Time-range + rollup | Time-partition | Eventual-ish | Metrics, IoT, ticks |
+| Search | Inverted index | Relevance/facet | Horizontal shard | Near-real-time, eventual | Full-text, log analytics |
+| Vector | Embeddings | ANN similarity | Horizontal | Relaxed | Semantic search, RAG |
+| NewSQL | Typed rows + FKs | SQL joins/aggregates | Horizontal (consensus) | Strong (strict serial.) | SQL + ACID + global scale |
+
+## Diagram
+
+The decision usually forks first on **shape**, then on **scale/consistency**.
+
+<Mermaid code={`graph TD
+  Q[What is your data and query like?] --> SHAPE{Primary shape}
+  SHAPE -->|Tabular, relationships| REL[Relational]
+  SHAPE -->|Whole-aggregate docs| DOC[Document]
+  SHAPE -->|Keyed lookup only| KV[Key-value]
+  SHAPE -->|Connected, traversals| GR[Graph]
+  SHAPE -->|Timestamped points| TS[Time-series]
+  SHAPE -->|Full-text relevance| SE[Search]
+  SHAPE -->|Embedding similarity| VEC[Vector]
+  REL -->|Exceeds one node, need SQL+ACID| NEWSQL[NewSQL]
+  REL -->|Write-heavy, drop joins| WC[Wide-column]`} />
+
+## Try it
+
+Compare the families across the criteria that actually decide the pick, then walk the
+chooser.
+
+<CompareMatrix
+  client:visible
+  caption="Database families across decision criteria"
+  columns={['Relational', 'Document', 'Key-value', 'Wide-column', 'Graph', 'Time-series', 'Vector', 'NewSQL']}
+  rows={[
+    { criterion: 'Best query', cells: ['Joins + ad-hoc SQL', 'Field lookups', 'Key get/set', 'Partition-key reads', 'Multi-hop traversal', 'Time-range scan', 'Nearest-neighbour', 'Joins + ad-hoc SQL'] },
+    { criterion: 'Schema', cells: ['Fixed/typed', 'Flexible', 'None', 'Sparse/dynamic', 'Nodes+edges', 'Fixed metrics', 'Vectors+metadata', 'Fixed/typed'] },
+    { criterion: 'Transactions', cells: ['Full ACID', 'Limited/per-doc', 'Single-key', 'Limited', 'Single-instance', 'Append-only', 'Rare', 'Full ACID, distributed'] },
+    { criterion: 'Horizontal scale', cells: ['Hard (bolt-on)', 'Native', 'Trivial', 'Excellent', 'Hard', 'By time', 'Native', 'Native (consensus)'] },
+    { criterion: 'Consistency', cells: ['Strong', 'Tunable', 'Strong→eventual', 'Tunable', 'Strong', 'Eventual-ish', 'Relaxed', 'Strong (strict serial.)'] },
+    { criterion: 'Avoid for', cells: ['Huge write scale', 'Many-to-many joins', 'Query by value', 'Ad-hoc queries', 'Plain tabular CRUD', 'Arbitrary updates', 'Exact lookups', 'When 1 node fits'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which database should I reach for?"
+  root={{
+    question: 'Is your data deeply connected, where multi-hop relationships are the main query?',
+    branches: [
+      {
+        label: 'Yes — relationships are the workload',
+        next: { leaf: { recommendation: 'Graph database (Neo4j, Neptune)', detail: 'Stored edges make 3–5 hop traversals cheap, where they would be brutal self-joins in SQL. Use for social graphs, fraud rings, recommendations, knowledge graphs.' } },
+      },
+      {
+        label: 'No — not primarily relationship-driven',
+        next: {
+          question: 'What dominates the access pattern?',
+          branches: [
+            {
+              label: 'Keyed lookups at extreme throughput',
+              next: { leaf: { recommendation: 'Key-value store (Redis, DynamoDB)', detail: 'O(1) get/set, trivially horizontal. Caches, sessions, flags, counters. Do not pick if you must query by value.' } },
+            },
+            {
+              label: 'Whole self-contained entities, evolving schema',
+              next: { leaf: { recommendation: 'Document store (MongoDB, Firestore)', detail: 'Aggregate-oriented reads/writes with flexible schema. Avoid if you need many-to-many joins and cross-doc transactions.' } },
+            },
+            {
+              label: 'Timestamped measurements read by time range',
+              next: { leaf: { recommendation: 'Time-series (TimescaleDB, InfluxDB, Prometheus)', detail: 'Append-mostly, compressed, range-queried with rollups and retention. Metrics, IoT, ticks.' } },
+            },
+            {
+              label: 'Full-text relevance / faceted search',
+              next: { leaf: { recommendation: 'Search engine (Elasticsearch, OpenSearch)', detail: 'Inverted indexes for ranking, typo tolerance, facets. Use as a secondary index, not the system of record.' } },
+            },
+            {
+              label: 'Similarity over embeddings (semantic/RAG)',
+              next: { leaf: { recommendation: 'Vector DB or pgvector', detail: 'ANN nearest-neighbour over high-dimensional vectors. Often paired with a relational store for metadata.' } },
+            },
+            {
+              label: 'Structured, relational, transactional',
+              next: {
+                question: 'Does write volume exceed one node, or do you need cross-region scale?',
+                branches: [
+                  {
+                    label: 'No — a single node fits',
+                    next: { leaf: { recommendation: 'Relational (PostgreSQL)', detail: 'The right default for most apps: joins, ACID, ad-hoc SQL, strong consistency. Boring and correct.' } },
+                  },
+                  {
+                    label: 'Yes, but I still need SQL + ACID',
+                    next: { leaf: { recommendation: 'NewSQL (CockroachDB, Spanner, Yugabyte)', detail: 'Horizontally-scalable SQL with distributed ACID via consensus. Pay write latency for global scale you actually need.' } },
+                  },
+                  {
+                    label: 'Yes, write-heavy, can drop joins',
+                    next: { leaf: { recommendation: 'Wide-column (Cassandra, ScyllaDB)', detail: 'Linear write scale with query-first data modeling. You denormalize per query and give up ad-hoc SQL.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **PostgreSQL** is the modern default and increasingly a "multi-tool": with
+  extensions it does JSON (document), `pgvector` (vector), TimescaleDB (time-series),
+  and full-text search — often deferring the need for a separate store.
+- **Discord** moved trillions of messages from Cassandra to **ScyllaDB** (wide-column)
+  for write-heavy chat at scale, then uses a separate store for search.
+- **Netflix** runs **Cassandra** for high-write viewing/telemetry data and
+  **Elasticsearch** for log/operational search.
+- **Uber** uses **Schemaless** (on MySQL), **Cassandra**, and a dedicated geospatial
+  layer — different families for trips, ledgers, and matching.
+- **CockroachDB / Spanner** back globally-distributed transactional systems (financial
+  ledgers, multi-region SaaS) that need SQL semantics but outgrew a single instance.
+- **Pinecone / pgvector** power RAG and semantic search behind most LLM applications.
+
+## Further reading
+
+- [Martin Kleppmann — *Designing Data-Intensive Applications*, ch. 2–3](https://dataintensive.net/) — the definitive treatment of data models and storage engines.
+- [Amazon DynamoDB paper / "The Dynamo Paper" (SOSP 2007)](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) — origin of the wide-column / key-value AP design.
+- [Google Spanner (OSDI 2012)](https://research.google/pubs/pub39966/) — how NewSQL gets SQL + ACID at global scale.
+- [Use The Index, Luke](https://use-the-index-luke.com/) — when (and why) the relational default with proper indexing still wins.

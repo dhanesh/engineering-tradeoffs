@@ -1,0 +1,222 @@
+---
+title: Replication & Partitioning
+description: Single-leader, multi-leader, and leaderless (Dynamo-style R+W>N quorums) replication; sync vs async; sharding by range, hash, and consistent hashing; rebalancing, hot shards, and secondary indexes — the two orthogonal axes of scaling a database.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+Scaling a database past one machine means doing two distinct things, and confusing them
+is a classic mistake. **Replication** keeps *copies of the same data* on multiple
+nodes — for availability (survive a node loss), read throughput (serve reads from
+copies), and locality (read near the user). **Partitioning (sharding)** splits
+*different data* across nodes — so the dataset and write load exceed what one machine
+can hold. They are **orthogonal**: a real large-scale system does both — every shard is
+itself replicated. Replication forces you to decide *who can accept writes* and *how
+fresh copies are kept* (leader topology, sync vs async). Partitioning forces you to
+decide *how keys map to nodes* (range vs hash vs consistent hashing) and how to handle
+the messy parts — rebalancing, hot shards, and secondary indexes that don't align with
+your partition key.
+
+## Mental model
+
+Two independent questions:
+
+1. **Replication — where can a write go, and when is it "done"?**
+   - *Topology* decides who accepts writes: one node (single-leader), several
+     (multi-leader), or any node (leaderless).
+   - *Synchrony* decides when a write is acknowledged: after replicas confirm
+     (synchronous — durable but slow, and a stalled replica blocks you) or immediately
+     (asynchronous — fast but a leader crash can lose acked writes).
+2. **Partitioning — which node owns a given key?**
+   - *Range* keeps keys sorted (great for scans, prone to hotspots).
+   - *Hash* scatters keys evenly (kills hotspots, kills range scans).
+   - *Consistent hashing* makes adding/removing a node remap only ~1/N of keys instead
+     of nearly all of them.
+
+The quorum equation ties leaderless replication to correctness: with **N** replicas,
+requiring **W** to ack a write and **R** to answer a read, **R + W > N** guarantees any
+read quorum overlaps any write quorum — so a read sees at least one node with the
+latest write. That single inequality is the heart of Dynamo-style tunable consistency.
+
+## Types / Variants
+
+### Replication topologies
+
+**Single-leader (primary–replica / master–slave).** One node accepts all writes and
+streams its change log to read-only replicas. Reads scale across replicas; writes do
+not (one leader). Simple and the most common (Postgres, MySQL, MongoDB replica sets).
+Failure of the leader needs **failover** (promote a replica) — automated failover risks
+*split-brain* (two leaders) if not fenced. Replica reads can be stale (replication lag).
+
+**Multi-leader (multi-master).** Several leaders each accept writes and replicate to
+the others, usually one leader per region/datacenter. Buys low-latency local writes and
+write availability during inter-region partitions. The hard problem is **write
+conflicts**: two leaders concurrently update the same row. Resolution: last-write-wins
+(lossy), application merge, or CRDTs. Used for multi-datacenter and offline-capable
+apps. Genuinely complex — avoid unless you need cross-region write locality.
+
+**Leaderless (Dynamo-style).** No leader; the client (or a coordinator) writes to *all*
+replicas and reads from *several*, using quorums. Writes succeed when **W** replicas
+ack; reads query **R** replicas and reconcile (newest version wins, via version
+vectors). With **R + W > N**, every read overlaps the latest write → strong-ish
+consistency; lower R/W → faster but staler. Anti-entropy mechanisms keep replicas
+converging: **read repair** (fix stale replicas on the read path) and **hinted handoff**
+(a healthy node temporarily holds writes for a downed one). Used by Cassandra, Riak,
+DynamoDB. Highly available (no failover — any node serves) at the cost of weaker default
+consistency and client-side complexity.
+
+### Synchronous vs asynchronous replication
+
+- **Synchronous:** the leader waits for replica acks before confirming the write.
+  Guarantees the replica has the data (no loss on leader crash), but a slow/stalled
+  replica stalls all writes, and it costs latency. Pure full-sync is rare.
+- **Asynchronous:** the leader confirms immediately and replicates in the background.
+  Fast and resilient to slow replicas, but a leader crash **loses any writes not yet
+  shipped** (the failover window). Default for most systems and read replicas.
+- **Semi-synchronous (the usual middle):** wait for *one* replica to ack (so at least
+  one copy survives a crash) while the rest stay async. Postgres quorum-commit and
+  MySQL semi-sync do this — bounded durability without full-sync's fragility.
+
+### Partitioning (sharding) strategies
+
+**Range partitioning.** Keys split into contiguous ranges (A–F on node 1, G–M on node
+2…). Range scans and ordered reads are efficient. Danger: **hotspots** — sequential
+keys (timestamps, auto-increment IDs) all land on one shard, making it a write
+hotspot. (HBase, Bigtable, range-sharded MongoDB.)
+
+**Hash partitioning.** Apply a hash to the key and assign by hash; spreads load
+*evenly* and kills sequential hotspots. Cost: **range scans become scatter-gather**
+across all shards (sorted-order is lost). Naïve `hash(key) % N` is a trap — changing N
+remaps almost every key.
+
+**Consistent hashing.** Map both keys and nodes onto a hash ring; a key belongs to the
+next node clockwise. Adding/removing a node remaps only the keys between it and its
+neighbour (~1/N), not the whole keyspace. **Virtual nodes** (each physical node owns
+many ring positions) smooth the distribution and make rebalancing granular. The
+foundation of Dynamo, Cassandra, and consistent-hash caches.
+
+### The hard parts
+
+**Rebalancing.** When you add/remove nodes or a shard grows too large, data must move.
+Good designs (a fixed large number of partitions assigned to nodes, or
+dynamic-split-on-size like HBase) move *only* what's necessary and avoid the all-keys
+remap of `mod N`. Rebalancing competes with live traffic — throttle it.
+
+**Hot shards / hot keys.** Even with good partitioning, one *key* (a celebrity, a
+viral item) can overload its owning shard. Fixes: append a random suffix to split the
+key across shards (and fan-out reads), cache the hot key in front, or replicate it more
+widely. Skew is a data property; you must design for it.
+
+**Secondary indexes.** Your partition key answers queries on *that* key; querying by a
+*different* attribute needs a secondary index, and it must be partitioned too:
+- **Local (document-partitioned) index:** each shard indexes its own data. Writes are
+  cheap (one shard), but reads by the secondary key must **scatter-gather** every shard.
+- **Global (term-partitioned) index:** the index itself is partitioned by the indexed
+  term, so a read hits one shard, but a write must update a *different* shard than the
+  data (cross-partition write, often async). DynamoDB GSIs are global and
+  eventually-consistent for exactly this reason.
+
+## When to use / When NOT
+
+- **Single-leader — use when:** you want simple, strongly-consistent writes and can
+  scale reads with replicas (most apps). **Avoid when:** write throughput exceeds one
+  node or you need multi-region write locality.
+- **Multi-leader — use when:** you need low-latency writes in multiple regions or
+  offline-capable clients. **Avoid when:** you can't tolerate (or correctly resolve)
+  write conflicts — it's a sharp tool that cuts you.
+- **Leaderless — use when:** high availability and write-anywhere matter and you'll
+  tune quorums for the consistency you need. **Avoid when:** you want a simple mental
+  model and strong consistency by default.
+- **Range partitioning — use when:** ordered scans/range queries dominate. **Avoid
+  when:** keys are sequential (hotspots) — hash instead or salt the key.
+- **Hash / consistent hashing — use when:** even load distribution and elastic
+  scaling matter. **Avoid when:** you need efficient range scans (you'll scatter-gather).
+- **Synchronous replication — use when:** zero write loss is non-negotiable (ledgers);
+  prefer **semi-sync** so one slow replica can't halt you. **Avoid full-sync when:**
+  write latency/availability matters more than the last few unreplicated writes.
+- **Global secondary index — use when:** reads by a non-partition key must be fast and
+  single-shard. **Avoid when:** write amplification/cross-shard write cost is too high
+  (use a local index + scatter-gather).
+
+## Tradeoffs
+
+| Property | Single-leader | Multi-leader | Leaderless (quorum) |
+| -------- | ------------- | ------------ | ------------------- |
+| Who accepts writes | One node | Several (per region) | Any node |
+| Write scaling | No (one leader) | Yes (per region) | Yes |
+| Write conflicts | None (one writer) | Yes — must resolve | Yes — version reconcile |
+| Consistency default | Strong | Eventual | Tunable (R+W>N → strong-ish) |
+| Failover needed | Yes (split-brain risk) | Less (others live) | No (any node serves) |
+| Read staleness | Replica lag | Per-region lag | Depends on R |
+| Complexity | Low | High | Moderate–high |
+| Examples | Postgres, MySQL, MongoDB | BDR, CouchDB, Cosmos multi-region | Cassandra, Riak, DynamoDB |
+
+## Diagram
+
+A leaderless quorum write/read with **N=3, W=2, R=2** (so R+W=4 > 3 — the quorums
+overlap, so the read is guaranteed to see the latest write).
+
+<Mermaid code={`graph TD
+  C[Client / coordinator]
+  C -->|write v2 to all 3| R1[Replica 1]
+  C --> R2[Replica 2]
+  C --> R3[Replica 3]
+  R1 -->|ack| C
+  R2 -->|ack| C
+  R3 -. slow / down: hinted handoff .- C
+  C -->|"W=2 acks -> write committed"| OK[Write OK]
+  C2[Reader] -->|read from 2 of 3| R1
+  C2 --> R2
+  R1 -->|"v2 (newest wins)"| C2
+  R2 -->|"v1 -> read-repair to v2"| C2`} />
+
+With W=2 and R=2 over N=3, any read quorum (2 nodes) and any write quorum (2 nodes)
+must share at least one node — that node carries the newest version, which the reader
+picks (and read-repair heals the stale replica).
+
+## Try it
+
+Compare the three replication topologies on the properties that drive the choice.
+
+<CompareMatrix
+  client:visible
+  caption="Replication topologies"
+  columns={['Single-leader', 'Multi-leader', 'Leaderless (Dynamo)']}
+  rows={[
+    { criterion: 'Write entry point', cells: ['One leader only', 'Multiple leaders', 'Any replica'] },
+    { criterion: 'Write scalability', cells: ['Limited (single writer)', 'Per-region writers', 'Horizontal'] },
+    { criterion: 'Conflict handling', cells: ['None — single writer', 'LWW / CRDT / app merge', 'Version vectors + read-repair'] },
+    { criterion: 'Consistency (default)', cells: ['Strong on leader', 'Eventual', 'Tunable via R+W>N'] },
+    { criterion: 'Failure recovery', cells: ['Failover (split-brain risk)', 'Other leaders stay up', 'No failover; quorum heals'] },
+    { criterion: 'Read staleness', cells: ['Replica lag on followers', 'Cross-region lag', 'Depends on R'] },
+    { criterion: 'Operational complexity', cells: ['Low', 'High', 'Moderate–high'] },
+    { criterion: 'Representative systems', cells: ['PostgreSQL, MySQL, MongoDB', 'CouchDB, Cosmos multi-region', 'Cassandra, Riak, DynamoDB'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **PostgreSQL / MySQL** are single-leader with streaming replicas; both support
+  semi-synchronous / quorum commit so at least one replica has each committed write.
+- **Cassandra / ScyllaDB** are leaderless with consistent hashing + virtual nodes and
+  per-query tunable quorums (`ONE`/`QUORUM`/`ALL`), plus read-repair and hinted handoff.
+- **Amazon DynamoDB** partitions by hash, replicates across AZs, and offers **global
+  secondary indexes** that are eventually consistent precisely because the index lives
+  on different partitions than the data.
+- **MongoDB** uses single-leader replica sets (automatic failover via Raft-like
+  election) and shards by range or hash; range sharding on a monotonically-increasing
+  key is the textbook way to create a write hotspot.
+- **Vitess** (YouTube's MySQL sharding layer) automates resharding and rebalancing for
+  MySQL at scale.
+
+## Further reading
+
+- [Martin Kleppmann — *DDIA*, ch. 5 (Replication) & ch. 6 (Partitioning)](https://dataintensive.net/) — the canonical, thorough treatment.
+- [The Dynamo Paper (SOSP 2007)](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) — leaderless quorums, consistent hashing, hinted handoff, read-repair.
+- [Consistent Hashing and Random Trees (Karger et al., 1997)](https://www.cs.princeton.edu/courses/archive/fall09/cos518/papers/chash.pdf) — the origin of consistent hashing.
+- [Cassandra — data replication & consistency levels](https://cassandra.apache.org/doc/latest/cassandra/architecture/dynamo.html) — quorum tuning in a real leaderless store.

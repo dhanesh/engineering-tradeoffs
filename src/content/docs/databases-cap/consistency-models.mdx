@@ -1,0 +1,190 @@
+---
+title: Consistency Models
+description: Strong/linearizable, sequential, causal, eventual, read-your-writes, monotonic reads/writes, and bounded staleness — the spectrum of guarantees, what each costs, and why serializability and linearizability are two different things people constantly conflate.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+A **consistency model** is the contract a data store makes about *what values a read
+can return* in the presence of concurrency and replication. It is the precise answer
+to "if I write and then read, what am I guaranteed to see — and what might another
+client see?" Stronger models make systems easier to reason about (they behave closer
+to a single, sequential machine) but cost more coordination, latency, and
+availability; weaker models are fast and available but push the burden of reconciling
+surprises onto the application. Most production confusion comes from assuming "the
+database is consistent" without naming *which* model — and from conflating
+**linearizability** (a recency/ordering guarantee on a single object) with
+**serializability** (an isolation guarantee on multi-object transactions). They are
+different axes, and a system can have one without the other.
+
+## Mental model
+
+Think of a spectrum from **"behaves like one machine doing one thing at a time"** down
+to **"replicas agree eventually, if you stop writing."** Two independent questions
+locate any model on it:
+
+1. **Recency / ordering** — how fresh must a read be, and in what order do operations
+   appear to take effect? (Linearizable → sequential → causal → eventual.)
+2. **Per-client session guarantees** — even on a weak global model, what does *one
+   client's own session* promise? (Read-your-writes, monotonic reads, monotonic
+   writes, write-follows-read.)
+
+A crucial orthogonal axis is **isolation** (the I in ACID): serializability is about
+*transactions* (groups of reads/writes) appearing to run one-at-a-time.
+Linearizability is about *single operations* on a *single object* respecting real-time
+order. The strongest combined guarantee — **strict serializability** — is both at
+once (what Spanner's "external consistency" provides).
+
+## Types / Variants
+
+**Linearizable (atomic / strong).** Every operation appears to take effect
+instantaneously at some point between its invocation and response, and reads return
+the most recent completed write in *real-time* order. The gold standard for single
+objects; requires consensus (Raft/Paxos) or a single leader with synchronous
+acknowledgement. Cost: coordination latency, and unavailability when quorum is lost.
+
+**Sequential consistency.** All clients see operations in *some* single total order
+consistent with each client's program order — but that order need *not* match
+real-time. So a read may miss a write that finished earlier on the wall clock, as long
+as everyone agrees on *a* consistent ordering. Weaker than linearizable (no real-time
+constraint), stronger than causal.
+
+**Causal consistency.** Operations that are *causally related* (A happened-before B —
+B read what A wrote, or same client wrote A then B) are seen by everyone in that order;
+*concurrent*, unrelated operations may be seen in different orders by different
+clients. Tracked with vector clocks / version vectors. The strongest model still
+achievable **with full availability under partition** (CP-free) — a sweet spot for
+collaborative and social systems.
+
+**Eventual consistency.** If writes stop, all replicas *eventually* converge to the
+same value. That is the *only* promise — no ordering, no recency bound. Reads may go
+backward in time, see writes out of order, or miss recent writes entirely. Conflicts
+resolved by last-write-wins, vector clocks, or CRDTs. Fastest and most available;
+hardest to reason about.
+
+**Bounded staleness.** A relaxation of strong consistency with an explicit limit:
+reads are at most *T seconds* (or *K versions*) behind the latest write. Gives a hard
+freshness SLA without paying full linearizable cost. Azure Cosmos DB offers this as a
+first-class level.
+
+**Session / client-centric guarantees** (compose with any of the above):
+- **Read-your-writes (read-your-own-writes).** After *you* write, *your* subsequent
+  reads see that write (or newer). Prevents "I posted but my own page doesn't show
+  it." Often implemented by routing a user's reads to the replica that took their
+  write, or sticky sessions.
+- **Monotonic reads.** Once you've read a value, you never later read an *older* one —
+  time doesn't go backward within your session. Prevents flicker between fresher and
+  staler replicas.
+- **Monotonic writes.** Your writes are applied in the order you issued them on every
+  replica. Prevents your second update from landing before your first.
+- **Writes-follow-reads (causal session).** A write you make after reading some value
+  is ordered after that value's write everywhere. Underpins causal threads (a reply
+  never appears before the message it replies to).
+
+**Serializability vs linearizability — the two different guarantees.**
+- **Serializability** is a *transaction isolation* property: concurrent transactions
+  produce a result equivalent to *some* serial (one-at-a-time) execution. It says
+  nothing about *which* serial order, and nothing about real time. (See
+  *Transactions & isolation*.)
+- **Linearizability** is a *single-object recency* property: each operation appears
+  atomic at a real-time point. It says nothing about multi-object transactions.
+- **Strict serializability** = serializable **and** the serial order respects
+  real-time order = both guarantees together. This is what people *mean* when they
+  loosely say "strongly consistent transactions." Spanner provides it; most "SERIALIZABLE"
+  RDBMS isolation does **not** add the real-time (linearizable) part on its own.
+
+## When to use / When NOT
+
+- **Linearizable / strict serializable — use when:** correctness depends on seeing the
+  latest value and a global order — locks, leader election, account balances, unique
+  constraints, "has this already been processed?" **Avoid when:** you need low latency
+  or availability under partition more than perfect recency.
+- **Causal — use when:** you want intuitive ordering (replies after messages, edits in
+  order) *and* full availability — chat, comments, collaborative editing, social
+  graphs. **Avoid when:** you truly need a single global order or real-time recency.
+- **Eventual — use when:** availability and latency dominate and stale/divergent reads
+  are harmless or app-reconcilable — view counts, feeds, telemetry, caches, presence.
+  **Avoid when:** divergence is dangerous (money, inventory) or users will be confused
+  by going-backward reads (then add session guarantees at minimum).
+- **Bounded staleness — use when:** you can tolerate *some* lag but need a hard ceiling
+  on it (dashboards, near-real-time analytics, replicated read scaling with an SLA).
+- **Session guarantees — use when:** the global model is weak but a *single user's*
+  experience must be coherent (read-your-writes after posting; monotonic reads to stop
+  flicker). Cheap to add and almost always worth it on eventually-consistent stores.
+
+## Tradeoffs
+
+| Model | What a read can return | Coordination cost | Available under partition? |
+| ----- | ---------------------- | ----------------- | -------------------------- |
+| Linearizable | Latest completed write, real-time order | Highest (consensus/leader sync) | No (CP) |
+| Sequential | A globally agreed order, maybe not real-time | High | No |
+| Causal | Respects cause→effect; concurrent ops may differ | Moderate (version vectors) | **Yes** (strongest AP model) |
+| Bounded staleness | At most T sec / K versions stale | Moderate–high | Partial |
+| Read-your-writes | Your own writes, at least | Low (routing/sticky) | Yes |
+| Monotonic reads | Never older than you've seen | Low | Yes |
+| Eventual | Any replica's value; converges if writes stop | Lowest | Yes (AP) |
+
+Going down the table trades **ease of reasoning** for **latency and availability**.
+The art is choosing the *weakest* model your correctness actually requires — and then
+layering session guarantees so the user experience still feels coherent.
+
+## Diagram
+
+The hierarchy: each model implies the ones below it. Causal is the frontier of what
+stays available under partition.
+
+<Mermaid code={`graph TD
+  SS[Strict serializable<br/>linearizable + serializable] --> LIN[Linearizable<br/>single-object, real-time]
+  LIN --> SEQ[Sequential<br/>one global order, no real-time]
+  SEQ --> CAU[Causal<br/>cause precedes effect]
+  CAU --> SESS[Session guarantees<br/>read-your-writes, monotonic]
+  SESS --> EVE[Eventual<br/>converges if writes stop]
+  CAU -. "CP boundary: above needs consensus" .- SEQ
+  CAU -->|"strongest model still AVAILABLE under partition"| AP[AP-safe zone]`} />
+
+## Try it
+
+Compare the models across the properties that decide which one you can afford.
+
+<CompareMatrix
+  client:visible
+  caption="Consistency models — strength vs cost"
+  columns={['Linearizable', 'Sequential', 'Causal', 'Bounded staleness', 'Eventual']}
+  rows={[
+    { criterion: 'Read freshness', cells: ['Latest completed write', 'A consistent order (maybe stale)', 'Sees all causes; concurrent may differ', 'At most T sec / K versions old', 'No bound; may go backward'] },
+    { criterion: 'Real-time order respected', cells: ['Yes', 'No', 'Only for causal pairs', 'Within the bound', 'No'] },
+    { criterion: 'Global total order', cells: ['Yes', 'Yes', 'No (partial order)', 'Yes-ish', 'No'] },
+    { criterion: 'Available under partition', cells: ['No (CP)', 'No', 'Yes', 'Partial', 'Yes (AP)'] },
+    { criterion: 'Coordination cost', cells: ['Highest', 'High', 'Moderate', 'Moderate–high', 'Lowest'] },
+    { criterion: 'Typical mechanism', cells: ['Consensus / single leader sync', 'Total-order broadcast', 'Version vectors', 'Lease + staleness check', 'Async replication + LWW/CRDT'] },
+    { criterion: 'Good for', cells: ['Locks, balances, uniqueness', 'Ordered logs', 'Chat, collab edit, social', 'Dashboards, read replicas w/ SLA', 'Feeds, counts, telemetry, caches'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google Spanner** provides **strict serializability** ("external consistency"):
+  transactions are serializable *and* linearizable, via Paxos + TrueTime bounded-clock
+  uncertainty.
+- **ZooKeeper / etcd** are **linearizable for writes** (and offer linearizable reads
+  via quorum/`sync`), which is why they're used for locks and leader election.
+- **Cassandra / DynamoDB** default to **eventual** with **tunable** per-request levels
+  (e.g. `QUORUM` reads+writes approximate strong); both rely on read-repair and hinted
+  handoff to converge.
+- **Azure Cosmos DB** exposes five named levels — *strong, bounded staleness, session,
+  consistent prefix, eventual* — making the spectrum a literal configuration knob;
+  **session** (read-your-writes + monotonic) is its default.
+- **Git** is a familiar **causal** system: commits reference their parents (causal
+  order preserved), concurrent branches diverge, and merges reconcile conflicts.
+
+## Further reading
+
+- [Jepsen — "Consistency Models"](https://jepsen.io/consistency) — an interactive map of every model and how they relate.
+- [Herlihy & Wing — "Linearizability: A Correctness Condition for Concurrent Objects" (1990)](https://cs.brown.edu/~mph/HerlihyW90/p463-herlihy.pdf) — the original linearizability definition.
+- [Bailis et al. — "Highly Available Transactions: Virtues and Limitations" (VLDB 2014)](https://www.vldb.org/pvldb/vol7/p181-bailis.pdf) — which guarantees survive partitions.
+- [Azure Cosmos DB — consistency levels](https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels) — the five-level spectrum as a real product knob.

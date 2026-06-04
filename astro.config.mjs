@@ -36,7 +36,13 @@ export default defineConfig({
         },
         {
           label: 'Databases & CAP',
-          items: [{ label: 'Overview', slug: 'databases-cap' }],
+          items: [
+            { label: 'CAP theorem', slug: 'databases-cap' },
+            { label: 'Consistency models', slug: 'databases-cap/consistency-models' },
+            { label: 'Database types', slug: 'databases-cap/database-types' },
+            { label: 'Replication & partitioning', slug: 'databases-cap/replication-partitioning' },
+            { label: 'Transactions & isolation', slug: 'databases-cap/transactions-isolation' },
+          ],
         },
         {
           label: 'Caching & Performance',
