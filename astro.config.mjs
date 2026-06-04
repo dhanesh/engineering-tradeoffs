@@ -28,7 +28,14 @@ export default defineConfig({
         },
         {
           label: 'Caching & Performance',
-          items: [{ label: 'Overview', slug: 'caching' }],
+          items: [
+            { label: 'Overview', slug: 'caching' },
+            { label: 'Caching strategies', slug: 'caching/caching-strategies' },
+            { label: 'Eviction policies', slug: 'caching/eviction-policies' },
+            { label: 'Cache invalidation', slug: 'caching/cache-invalidation' },
+            { label: 'Distributed caching', slug: 'caching/distributed-caching' },
+            { label: 'CDN & edge caching', slug: 'caching/cdn-edge-caching' },
+          ],
         },
         {
           label: 'Search Indexes',

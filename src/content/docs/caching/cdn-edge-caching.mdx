@@ -1,0 +1,171 @@
+---
+title: CDN & Edge Caching
+description: CDN mechanics, edge caching, Cache-Control headers, stale-while-revalidate, and edge compute — when and why to push caching to the network edge.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A CDN (Content Delivery Network) is a globally distributed fleet of cache servers —
+**points of presence (PoPs)** — placed near users, so a request is served from a
+nearby city instead of crossing oceans to your origin. It is the outermost cache
+layer, and the cheapest place to absorb load: every request a PoP serves is a request
+your origin never sees. Beyond static assets, modern CDNs cache dynamic responses,
+run compute at the edge, and absorb traffic spikes and DDoS volume. This page covers
+how CDNs decide what to cache (the HTTP cache-control model), how they stay fresh
+without stampeding your origin (`stale-while-revalidate`), and when pushing logic to
+the edge pays off.
+
+## Mental model
+
+A CDN is **HTTP caching, replicated to hundreds of locations, controlled by your
+response headers.** You do not configure the cache imperatively — you *describe each
+response's cacheability* with headers, and every PoP independently honors that
+description. The two levers are:
+
+- **Freshness:** `Cache-Control: max-age` / `s-maxage` says how long a PoP may serve a
+  response without re-checking the origin.
+- **Validation:** `ETag` / `Last-Modified` let a PoP cheaply ask "has this changed?"
+  via a conditional request; an unchanged resource returns `304 Not Modified` with no
+  body, saving bandwidth.
+
+The key distinction: `max-age` controls *private* (browser) caches, `s-maxage`
+controls *shared* (CDN) caches — so you can cache aggressively at the edge while
+keeping browsers conservative. Everything else (purge APIs, edge compute, SWR) builds
+on this header-driven core.
+
+## Types / Variants
+
+**Static asset caching.** Images, CSS, JS, fonts, video segments. The bread and
+butter: long `max-age` (often a year) combined with **content-hashed filenames**
+(`app.4f2a9.js`) so a new deploy is a new URL — instant, race-free invalidation by
+never reusing a URL.
+
+**Cacheable dynamic content.** HTML and API responses that are the same for many
+users for a short window. Cache for seconds-to-minutes with `s-maxage` to shield the
+origin during spikes (a homepage cached for 10s serves one origin hit per 10s no
+matter the traffic).
+
+**Cache-control directives that matter.**
+- `public` / `private` — may a shared (CDN) cache store it?
+- `max-age` (browser) / `s-maxage` (CDN) — freshness lifetime.
+- `no-cache` — store it, but *revalidate* before each use (not "don't cache").
+- `no-store` — never cache (genuinely private/sensitive responses).
+- `must-revalidate` — once stale, do not serve without revalidating.
+- `stale-while-revalidate=N` — serve stale up to N seconds *while* asynchronously
+  refreshing in the background (no latency cliff, no origin stampede).
+- `stale-if-error=N` — serve stale if the origin is down (resilience).
+- `Vary` — cache separate copies per header (e.g. `Vary: Accept-Encoding`); a broad
+  `Vary` (like `Cookie`) destroys hit rate by fragmenting the cache.
+
+**Invalidation at the edge.** TTL expiry (default), **purge/ban APIs** (explicit, but
+propagation across PoPs takes time), **surrogate keys / cache tags** (tag responses,
+purge a whole tag at once — Fastly's signature feature), and **versioned URLs** (the
+cleanest: never invalidate, just change the URL).
+
+**Edge compute.** Run code at the PoP — Cloudflare Workers, Fastly Compute@Edge,
+AWS Lambda@Edge / CloudFront Functions, Vercel Edge. Use it for request routing,
+A/B testing, auth checks, header rewriting, personalization, and assembling responses
+from cached fragments — all without a round trip to origin. The edge becomes a
+programmable cache, not just a static one.
+
+## When to use / When NOT
+
+- **Use a CDN when:** you serve static or cacheable content to a geographically
+  distributed audience; you need to offload origin traffic and egress cost; you must
+  absorb spikes or DDoS volume; or latency to far-away users matters. **Avoid (or
+  bypass the cache) when:** content is per-user and uncacheable (set `private`/
+  `no-store`), strictly consistent and stale copies cause correctness bugs, or the
+  audience is single-region and co-located with origin (a CDN adds a hop for little
+  gain).
+- **Use `stale-while-revalidate` when:** a brief staleness window is acceptable and
+  you want zero refresh-latency and origin-stampede protection. **Avoid SWR for**
+  content that must never be even slightly stale (post-payment confirmation, security
+  decisions).
+- **Use edge compute when:** logic must run close to users with no origin round trip
+  (routing, auth, personalization, fragment assembly). **Avoid when:** the logic needs
+  your primary database or heavy/stateful processing — that belongs at origin.
+
+## Tradeoffs
+
+| Concern | With a CDN | Without (origin-only) |
+| ------- | ---------- | --------------------- |
+| Latency (far users) | Low (served from nearby PoP) | High (round trip to origin) |
+| Origin load | Greatly reduced (offloaded) | Full load on origin |
+| Freshness | Bounded by TTL / purge lag | Always fresh |
+| Invalidation | Hard (purge propagation across PoPs) | Trivial (one source) |
+| Cost | Cheaper egress, absorbs spikes | Higher origin + egress cost |
+| Complexity | Header tuning, purge, Vary discipline | Simpler, but doesn't scale geo |
+
+## Diagram
+
+A request hitting the nearest PoP; only a miss travels to origin, and SWR refreshes
+in the background.
+
+<Mermaid code={`graph TD
+  U[User] -->|nearest PoP| Edge{Edge cache fresh?}
+  Edge -- "fresh hit" --> U
+  Edge -- "stale + SWR" --> U
+  Edge -. "async revalidate" .-> O[(Origin)]
+  Edge -- "miss" --> O
+  O -->|response + Cache-Control| Edge
+  Edge -->|store + serve| U`} />
+
+## Try it
+
+Compare invalidation approaches at the edge, then read when/why/why-not for a CDN.
+
+<CompareMatrix
+  client:visible
+  caption="Edge invalidation approaches"
+  columns={['TTL expiry', 'Purge / ban API', 'Surrogate keys (tags)', 'Versioned URLs']}
+  rows={[
+    { criterion: 'Freshness control', cells: ['Coarse (time-based)', 'Explicit, on demand', 'Explicit, grouped', 'Immediate (new URL)'] },
+    { criterion: 'Propagation lag', cells: ['None (just expires)', 'Seconds across PoPs', 'Seconds across PoPs', 'None'] },
+    { criterion: 'Granularity', cells: ['Per-object TTL', 'Per-URL or wildcard', 'Per-tag (many objects)', 'Per-asset'] },
+    { criterion: 'Race-safe?', cells: ['Yes', 'Mostly', 'Mostly', 'Yes (URL never reused)'] },
+    { criterion: 'Best for', cells: ['Tolerable staleness', 'Ad-hoc content updates', 'Invalidating related content', 'Static hashed assets'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="When to use a CDN"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use a CDN when serving static or cacheable-dynamic content to a geographically distributed audience, when you need to offload origin traffic and egress cost, when absorbing traffic spikes or DDoS volume, or when far-away users experience high latency to a single-region origin.',
+    },
+    {
+      label: 'Why',
+      content: 'Each PoP serves users from a nearby city, cutting round-trip latency dramatically, and every cache hit is a request the origin never processes — slashing load and egress cost. CDNs also terminate TLS at the edge, absorb volumetric attacks, and increasingly run compute so personalization and routing happen without an origin round trip.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Avoid caching per-user, strongly-consistent, or sensitive responses where a stale or wrongly-shared edge copy is a correctness or security bug — mark those private/no-store. Edge invalidation is genuinely hard: purges propagate across hundreds of PoPs with lag, and a too-broad Vary header silently destroys hit rate. For a single-region audience co-located with origin, a CDN can add a hop for little benefit.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Cloudflare** and **Fastly** front a large fraction of the web; Fastly pioneered
+  instant **surrogate-key** purges and built on Varnish (VCL) for programmable edges.
+- **Netflix Open Connect** places caching appliances inside ISPs so video streams from
+  as close to the viewer as physically possible.
+- **Vercel / Next.js ISR** (Incremental Static Regeneration) is `stale-while-revalidate`
+  productized: serve a cached page instantly, regenerate it in the background.
+- **Cloudflare Workers** and **Lambda@Edge** run auth, A/B tests, and personalization
+  at the PoP, turning the CDN into a programmable application edge.
+
+## Further reading
+
+- [MDN — HTTP caching & Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching) — the authoritative header reference.
+- [`stale-while-revalidate` — web.dev](https://web.dev/articles/stale-while-revalidate) — the SWR pattern explained with examples.
+- [Cloudflare — How CDN caching works](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/) — practical edge-caching behavior and overrides.
+- [Fastly — Surrogate keys / cache tags](https://developer.fastly.com/reference/http/http-headers/Surrogate-Key/) — tag-based grouped invalidation.

@@ -1,0 +1,184 @@
+---
+title: Distributed Caching
+description: Redis vs Memcached, consistent hashing, replication and partitioning, hot keys, and cache topologies (look-aside vs inline) for a shared, networked cache tier.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+An in-process cache is the fastest cache there is — but it is *local*: each app
+instance has its own copy, none of them shared, all of them lost on restart, and a
+40-node fleet means 40 independent caches with 40 separate hit rates and 40 chances
+to be stale. A **distributed cache** is a separate, networked tier (Redis,
+Memcached) that every app instance shares. You pay one network round trip (~0.2–1 ms)
+to gain a single, large, shared, restart-surviving cache. This page covers how to
+build that tier: which engine, how to spread data across nodes, how to replicate for
+availability, and how to survive hot keys.
+
+## Mental model
+
+A distributed cache is a **partitioned hash table living across a fleet of nodes,
+reached over the network.** Two questions define its design:
+
+1. **Placement — which node holds a given key?** Naive `hash(key) % N` is a trap:
+   change `N` (add/remove a node) and *almost every* key remaps, emptying the cache
+   in one stroke. **Consistent hashing** (a hash ring) fixes this — adding/removing a
+   node remaps only `1/N` of keys. Virtual nodes smooth out the distribution.
+2. **Topology — where does the caching logic live?** **Look-aside** (the app talks
+   to cache and DB separately) versus **inline/read-through** (the cache sits in the
+   data path and loads from the DB itself).
+
+On top of placement sits **replication** (copies for availability/read-scaling) and
+the **hot-key problem** (one key so popular that its single owning node is
+overwhelmed regardless of how well you partitioned).
+
+## Types / Variants
+
+**Redis vs Memcached — the core engine choice.**
+- **Memcached:** a pure, multithreaded, in-memory key→blob store. Values are opaque
+  bytes; the only operations are get/set/delete/incr. Brutally simple, scales reads
+  across cores, slab allocator minimizes fragmentation. No persistence, no
+  replication (client-side sharding only), no rich types. The right tool when you
+  want a fast, dumb, horizontally-sharded blob cache.
+- **Redis:** an in-memory *data-structure* server — strings, hashes, lists, sets,
+  sorted sets, streams, HyperLogLog, bitmaps, geo, plus Lua scripting, pub/sub,
+  transactions, persistence (RDB snapshots + AOF log), replication, and **Redis
+  Cluster** (built-in sharding with 16384 hash slots). Single-threaded for commands
+  (so a slow command blocks others; Redis 6+ adds threaded I/O). The right tool when
+  you need data structures, atomic ops, durability, or built-in clustering — i.e.
+  most of the time today.
+
+**Partitioning (sharding).** Spread keys across nodes for capacity and throughput.
+Consistent hashing (Memcached clients, Cassandra) or fixed hash slots (Redis Cluster)
+decide ownership. Multi-key operations are constrained to a single shard (Redis uses
+**hash tags** `{user42}:...` to co-locate related keys).
+
+**Replication.** Each shard has a primary plus replicas. Buys **read scaling**
+(serve reads from replicas) and **availability** (promote a replica on primary
+failure). Redis replication is *asynchronous* — a primary can ack a write then crash
+before replicating it, so failover can lose recent writes (acceptable for a cache,
+fatal for a ledger).
+
+**Topology — look-aside vs inline.**
+- **Look-aside (cache-aside):** app reads cache; on miss reads DB and populates. The
+  cache is a dumb store; the app owns the logic. Most common; the cache failing
+  degrades to slow-but-correct DB reads.
+- **Inline (read-through/write-through):** the cache is in the data path and loads
+  from the DB itself. Simpler app code; but a cache outage can break the read path
+  unless it fails open.
+
+**Hot keys.** One key (a celebrity user, a flash-sale SKU) drawing disproportionate
+traffic overwhelms its single owning node. Fixes: **client-side local caching** of
+that key for a few seconds, **key splitting/replication** (`hotkey:0..N` fanned
+across nodes), or a small in-process layer in front of the distributed tier.
+
+## When to use / When NOT
+
+- **Use a distributed cache when:** multiple app instances must share cached state
+  (sessions, shared hot data); the cache must survive app restarts and deploys; the
+  dataset exceeds a single process's heap; or you need cache state independent of app
+  scaling. **Avoid when:** the data is cheap to recompute per-instance and an extra
+  network hop isn't worth it (use in-process), or the cache is a single point of
+  failure you cannot make redundant.
+- **Choose Redis when:** you need data structures, atomic counters, pub/sub, Lua,
+  persistence, or built-in clustering — or simply want the richer, batteries-included
+  default. **Avoid Redis when:** you genuinely only need a fast multithreaded blob
+  cache and want to saturate many cores per node with minimal features.
+- **Choose Memcached when:** pure, multithreaded, horizontally-sharded blob caching of
+  large simple objects is all you need. **Avoid when:** you need any of persistence,
+  replication, data structures, or server-side clustering.
+
+## Tradeoffs
+
+| Concern | Look-aside | Inline (read/write-through) |
+| ------- | ---------- | --------------------------- |
+| App complexity | App owns load logic | Centralized in cache |
+| Cache outage behavior | Degrades to DB (fails open) | Can break read path unless fail-open |
+| Consistency control | Per-call, flexible | Uniform, less granular |
+| Best for | General web/API caching | Uniform access via one library |
+
+| Concern | Memcached | Redis |
+| ------- | --------- | ----- |
+| Data model | Opaque blobs | Rich data structures |
+| Threading | Multithreaded | Single-threaded commands (+threaded I/O) |
+| Persistence | None | RDB + AOF |
+| Clustering / replication | Client-side sharding | Redis Cluster + replicas |
+| When to pick | Simple blob cache, many cores | Default; structures, durability, clustering |
+
+## Diagram
+
+Look-aside topology over a consistently-hashed, replicated cluster.
+
+<Mermaid code={`graph TD
+  App[App fleet] -->|1 get key| Ring{Consistent-hash ring}
+  Ring -->|owns slot| P1[Shard A primary]
+  Ring --> P2[Shard B primary]
+  Ring --> P3[Shard C primary]
+  P1 -. async replicate .-> R1[Shard A replica]
+  P2 -. async replicate .-> R2[Shard B replica]
+  App -->|2 on miss| DB[(Database)]
+  DB -->|3 populate| Ring`} />
+
+## Try it
+
+Compare the two engines, then read the when/why/why-not for a distributed tier.
+
+<CompareMatrix
+  client:visible
+  caption="Redis vs Memcached"
+  columns={['Redis', 'Memcached']}
+  rows={[
+    { criterion: 'Data model', cells: ['Strings, hashes, lists, sets, sorted sets, streams', 'Opaque byte blobs'] },
+    { criterion: 'Threading model', cells: ['Single-threaded commands (+ threaded I/O in v6+)', 'Multithreaded'] },
+    { criterion: 'Persistence', cells: ['RDB snapshots + AOF', 'None (volatile)'] },
+    { criterion: 'Replication / HA', cells: ['Primary–replica + Sentinel/Cluster', 'None (client-side sharding)'] },
+    { criterion: 'Native sharding', cells: ['Redis Cluster (16384 hash slots)', 'Client decides (consistent hashing)'] },
+    { criterion: 'Atomic ops / scripting', cells: ['Rich; Lua scripting, transactions', 'incr/decr only'] },
+    { criterion: 'Eviction policies', cells: ['LRU/LFU/random/TTL, approximate', 'LRU (slab-based)'] },
+    { criterion: 'Best fit', cells: ['Default; structures, durability, clustering', 'Pure fast blob cache across many cores'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="A distributed cache tier"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use a distributed cache when multiple app instances must share cached state (sessions, query results, shared hot data), when the cache must survive app restarts and rolling deploys, when the working set exceeds a single process heap, or when you want cache capacity to scale independently of the app fleet.',
+    },
+    {
+      label: 'Why',
+      content: 'One shared tier means one hit rate instead of N cold per-instance caches, far better memory efficiency (no N-way duplication), and a cache that outlives deploys. Redis adds atomic data structures (counters, rate limiters, leaderboards) you cannot safely build across independent local caches.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'It adds a network hop (~0.2–1 ms vs nanoseconds in-process), a new tier to operate and make redundant, and a potential single point of failure if not replicated. For data cheap to recompute per instance, in-process caching is faster and simpler. Asynchronous replication also means failover can lose recently-acked writes — never treat a cache as a durable store of record.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Facebook** runs one of the largest Memcached deployments on earth as a look-aside
+  tier in front of MySQL, with regional pools and leases (NSDI '13).
+- **Netflix EVCache** wraps Memcached with replication and zone-aware topology for
+  resilient sub-millisecond personalization reads across AWS regions.
+- **Twitter / X** used a heavily-modified Memcached (Twemcache) and Twemproxy for
+  sharding/proxying at scale.
+- **GitHub, Shopify, Stack Overflow** lean on Redis for sessions, fragment caching,
+  rate limiting, and job queues — exploiting the data structures, not just get/set.
+- **AWS ElastiCache** and **Azure Cache for Redis** are the managed forms most teams
+  actually deploy.
+
+## Further reading
+
+- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) — hash slots, resharding, and failover.
+- [Consistent Hashing and Random Trees (Karger et al., 1997)](https://www.cs.princeton.edu/courses/archive/fall09/cos518/papers/chash.pdf) — the origin of consistent hashing.
+- [Scaling Memcache at Facebook (NSDI '13)](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) — production distributed-cache architecture.
+- [Redis vs Memcached — AWS ElastiCache](https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/SelectEngine.html) — vendor decision guide.

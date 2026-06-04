@@ -1,12 +1,188 @@
 ---
 title: Caching & Performance
-description: Cache strategies, invalidation, and latency budgets.
+description: A decision-oriented guide to the cache hierarchy — strategies, eviction, invalidation, distributed caches, and CDN/edge caching.
 last_reviewed: "2026-06-04"
 decision_guidance: true
 ---
 
-Overview of caching and performance. Real content lands here later —
-individual topics are authored from `templates/topic.mdx`.
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
 
-This cluster will cover cache-aside, write-through, write-behind, TTL and
-invalidation strategies, CDNs, and latency budgeting.
+## Overview
+
+Caching is the single highest-leverage performance technique in distributed
+systems: it trades a small, bounded amount of memory and some staleness for
+order-of-magnitude reductions in latency, load, and cost. A request served from
+an in-memory cache returns in microseconds; the same request against a relational
+database costs milliseconds, and against a cold object store or third-party API,
+tens to hundreds of milliseconds. Removing 90% of those round trips is usually
+cheaper and faster than scaling the backend behind them.
+
+But caching is not free, and it is not a single thing. It is a *layered hierarchy*
+of independent caches, each with different latency, capacity, blast radius, and
+consistency semantics. The hard part is never "add a cache" — it is choosing
+**which layer**, **which write strategy**, **which eviction policy**, and **how
+to invalidate** so that the speedup does not silently serve wrong data. This
+cluster is organized around those decisions. Every page leads with *when to use
+it and why*, not just *what it is*.
+
+## Mental model
+
+Think of caching as a **gradient of "distance to truth."** Your system of record
+(the database) holds the truth but is expensive to consult. Each cache layer is a
+copy of some of that truth, placed progressively closer to the reader:
+
+- **Closer = faster and cheaper to read**, but
+- **Closer = staler and harder to invalidate**, because the copy is further from
+  the writer that changes the truth.
+
+Every caching decision is a position on that gradient. A browser cache is the
+closest copy (zero network) but the hardest to reach and purge once stale. The
+database query cache is the furthest copy (still a network hop away) but trivially
+consistent because it sits right next to the source. CDNs, app caches, and
+distributed caches fall in between. When you "add a cache," you are choosing how
+far from the truth you are willing to read in exchange for speed — and signing up
+to manage the staleness that distance creates.
+
+## Types / Variants
+
+The cache hierarchy, ordered from closest-to-reader to closest-to-truth. A single
+request may traverse all of them; a hit at any layer short-circuits everything
+below it.
+
+1. **Browser / client cache** — HTTP cache, `localStorage`, service workers,
+   in-app memory. Zero network latency on a hit. Per-user, uninvalidatable from
+   the server except via versioned URLs and `Cache-Control`.
+2. **CDN / edge cache** — geographically distributed PoPs (CloudFront, Cloudflare,
+   Fastly, Akamai). Absorbs origin load, terminates close to the user. Best for
+   static and cacheable-dynamic content. See **CDN & edge caching**.
+3. **Application / in-process cache** — an in-memory map inside the app process
+   (Caffeine, Guava, Go `ristretto`, a plain `dict`). Nanosecond access, no
+   network, but **not shared** across instances and lost on restart.
+4. **Distributed / remote cache** — a shared cache tier (Redis, Memcached)
+   reachable over the network by every app instance. One network hop, shared
+   state, survives app restarts. See **Distributed caching**.
+5. **Database / query cache** — buffer pool, materialized views, query-result
+   cache, prepared-statement cache. Closest to truth, easiest to keep consistent,
+   but still inside the database tier you are trying to protect.
+
+The orthogonal decisions that apply at most layers:
+
+- **Caching strategy** — how reads and writes flow through the cache (cache-aside,
+  read-through, write-through, write-back, write-around).
+- **Eviction policy** — what to drop when the cache is full (LRU, LFU, FIFO,
+  TTL/TLRU, ARC, SLRU).
+- **Invalidation** — how stale entries are removed or refreshed (TTL, event-based,
+  versioned keys, stampede protection, negative caching).
+
+## When to use / When NOT
+
+- **Use when:** reads vastly outnumber writes; the same data is requested
+  repeatedly (temporal/spatial locality); the source is slow, expensive, or
+  rate-limited; some staleness is tolerable; or you need to absorb traffic spikes
+  and shed load from a backend.
+- **Avoid when:** data is unique per request (no reuse, no hit rate); the workload
+  is write-heavy with rare reads (the cache churns and never pays off); the domain
+  demands strict correctness on every read (ledgers, balances, auth decisions,
+  inventory at checkout) and you cannot bound staleness; or the dataset is so
+  small/fast already that a cache adds latency and a consistency bug surface for no
+  measurable gain.
+
+A cache you cannot invalidate correctly is a bug generator. If you cannot answer
+"how does a stale entry get fixed, and how bad is it if one slips through?", you
+are not ready to add the cache yet.
+
+## Tradeoffs
+
+Every layer buys speed with some combination of staleness risk, memory cost,
+operational burden, and blast radius. The right answer is usually *several* layers,
+each tuned to its content.
+
+| Layer | Latency on hit | Shared? | Invalidation difficulty | Best for |
+| ----- | -------------- | ------- | ----------------------- | -------- |
+| Browser/client | ~0 (no network) | No (per-user) | Hardest (can't reach client) | Versioned static assets, per-user UI state |
+| CDN / edge | Single-digit ms | Yes (per-PoP) | Hard (purge propagation) | Static assets, cacheable dynamic, media |
+| App / in-process | Nanoseconds | No (per-instance) | Medium (no central control) | Hot config, computed values, per-instance memoization |
+| Distributed | ~0.2–1 ms (1 hop) | Yes (cluster-wide) | Medium (central, but races) | Sessions, query results, shared hot data |
+| DB / query cache | Low ms | Yes (DB tier) | Easiest (next to source) | Repeated query results, buffer pool |
+
+## Diagram
+
+A single read request descending the hierarchy. A hit at any layer returns
+immediately; only a full miss reaches the database.
+
+<Mermaid code={`graph TD
+  U[User request] --> B{Browser cache?}
+  B -- hit --> R[Return]
+  B -- miss --> C{CDN / edge?}
+  C -- hit --> R
+  C -- miss --> A{App in-process?}
+  A -- hit --> R
+  A -- miss --> D{Distributed cache?}
+  D -- hit --> R
+  D -- miss --> Q{DB query cache?}
+  Q -- hit --> R
+  Q -- miss --> DB[(Database — source of truth)]
+  DB --> R`} />
+
+## Try it
+
+Compare the cache layers side by side. Click a column to isolate one layer.
+
+<CompareMatrix
+  client:visible
+  caption="The cache hierarchy at a glance"
+  columns={['Browser', 'CDN / Edge', 'App / In-process', 'Distributed', 'DB / Query']}
+  rows={[
+    {
+      criterion: 'Typical latency (hit)',
+      cells: ['~0 (local)', '1–20 ms (PoP)', '~100 ns', '0.2–1 ms', '1–10 ms'],
+    },
+    {
+      criterion: 'Scope / sharing',
+      cells: ['Per-user', 'Per-PoP region', 'Per-instance', 'Cluster-wide', 'DB tier'],
+    },
+    {
+      criterion: 'Capacity',
+      cells: ['Small (MBs)', 'Large (per PoP)', 'Bounded by heap', 'Large (GBs–TBs)', 'Bounded by RAM'],
+    },
+    {
+      criterion: 'Controlled by',
+      cells: ['Cache-Control / URLs', 'Headers + purge API', 'App code', 'App code', 'DB engine'],
+    },
+    {
+      criterion: 'Invalidation difficulty',
+      cells: ['Hardest', 'Hard', 'Medium', 'Medium', 'Easiest'],
+    },
+    {
+      criterion: 'Survives app restart?',
+      cells: ['Yes (client)', 'Yes', 'No', 'Yes', 'Yes'],
+    },
+    {
+      criterion: 'Best content',
+      cells: ['Versioned assets', 'Static + media', 'Hot config / computed', 'Sessions, shared hot data', 'Repeated queries'],
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Facebook** runs Memcached at massive scale as a look-aside tier in front of
+  MySQL; their "Scaling Memcache at Facebook" paper is the canonical reference for
+  leases, regional invalidation, and stampede control.
+- **Netflix** uses EVCache (a Memcached-based distributed cache) for sub-millisecond
+  reads of personalization data, plus a multi-tier CDN (Open Connect) for video.
+- **Cloudflare / Fastly** are the CDN/edge layer for a large fraction of the web,
+  increasingly running edge compute (Workers, Compute@Edge) at the same PoPs.
+- **Stack Overflow** famously serves most traffic from a small number of servers by
+  leaning hard on Redis and in-process caching, documented in their architecture
+  write-ups.
+
+## Further reading
+
+- [Scaling Memcache at Facebook (NSDI '13)](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) — the definitive paper on production look-aside caching.
+- [Caching best practices — AWS](https://aws.amazon.com/caching/best-practices/) — vendor-neutral overview of layers and strategies.
+- [MDN: HTTP caching](https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching) — the browser/CDN header model in depth.
+- Explore the topic pages in this cluster: **Caching strategies**, **Eviction
+  policies**, **Cache invalidation**, **Distributed caching**, and **CDN & edge
+  caching**.

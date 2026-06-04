@@ -1,0 +1,219 @@
+---
+title: Caching Strategies
+description: Cache-aside, read-through, write-through, write-back, and write-around — how reads and writes flow through a cache, and the consistency and failure implications of each.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A caching *strategy* defines the **control flow of reads and writes** between your
+application, the cache, and the system of record. It answers two questions: on a
+read, who fetches and populates the cache on a miss? And on a write, does the write
+go to the cache, the database, or both — and in what order? These choices determine
+your consistency guarantees, your behavior when the cache or database fails, and how
+much caching logic lives in application code versus the cache library. Picking the
+wrong strategy is how teams ship caches that are fast and *subtly wrong*.
+
+## Mental model
+
+Separate the **read path** from the **write path** — they are independent decisions.
+
+- **Read path:** *cache-aside* means your app orchestrates the miss (look in cache,
+  on miss read DB, then populate). *Read-through* means the cache itself fetches
+  from the DB on a miss, transparently, behind a single API.
+- **Write path:** the question is *when does the database see the write relative to
+  the cache?* **Write-through** (synchronously, before ack), **write-back**
+  (asynchronously, after ack), **write-around** (DB only; cache is not written),
+  or *invalidate* (write DB, delete the cache key so the next read re-fetches).
+
+"Cache-aside + invalidate-on-write" is the workhorse default of the industry. The
+other strategies are specializations you reach for when that default's tradeoffs do
+not fit.
+
+## Types / Variants
+
+**Cache-aside (lazy loading).** The application owns the logic. Read: check cache →
+on miss, read DB, write the value into the cache, return. Write: write DB, then
+*delete* (don't update) the cache key. Only requested data is ever cached, so the
+cache stays small and naturally adapts to the working set. The classic risk is the
+populate-vs-invalidate race (see *Cache invalidation*).
+
+**Read-through.** Same read semantics as cache-aside, but the cache library sits
+*inline* and fetches from the DB on a miss itself, via a registered loader. The app
+just calls `cache.get(key)`. Centralizes the load logic and is easy to combine with
+refresh-ahead, but couples you to a cache that supports loaders.
+
+**Write-through.** Every write goes to the cache **and** the database synchronously
+before the write is acknowledged. The cache is always consistent with the DB for
+written keys, and reads after a write always hit a warm, correct cache. The cost is
+higher write latency (two synchronous hops) and wasted cache space for write-heavy
+keys that are never read.
+
+**Write-back (write-behind).** Writes go to the cache and are acknowledged
+*immediately*; the cache flushes to the database asynchronously (batched, coalesced).
+Dramatically lowers write latency and absorbs write bursts, and can coalesce many
+writes to the same key into one DB write. The danger is **data loss**: if the cache
+node dies before the flush, acknowledged writes vanish. Requires a durable cache
+(AOF/replication) or a tolerance for losing recent writes.
+
+**Write-around.** Writes go to the database only; the cache is *not* populated on
+write (and the key is typically invalidated). Data is cached lazily on the next
+read. Avoids polluting the cache with write-heavy data that is rarely read back,
+at the cost of a guaranteed cache miss on the first read after a write.
+
+## When to use / When NOT
+
+- **Cache-aside — use when:** general-purpose, read-heavy workloads; you want the
+  cache to hold only the working set; you can tolerate the first-read-miss penalty.
+  **Avoid when:** you cannot tolerate the brief inconsistency window of the
+  populate/invalidate race without extra protection (leases, versioned keys).
+- **Read-through — use when:** you want load logic in one place and your cache
+  supports loaders; pairs well with refresh-ahead for hot keys. **Avoid when:** you
+  need fine-grained, per-call control over how misses are resolved.
+- **Write-through — use when:** read-after-write consistency matters and writes are
+  comparatively infrequent; you want the cache always warm and correct. **Avoid
+  when:** the workload is write-heavy or write latency is critical, or many written
+  keys are never read.
+- **Write-back — use when:** write throughput/latency is the bottleneck and you can
+  make the cache durable or accept bounded write loss (metrics, counters, view
+  counts, telemetry). **Avoid when:** writes are financial or otherwise must never
+  be lost — never put a ledger behind naive write-back.
+- **Write-around — use when:** writes are large or bursty and rarely read soon after
+  (audit logs, append-mostly data). **Avoid when:** writes are quickly read back
+  (you guarantee a cold miss every time).
+
+## Tradeoffs
+
+| Strategy | Consistency | Write latency | First-read after write | Main failure risk |
+| -------- | ----------- | ------------- | ---------------------- | ----------------- |
+| Cache-aside | Eventual; race on populate/invalidate | DB only | Miss (lazy fill) | Stale entry if delete is missed |
+| Read-through | Same as cache-aside reads | n/a (read pattern) | Miss (loader fills) | Loader/cache coupling |
+| Write-through | Strong for written keys | High (2 sync hops) | Hit (warm) | Write fails if either tier is down |
+| Write-back | Weak until flush | Lowest (async) | Hit (warm) | **Data loss** on cache crash before flush |
+| Write-around | Eventual | DB only | Miss (cold) | Guaranteed cold read after write |
+
+## Diagram
+
+Cache-aside (the default) versus write-through, side by side.
+
+<Mermaid code={`graph TD
+  subgraph Cache-aside read
+    A1[App] -->|1 get| K1{Cache}
+    K1 -- hit --> A1
+    K1 -- miss --> DB1[(DB)]
+    DB1 -->|2 value| A1
+    A1 -->|3 populate| K1
+  end
+  subgraph Write-through write
+    A2[App] -->|1 write| K2{Cache}
+    K2 -->|2 write sync| DB2[(DB)]
+    DB2 -->|3 ack| K2
+    K2 -->|4 ack| A2
+  end`} />
+
+## Try it
+
+Compare the five strategies, then walk the decision tree for choosing a write
+strategy.
+
+<CompareMatrix
+  client:visible
+  caption="Five caching strategies compared"
+  columns={['Cache-aside', 'Read-through', 'Write-through', 'Write-back', 'Write-around']}
+  rows={[
+    {
+      criterion: 'Who populates on read',
+      cells: ['App code', 'Cache loader', 'Pre-warmed by write', 'Pre-warmed by write', 'App on next read'],
+    },
+    {
+      criterion: 'Where writes go',
+      cells: ['DB (invalidate key)', 'DB (invalidate key)', 'Cache + DB (sync)', 'Cache now, DB later', 'DB only'],
+    },
+    {
+      criterion: 'Write latency',
+      cells: ['DB only', 'DB only', 'Highest', 'Lowest', 'DB only'],
+    },
+    {
+      criterion: 'Read-after-write',
+      cells: ['Miss then fill', 'Miss then fill', 'Warm hit', 'Warm hit', 'Cold miss'],
+    },
+    {
+      criterion: 'Consistency',
+      cells: ['Eventual', 'Eventual', 'Strong (written keys)', 'Weak until flush', 'Eventual'],
+    },
+    {
+      criterion: 'Data-loss risk',
+      cells: ['None', 'None', 'None', 'High (unflushed writes)', 'None'],
+    },
+    {
+      criterion: 'Best fit',
+      cells: ['Read-heavy default', 'Centralized loaders', 'Read-after-write needs', 'Write-heavy, loss-tolerant', 'Write-heavy, rarely re-read'],
+    },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which write strategy?"
+  root={{
+    question: 'Can you ever tolerate losing a recently-acknowledged write (e.g. cache node crashes before flushing to DB)?',
+    branches: [
+      {
+        label: 'No — every write must be durable',
+        next: {
+          question: 'Is the data read again soon after it is written?',
+          branches: [
+            {
+              label: 'Yes, read-after-write matters',
+              next: { leaf: { recommendation: 'Write-through', detail: 'Write cache + DB synchronously so reads always hit a warm, correct cache. Accept the higher write latency.' } },
+            },
+            {
+              label: 'No, rarely re-read soon',
+              next: { leaf: { recommendation: 'Write-around (+ cache-aside reads)', detail: 'Write straight to the DB and invalidate the key; let reads lazily repopulate. Keeps write-heavy data out of the cache.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Yes — bounded loss is acceptable',
+        next: {
+          question: 'Is write throughput / latency your bottleneck (counters, metrics, telemetry)?',
+          branches: [
+            {
+              label: 'Yes, writes are the hot path',
+              next: { leaf: { recommendation: 'Write-back (write-behind)', detail: 'Ack from the cache immediately and flush to the DB asynchronously, coalescing writes. Make the cache durable (AOF/replication) to bound loss.' } },
+            },
+            {
+              label: 'No, writes are modest',
+              next: { leaf: { recommendation: 'Cache-aside + invalidate', detail: 'The simplest correct default: write the DB, delete the cache key, let the next read repopulate.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Cache-aside + invalidate** is the default at most web companies (Facebook,
+  Instagram, Shopify) — app reads check Memcached/Redis, writes hit MySQL/Postgres
+  and delete the key.
+- **Write-through** is how CPU caches and many storage controllers behave, and how
+  systems wanting guaranteed read-after-write (e.g. some session stores) operate.
+- **Write-back** powers high-throughput counters and rate limiters in Redis, and is
+  how OS page caches and SSD controllers batch writes; databases use it internally
+  for the buffer pool.
+- **Write-around** is common for append-heavy logging and audit pipelines where the
+  freshly written row is rarely read back immediately.
+
+## Further reading
+
+- [AWS — Caching strategies (lazy loading vs write-through)](https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/Strategies.html) — concise, vendor-grounded comparison.
+- [Cache-Aside pattern — Microsoft Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside) — the canonical write-up with failure analysis.
+- [Scaling Memcache at Facebook](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) — leases and the populate/invalidate race in production.

@@ -1,0 +1,206 @@
+---
+title: Eviction Policies
+description: LRU, LFU, FIFO, Random, TTL/TLRU, ARC, and segmented LRU — how a full cache decides what to drop, and the hit-rate versus cost tradeoffs of each.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+A cache has finite memory, so when it fills up and a new entry needs space, it must
+*evict* an existing one. The **eviction policy** is the rule that picks the victim.
+This choice directly sets your **hit rate** — the fraction of requests served from
+cache — which is the lever that determines whether the cache is worth having at all.
+A policy that evicts the wrong entries turns a cache into expensive churn. The right
+policy depends entirely on your *access pattern*: whether reuse is driven by recency,
+frequency, or neither, and how much CPU and memory you are willing to spend tracking
+that pattern.
+
+## Mental model
+
+Every eviction policy is a *bet about the future* made from the past. It predicts
+which cached entry is **least likely to be requested again soon** and evicts that
+one. The policies differ only in what signal they use to make the prediction:
+
+- **Recency** (LRU): "what I touched recently, I'll touch again." Bets on temporal
+  locality.
+- **Frequency** (LFU): "what I touch often, I'll keep touching." Bets on a stable
+  hot set.
+- **Insertion order** (FIFO): "oldest in, first out," ignoring access entirely.
+- **Nothing** (Random): no signal, just pick a victim cheaply.
+- **Time** (TTL/TLRU): "truth expires," evict by age regardless of access.
+
+Smarter policies (ARC, SLRU) combine recency *and* frequency and adapt the balance
+online. More signal means higher hit rates but more bookkeeping per access.
+
+## Types / Variants
+
+**LRU (Least Recently Used).** Evicts the entry untouched for the longest. The
+default for good reason: cheap (O(1) with a hash map + doubly-linked list), and most
+real workloads have strong temporal locality. Weakness: a one-time scan over many
+keys (a "scan" or "flush") evicts the genuinely hot set — it pollutes the cache.
+
+**LFU (Least Frequently Used).** Evicts the entry with the fewest accesses. Keeps a
+stable hot set resident and resists scan pollution. Weaknesses: needs counters
+(more memory/CPU); a once-popular key with a high count can squat forever ("cache
+pollution by stale popularity") unless counts decay. **Window-TinyLFU** (used by
+Caffeine) fixes this with an aging sketch and is state of the art.
+
+**FIFO (First In, First Out).** Evicts the oldest-inserted entry regardless of use.
+Trivial to implement (a queue), but blind to access — it will happily evict a hot
+key just because it was inserted long ago. Rarely optimal; common where simplicity
+trumps hit rate. (Note: **CLOCK** is a low-cost LRU approximation often confused
+with FIFO.)
+
+**Random.** Evicts a uniformly random entry. O(1), no bookkeeping, no metadata.
+Surprisingly competitive when access is uniform or when the working set far exceeds
+cache size. Redis's `allkeys-random` and sampled approximations use this.
+
+**TTL / TLRU (Time-aware).** Every entry carries an expiry; expired entries are
+evicted (or treated as misses) regardless of access. **TLRU** = TTL combined with
+LRU for the capacity dimension. Essential when staleness has a hard bound (you must
+not serve data older than N seconds) — see *Cache invalidation*.
+
+**ARC (Adaptive Replacement Cache).** Maintains two LRU lists — one for recently-seen
+*once* (recency), one for seen *at least twice* (frequency) — plus ghost lists of
+recently-evicted keys, and *adaptively* shifts capacity between recency and frequency
+based on which is currently producing hits. High hit rates, self-tuning, no knobs.
+Costs more metadata and was historically patent-encumbered (IBM); now widely
+reimplemented.
+
+**Segmented LRU (SLRU).** Splits the cache into a *probationary* segment (new
+entries) and a *protected* segment (entries hit at least twice). A second hit
+promotes an entry from probationary to protected; eviction takes from probationary
+first. This gives scan resistance — a one-time scan never reaches the protected
+segment. Used inside Caffeine and many CDN caches.
+
+## When to use / When NOT
+
+- **LRU — use when:** strong recency/temporal locality (most web and API workloads);
+  you want a proven, cheap default. **Avoid when:** large sequential scans pollute
+  it (analytics, full-table reads) — reach for SLRU/ARC instead.
+- **LFU — use when:** a small, stable hot set dominates traffic (popular products,
+  trending content) and you want it pinned. **Avoid when:** popularity shifts over
+  time and your LFU has no decay/aging (use W-TinyLFU).
+- **FIFO — use when:** simplicity is paramount and entries age out naturally; or as
+  a building block. **Avoid when:** hit rate matters and access is non-uniform.
+- **Random — use when:** access is near-uniform, metadata cost must be near zero, or
+  you need a cheap approximation at huge scale. **Avoid when:** you have clear
+  recency/frequency signal to exploit.
+- **TTL/TLRU — use when:** staleness has a hard upper bound (auth tokens, prices,
+  rate counters). **Avoid as your only policy** when memory pressure also needs a
+  capacity-based victim — combine with LRU.
+- **ARC / SLRU — use when:** mixed scan + hot-set workloads and you want maximum hit
+  rate without manual tuning. **Avoid when:** you need dead-simple, dependency-free
+  code or the extra metadata is too costly.
+
+## Tradeoffs
+
+| Policy | Signal | Hit rate (typical) | Per-access cost | Scan-resistant? |
+| ------ | ------ | ------------------ | --------------- | --------------- |
+| LRU | Recency | Good | O(1), low | No |
+| LFU (W-TinyLFU) | Frequency | Very good | O(1), counters/sketch | Yes |
+| FIFO | Insertion order | Poor–fair | O(1), minimal | No |
+| Random | None | Fair | O(1), none | Partially |
+| TTL / TLRU | Age (+ recency) | Workload-dependent | O(1) + expiry check | N/A |
+| ARC | Recency + frequency (adaptive) | Excellent | O(1), more metadata | Yes |
+| SLRU | Recency + reuse | Very good | O(1), two lists | Yes |
+
+## Diagram
+
+Segmented LRU: a second hit promotes an entry past the scan-pollution barrier.
+
+<Mermaid code={`graph LR
+  N[New / one-time access] --> P[Probationary segment]
+  P -->|second hit| PR[Protected segment]
+  P -->|evict from here first| X[Evicted]
+  PR -->|demote when full| P
+  PR -->|hot set stays resident| PR`} />
+
+## Try it
+
+Slide along the recency↔frequency axis to see which policy each point favors, then
+walk the decision tree.
+
+<TradeoffSlider
+  client:visible
+  caption="Recency bias ↔ Frequency bias"
+  leftAxis="Pure recency"
+  rightAxis="Pure frequency"
+  stops={[
+    { label: 'LRU', description: 'Evict the least-recently-used. Bets entirely on temporal locality. Cheap, great default, but scan-vulnerable.' },
+    { label: 'SLRU', description: 'Recency with a reuse gate: a second hit protects an entry, giving scan resistance while staying recency-led.' },
+    { label: 'ARC', description: 'Adaptively balances recency and frequency online using ghost lists — self-tuning toward whichever is winning.' },
+    { label: 'W-TinyLFU', description: 'Frequency-led with an aging sketch and a small recency window; near-optimal hit rates on skewed workloads.' },
+    { label: 'LFU', description: 'Evict the least-frequently-used. Pins a stable hot set, but without decay an old-popular key can squat forever.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which eviction policy?"
+  root={{
+    question: 'Does your workload include large sequential scans (full-table reads, batch jobs) that could flush the hot set?',
+    branches: [
+      {
+        label: 'Yes — scans threaten the hot set',
+        next: {
+          question: 'Do you want a self-tuning policy, or is a simpler scan-resistant one enough?',
+          branches: [
+            {
+              label: 'Self-tuning, max hit rate',
+              next: { leaf: { recommendation: 'ARC (or W-TinyLFU)', detail: 'Adaptively balances recency and frequency and resists scans without manual tuning. W-TinyLFU (Caffeine) is the modern high-performance choice.' } },
+            },
+            {
+              label: 'Simpler is fine',
+              next: { leaf: { recommendation: 'Segmented LRU (SLRU)', detail: 'A reuse gate keeps one-time scans out of the protected segment. Scan-resistant with modest extra bookkeeping.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — no big scans',
+        next: {
+          question: 'Is reuse driven more by recency or by a stable hot set?',
+          branches: [
+            {
+              label: 'Recency (recently used = reused)',
+              next: { leaf: { recommendation: 'LRU', detail: 'The cheap, proven default for temporal locality. O(1) and good enough for most web/API workloads.' } },
+            },
+            {
+              label: 'A small stable hot set dominates',
+              next: { leaf: { recommendation: 'LFU with aging (W-TinyLFU)', detail: 'Pins frequently-accessed keys; the aging sketch prevents stale-popular keys from squatting.' } },
+            },
+            {
+              label: 'No clear pattern / want minimal cost',
+              next: { leaf: { recommendation: 'Random or FIFO', detail: 'When neither signal dominates, a sampled-random or FIFO policy is cheap and predictable. Redis allkeys-random is a practical example.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Redis** offers `noeviction`, `allkeys-lru`, `allkeys-lfu`, `allkeys-random`,
+  `volatile-*` variants, and uses *sampled* (approximate) LRU/LFU to keep eviction
+  O(1) at scale.
+- **Caffeine** (the standard JVM cache) uses **Window-TinyLFU**, consistently at or
+  near the top of academic hit-rate benchmarks.
+- **CDNs** (Cloudflare, Fastly) use segmented/ARC-like policies with TTLs because
+  edge traffic mixes a huge long tail with a hot head.
+- **PostgreSQL** uses a CLOCK/LRU-approximation (clock-sweep) for its buffer pool;
+  **MySQL InnoDB** uses a midpoint-insertion LRU specifically to resist scan
+  pollution.
+
+## Further reading
+
+- [Caffeine — design and efficiency (W-TinyLFU)](https://github.com/ben-manes/caffeine/wiki/Efficiency) — benchmark-backed comparison of real policies.
+- [ARC: A Self-Tuning, Low Overhead Replacement Cache (Megiddo & Modha, FAST '03)](https://www.usenix.org/legacy/events/fast03/tech/full_papers/megiddo/megiddo.pdf) — the original ARC paper.
+- [Redis — key eviction](https://redis.io/docs/latest/develop/reference/eviction/) — how approximate LRU/LFU work in practice.

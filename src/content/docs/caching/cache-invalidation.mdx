@@ -1,0 +1,212 @@
+---
+title: Cache Invalidation
+description: TTL, event-based invalidation, versioned keys, stampede/thundering-herd protection, and negative caching — the hard problem of keeping cached data correct.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+"There are only two hard things in computer science: cache invalidation and naming
+things." The joke endures because invalidation is genuinely hard: a cache is a copy
+of the truth, and the moment the truth changes, every copy is a potential lie. Get
+invalidation wrong and you serve stale data (a correctness bug that's invisible
+until it isn't) or you stampede your backend when many entries expire at once.
+Invalidation is where caching projects succeed or quietly fail. This page covers the
+mechanisms for removing/refreshing stale entries and the protections against the
+failure modes invalidation itself creates.
+
+## Mental model
+
+Invalidation answers one question — *when does a cached copy stop being trusted?* —
+and you have exactly two families of answers:
+
+- **Time-based (pull):** the copy is trusted for a fixed duration (TTL), then
+  re-validated. Simple, self-healing, eventually consistent. You accept staleness up
+  to the TTL in exchange for never having to track writes.
+- **Event-based (push):** the copy is trusted until a write explicitly invalidates
+  it. Fresher (near-zero staleness) but requires you to *reliably* propagate every
+  write to every cache — a missed event means a permanently stale entry.
+
+Most production systems use **both**: event-based invalidation for freshness, with a
+TTL as a safety net so a missed event self-corrects eventually. Then, layered on
+top, you need **stampede protection** to survive the moment many entries become
+invalid at once.
+
+## Types / Variants
+
+**TTL (time-to-live).** Each entry expires after a fixed duration; the next read
+misses and repopulates. Dead simple, no write coordination, self-healing. Tradeoff:
+you serve data up to one TTL stale, and synchronized TTLs cause stampedes. Mitigate
+with **jitter** (randomize each TTL ±10–20%) so expiries spread out.
+
+**Explicit / event-based invalidation.** On a write, publish an event (or directly
+`DEL` the key) so caches drop the stale entry. Near-zero staleness. The hard parts:
+delivery reliability (use a durable bus or CDC), fan-out to *every* cache replica,
+and the populate/invalidate race (a slow reader can re-insert a stale value *after*
+the delete).
+
+**Write-through invalidation.** Because a write-through cache updates the cache and
+DB together, the cache is never stale for written keys — invalidation is implicit in
+the write path. (See *Caching strategies*.) Clean, at the cost of write latency.
+
+**Versioned keys (key namespacing).** Encode a version/generation into the cache key
+(`user:42:v7` or `products:list:{etag}`). To invalidate, bump the version — old keys
+are instantly unreachable and age out by eviction; no delete needed. Excellent for
+invalidating *collections* (bump a "namespace version" to wipe all derived keys at
+once) and immune to the populate/invalidate race because writers and readers never
+touch the same key. Cost: orphaned old-version entries linger until evicted.
+
+**Stampede / thundering-herd protection.** When a hot key expires, thousands of
+concurrent requests miss simultaneously and all hit the backend ("dogpile"). Three
+defenses:
+- **Locking / mutex (single-flight):** the first miss acquires a lock and recomputes;
+  others wait for the result or briefly serve the stale value. One backend call
+  instead of thousands.
+- **Request coalescing (single-flight):** in-process, collapse concurrent identical
+  misses into one upstream call and share the result (Go's `singleflight`, DataLoader).
+- **Early / probabilistic recompute (XFetch):** refresh a hot key *before* it
+  expires, with a probability that rises as expiry nears, so one lucky request
+  refreshes it while others still serve the fresh-enough value. Avoids any hard
+  expiry cliff.
+
+**Negative caching.** Cache the *absence* of a result (404s, empty lookups, "user not
+found") for a short TTL. Without it, every request for a nonexistent key is a
+guaranteed miss that hammers the DB — a common amplifier in penetration/abuse
+traffic. Keep negative TTLs short so a created-later record appears promptly.
+
+## When to use / When NOT
+
+- **TTL — use when:** bounded staleness is acceptable and you want zero write
+  coordination; always add jitter. **Avoid as the only mechanism when:** you need
+  near-real-time freshness.
+- **Event-based — use when:** freshness matters and you can deliver write events
+  reliably (CDC, durable bus). **Avoid when:** delivery is best-effort and a missed
+  event (permanent staleness) is unacceptable without a TTL backstop.
+- **Versioned keys — use when:** you invalidate whole collections, want to dodge the
+  populate/invalidate race, or want atomic "flip a version" semantics. **Avoid
+  when:** memory is tight and orphaned versions can't be afforded.
+- **Stampede protection — use when:** any key is hot enough that simultaneous misses
+  could overload the backend (almost always, at scale). **Avoid skipping it** for
+  hot keys — this is the most common production cache outage.
+- **Negative caching — use when:** misses for nonexistent keys are common or abusable.
+  **Avoid long negative TTLs** that hide newly-created records.
+
+## Tradeoffs
+
+| Mechanism | Staleness | Write coordination | Complexity | Main failure mode |
+| --------- | --------- | ------------------ | ---------- | ----------------- |
+| TTL | Up to one TTL | None | Lowest | Synchronized-expiry stampede |
+| Event-based | Near-zero | High (reliable delivery) | High | Missed event ⇒ permanent stale |
+| Write-through | Zero (written keys) | In write path | Medium | Higher write latency |
+| Versioned keys | Zero (new version) | Bump on write | Medium | Orphaned old versions linger |
+| Stampede protection | n/a (protects refill) | n/a | Medium | Lock contention if misconfigured |
+| Negative caching | Up to negative TTL | None | Low | Hides newly-created records |
+
+## Diagram
+
+Stampede protection: only the first miss recomputes; the herd waits or serves stale.
+
+<Mermaid code={`graph TD
+  R1[Req 1 — miss] -->|acquire lock| L{Lock held?}
+  R2[Req 2..N — miss] --> L
+  L -- "no (winner)" --> C[Recompute from DB]
+  C --> S[Set cache + release lock]
+  S --> Ret[Return fresh]
+  L -- "yes (losers)" --> W[Wait / serve stale-while-revalidate]
+  W --> Ret2[Return when populated]`} />
+
+## Try it
+
+Compare the invalidation mechanisms, then walk the decision tree.
+
+<CompareMatrix
+  client:visible
+  caption="Invalidation mechanisms compared"
+  columns={['TTL', 'Event-based', 'Versioned keys', 'Stampede guard', 'Negative cache']}
+  rows={[
+    {
+      criterion: 'Freshness',
+      cells: ['Bounded (TTL)', 'Near real-time', 'Immediate on bump', 'n/a', 'Bounded (short TTL)'],
+    },
+    {
+      criterion: 'Write coordination',
+      cells: ['None', 'High', 'Bump version', 'None', 'None'],
+    },
+    {
+      criterion: 'Solves dogpile?',
+      cells: ['No (worsens it)', 'No', 'Partially', 'Yes', 'No'],
+    },
+    {
+      criterion: 'Race-safe?',
+      cells: ['Yes', 'No (populate race)', 'Yes', 'Yes', 'Yes'],
+    },
+    {
+      criterion: 'Complexity',
+      cells: ['Lowest', 'High', 'Medium', 'Medium', 'Low'],
+    },
+    {
+      criterion: 'Best for',
+      cells: ['Tolerable staleness', 'Freshness-critical', 'Collection-wide invalidation', 'Hot keys at scale', 'Frequent/abusive misses'],
+    },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which invalidation approach?"
+  root={{
+    question: 'How fresh must cached data be?',
+    branches: [
+      {
+        label: 'Bounded staleness is fine (seconds–minutes)',
+        next: { leaf: { recommendation: 'TTL with jitter (+ stampede guard for hot keys)', detail: 'Simplest, self-healing, no write coordination. Randomize each TTL to avoid synchronized-expiry stampedes, and single-flight any hot key.' } },
+      },
+      {
+        label: 'Near real-time freshness required',
+        next: {
+          question: 'Can you deliver every write event reliably (CDC / durable bus)?',
+          branches: [
+            {
+              label: 'Yes, reliable delivery',
+              next: { leaf: { recommendation: 'Event-based invalidation + TTL backstop', detail: 'Push invalidations on write for freshness; keep a TTL so any missed event self-corrects. Use versioned keys or leases to dodge the populate/invalidate race.' } },
+            },
+            {
+              label: 'No, best-effort only',
+              next: { leaf: { recommendation: 'Write-through or versioned keys', detail: 'Make invalidation implicit in the write path (write-through) or sidestep deletes entirely by bumping a version embedded in the key.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'I need to invalidate a whole collection at once',
+        next: { leaf: { recommendation: 'Versioned / namespaced keys', detail: 'Bump a namespace version so all derived keys become unreachable atomically and age out by eviction. No per-key deletes, race-safe.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Facebook's "leases"** (NSDI '13) solve the populate/invalidate race: a miss
+  hands out a lease token, and a stale set without a valid lease is rejected.
+- **Varnish / Fastly** ship **stale-while-revalidate** and request coalescing
+  natively so an expired hot object is served stale while one request refreshes it.
+- **Rails / Django** use versioned (key-based) cache expiration — the model's
+  `updated_at` is baked into the key, so any update produces a fresh key with no
+  explicit purge.
+- **Go's `singleflight`** and **Facebook/Meta's DataLoader pattern** are the standard
+  request-coalescing tools against dogpile.
+- **Probabilistic early expiration (XFetch)** comes from the "Optimal Probabilistic
+  Cache Stampede Prevention" paper and is implemented in several Redis client
+  libraries.
+
+## Further reading
+
+- [Optimal Probabilistic Cache Stampede Prevention (Vattani et al., VLDB '15)](https://cseweb.ucsd.edu/~avattani/papers/cache_stampede.pdf) — the XFetch early-recompute algorithm.
+- [Scaling Memcache at Facebook — leases](https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf) — solving the race and the herd in production.
+- [MDN — `stale-while-revalidate` / Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) — HTTP-level revalidation.
