@@ -366,7 +366,7 @@
             "id": "E2",
             "type": "test_passes",
             "path": "make run (clean clone, documented prereqs only)",
-            "status": "PENDING"
+            "status": "STALE"
           }
         ]
       },
@@ -511,7 +511,7 @@
             "id": "E14",
             "type": "test_passes",
             "path": "skill rejects path-traversal in topic name",
-            "status": "PENDING"
+            "status": "VERIFIED"
           }
         ]
       },
@@ -533,7 +533,7 @@
             "id": "E16",
             "type": "test_passes",
             "path": "make build on a malformed-MDX fixture fails",
-            "status": "PENDING"
+            "status": "VERIFIED"
           }
         ]
       },
@@ -555,7 +555,7 @@
             "id": "E18",
             "type": "test_passes",
             "path": "drift check fails when bundled copy hash != canonical",
-            "status": "PENDING"
+            "status": "VERIFIED"
           }
         ]
       },
@@ -572,7 +572,7 @@
             "id": "E19",
             "type": "test_passes",
             "path": "make build produces ./dist",
-            "status": "PENDING"
+            "status": "VERIFIED"
           },
           {
             "id": "E20",
@@ -749,6 +749,17 @@
       "result": "Generated Option A: Astro+Starlight site (27 content pages across 5 clusters, exhaustive), PE widget library, canonical template (binding RT-4, fixed a copy-build defect), contributor skill (validated write-scope, drift check) + CI gates. Final review APPROVED (0 critical/important). Static evidence VERIFIED; runtime/manual evidence deferred to m5.",
       "artifacts_generated": 25,
       "coverage_percentage": 100
+    },
+    {
+      "number": 5,
+      "phase": "verify",
+      "timestamp": "2026-06-04T07:32:49Z",
+      "result": "PARTIAL: 10/19 SATISFIED, 9 PARTIAL, 0 MISSING. Boundaries 5/5; Goals 3/5; Invariants 2/9 (7 lack standing automated tests or real-run evidence). Binding RT-4 satisfied. 8 gaps (3 blocking: missing invariant tests for B2/U1/U3). No functional defects.",
+      "satisfied": 10,
+      "partial": 9,
+      "missing": 0,
+      "gaps": 8,
+      "convergence": "IN_PROGRESS"
     }
   ],
   "convergence": {

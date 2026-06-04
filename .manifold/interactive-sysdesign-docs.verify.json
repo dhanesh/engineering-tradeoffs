@@ -1,0 +1,310 @@
+{
+  "verification": {
+    "timestamp": "2026-06-04T07:32:49Z",
+    "result": "PARTIAL",
+    "binding_constraint": {
+      "required_truth_id": "RT-4",
+      "addressed": true,
+      "note": "Canonical template exists, builds when copied (defect fixed), content_match verified — binding constraint SATISFIED"
+    },
+    "matrix": [
+      {
+        "constraint": "B1",
+        "type": "GOAL",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "Content authored across 5 clusters, but exhaustiveness is manual_review (E11) — needs human sign-off",
+        "gap_id": "G8"
+      },
+      {
+        "constraint": "B2",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "last_reviewed in schema (content_match), but no test asserts every page carries it — invariant needs test_passes",
+        "gap_id": "G1"
+      },
+      {
+        "constraint": "B3",
+        "type": "GOAL",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "T1",
+        "type": "BOUNDARY",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "T2",
+        "type": "BOUNDARY",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "T3",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": true,
+        "status": "PARTIAL",
+        "gap": "make run serves (HTTP 200 verified); --open wired but browser-tab-open not observable headless",
+        "gap_id": "G4"
+      },
+      {
+        "constraint": "T4",
+        "type": "GOAL",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "T5",
+        "type": "BOUNDARY",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "T6",
+        "type": "INVARIANT",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": true,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "U1",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "Skeleton enforced on the TEMPLATE (test), but no standing test asserts every CONTENT page follows the 9-section order",
+        "gap_id": "G2"
+      },
+      {
+        "constraint": "U2",
+        "type": "GOAL",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "Same as T3: first-run serve verified; browser-open not observed headless",
+        "gap_id": "G4"
+      },
+      {
+        "constraint": "U3",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "Static-first + a11y verified by HTML grep + code review, but no standing automated a11y/no-JS test (invariant needs test_passes)",
+        "gap_id": "G3"
+      },
+      {
+        "constraint": "U4",
+        "type": "GOAL",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "S1",
+        "type": "INVARIANT",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "S2",
+        "type": "BOUNDARY",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": false,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "O1",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": true,
+        "status": "PARTIAL",
+        "gap": "Build+serve ran in-place; true clean-clone / npm ci reproducibility not yet executed (CI defined, no remote run)",
+        "gap_id": "G5"
+      },
+      {
+        "constraint": "O2",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": true,
+        "status": "PARTIAL",
+        "gap": "CI workflow defined + gate logic verified locally (E16), but not yet exercised on a real PR (no remote)",
+        "gap_id": "G6"
+      },
+      {
+        "constraint": "O3",
+        "type": "BOUNDARY",
+        "code": true,
+        "test": true,
+        "docs": true,
+        "ops": true,
+        "status": "SATISFIED"
+      },
+      {
+        "constraint": "O4",
+        "type": "INVARIANT",
+        "code": true,
+        "test": false,
+        "docs": true,
+        "ops": false,
+        "status": "PARTIAL",
+        "gap": "Skill present + validate-skill.sh passed, but staged/uncommitted in agent-skills and convention-compliance not recorded as automated evidence",
+        "gap_id": "G7"
+      }
+    ],
+    "coverage": {
+      "invariants": {
+        "satisfied": 2,
+        "total": 9,
+        "percentage": 22
+      },
+      "goals": {
+        "satisfied": 3,
+        "total": 5,
+        "percentage": 60
+      },
+      "boundaries": {
+        "satisfied": 5,
+        "total": 5,
+        "percentage": 100
+      }
+    },
+    "enhancement_checks": {
+      "genealogy": "PASS — no challenger:assumption invariants; no challenger:regulation constraints traded off",
+      "reversibility": "PASS — all reversibility_log steps TWO_WAY; no ONE_WAY steps requiring risk-watch",
+      "propagation": "PASS — no VIOLATED effects; the one TIGHTENED (B1 via TN2) has challenger:stakeholder, accepted",
+      "statistical": "N/A — no statistical/deterministic threshold constraints"
+    },
+    "gaps": [
+      {
+        "id": "G1",
+        "constraint": "B2",
+        "type": "invariant",
+        "issue": "No automated test asserts every content page has last_reviewed frontmatter",
+        "action": "Add a content-frontmatter test/CI step (e.g. assert each src/content/docs/**/*.mdx has last_reviewed) — promotes B2 to TESTED",
+        "blocking": true
+      },
+      {
+        "id": "G2",
+        "constraint": "U1",
+        "type": "invariant",
+        "issue": "9-section skeleton enforced only on the template, not on authored content pages",
+        "action": "Extend check-template-integrity (or add check-pages-skeleton.mjs) to assert each content page emits the 9 headings in order; wire into CI",
+        "blocking": true
+      },
+      {
+        "id": "G3",
+        "constraint": "U3",
+        "type": "invariant",
+        "issue": "No standing automated a11y / no-JS regression test for the widgets",
+        "action": "Add a Playwright (or axe-core) test: render demo page with JS disabled and assert full content present + keyboard nav on each island",
+        "blocking": true
+      },
+      {
+        "id": "G4",
+        "constraint": "T3/U2",
+        "type": "invariant/goal",
+        "issue": "make run serves (HTTP 200) but browser-tab auto-open not observed in headless env",
+        "action": "Manually run `make run` and confirm a browser tab opens to the site (one-time human check)",
+        "blocking": false
+      },
+      {
+        "id": "G5",
+        "constraint": "O1",
+        "type": "invariant",
+        "issue": "Clean-clone reproducibility not executed (build ran in working dir)",
+        "action": "Clone fresh (or run the CI workflow) and confirm `npm ci && make build` succeeds from scratch",
+        "blocking": false
+      },
+      {
+        "id": "G6",
+        "constraint": "O2",
+        "type": "invariant",
+        "issue": "CI build gate not yet exercised on a real PR (no git remote)",
+        "action": "Push feat/interactive-sysdesign-docs and open a PR; confirm the CI workflow runs and the gate passes",
+        "blocking": false
+      },
+      {
+        "id": "G7",
+        "constraint": "O4",
+        "type": "invariant",
+        "issue": "Contributor skill is staged but uncommitted in ~/code/grayquest-finance/agent-skills",
+        "action": "Review + commit + PR add-sysdesign-topic/ (and the workflow) to the agent-skills repo",
+        "blocking": false
+      },
+      {
+        "id": "G8",
+        "constraint": "B1",
+        "type": "goal",
+        "issue": "Content exhaustiveness is a human judgment (manual_review pending)",
+        "action": "Review the 5 clusters; set RT-6 evidence E11 to VERIFIED to confirm depth meets the exhaustive bar (TN2)",
+        "blocking": false
+      }
+    ],
+    "notes": "Functionality verified end-to-end (build green, 27 pages render, dev server 200, security boundary held under adversarial review, all executed test_passes green). PARTIAL is driven by INVARIANTS lacking STANDING automated tests (B2,U1,U3) or not-yet-executed real runs (O1 clean-clone, O2 real-PR), plus manual sign-offs (B1 content, T3/U2 browser-open). No functional defects outstanding."
+  },
+  "file_hashes": {
+    "package.json": "379c35fa193a606258ac42f4557a56df801a25f87330f2e8657671763299e562",
+    "package-lock.json": "fa88c132540019f4972adace5bbfc922d2fa067e5678cc8951a4eecdd637b2dc",
+    "astro.config.mjs": "d18425dc17d1bf2e6e96d3cef456a46445973eb93fa28569a1e19936c5fc4952",
+    "src/content.config.ts": "3777d378a010c08ce287b19f2f45ee74547afd8983b661b586852d30b8210fb8",
+    "Makefile": "2c6627e03c6c3819a159011a460bed8e3cb6f9234bbc57398727c4777cdbce7d",
+    ".github/workflows/ci.yml": "f0fcb5f0f9b196d6da41fc4ed8f4c2f2169612fd16d713adf204e88d1b65bb6c",
+    "scripts/check-pages-built.mjs": "6953ae79a120fe906ca39f5719f0aa06b951b30056fd39f0ae20bc7532893462",
+    "scripts/check-template-integrity.mjs": "ff6455a7a221f9480a3f62686ba96a33ce37d945d8eabede70cedaeccb90bc9f",
+    "templates/topic.mdx": "7e543a23331d4eea4cc532af50d955e5c37ce58070b999550ca31fa0d52b85a1",
+    "src/components/Mermaid.astro": "db7e2a09154f2b842c68573320e7efaa8fa0964164df1abaeb78702e9cf1c2b7",
+    "src/components/DecisionTree.tsx": "33a97b6329be8d835d129f6a75b444fef881dbf490e581a485d321f4f007cc43",
+    "src/components/CompareMatrix.tsx": "2335fbfd6b9992355363bd5e9a44165a91c6526878e28ddb730efa088e04ddb3",
+    "src/components/WhenWhyTabs.tsx": "3b2cac4de205ef3b15661c05400455ec54476da126f9d1deada22ec1772f6dfc",
+    "src/components/TradeoffSlider.tsx": "a6d8d478b8352f38475388e30c12a4c19ef71676f8ce34da497e9f5cb9f15fa3",
+    "src/components/useHydrated.ts": "5c211e9018bdbde0811491746a266647797ac572a4655f33c7acf29a593bd1b3"
+  },
+  "hashes_updated_at": "2026-06-04T18:24:05.158Z"
+}
