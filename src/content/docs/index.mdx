@@ -1,0 +1,37 @@
+---
+title: System Design Primer
+description: Interactive, decision-oriented system design documentation.
+template: splash
+hero:
+  tagline: Decision-oriented system design — patterns, tradeoffs, and interactive tools.
+  actions:
+    - text: Browse Design Patterns
+      link: /design-patterns/
+      icon: right-arrow
+      variant: primary
+    - text: Databases & CAP
+      link: /databases-cap/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Explore the clusters
+
+<CardGrid stagger>
+  <Card title="Design Patterns" icon="puzzle">
+    Reusable structural and behavioral patterns for distributed systems.
+  </Card>
+  <Card title="Event-Driven Architecture" icon="random">
+    Messaging, streaming, and asynchronous decoupling.
+  </Card>
+  <Card title="Databases & CAP" icon="seti:db">
+    Consistency, availability, partition tolerance, and storage tradeoffs.
+  </Card>
+  <Card title="Caching & Performance" icon="rocket">
+    Cache strategies, invalidation, and latency budgets.
+  </Card>
+  <Card title="Search Indexes" icon="magnifier">
+    Inverted indexes, ranking, and search infrastructure.
+  </Card>
+</CardGrid>
