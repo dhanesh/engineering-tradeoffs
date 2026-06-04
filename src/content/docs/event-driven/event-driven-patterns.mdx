@@ -1,0 +1,223 @@
+---
+title: Event-Driven Patterns
+description: Event notification, event-carried state transfer, event sourcing, CQRS, saga (choreography vs orchestration), transactional outbox, and change data capture — when and why each, and how the outbox fixes the dual-write problem.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Brokers and delivery semantics give you a reliable pipe; the *patterns* on this page
+tell you what to put through it. They answer recurring design questions: how thin or
+fat should an event be? Should state live as a current snapshot or as the full history
+of changes? How do you coordinate a business transaction across services that don't
+share a database? And — the question that quietly breaks most first-attempt
+event-driven systems — **how do you update your database and publish an event without
+the two getting out of sync?**
+
+That last one is the **dual-write problem**, and the **transactional outbox** is its
+standard fix; everything else here (event notification, event-carried state transfer,
+event sourcing, CQRS, sagas, CDC) is a named, battle-tested answer to one of these
+questions. They compose: a system might use event-carried state transfer for
+integration, event sourcing inside one service, CQRS to serve reads, sagas to
+coordinate a workflow, and an outbox + CDC to publish reliably. Knowing each by name —
+and when *not* to reach for it — is what separates an event-driven system that works
+from one that's eventually-inconsistent in the bad sense.
+
+## Mental model
+
+Group the patterns by the question they answer:
+
+1. **How much does an event carry?** A spectrum from *thin* to *fat*:
+   **event notification** ("something changed, go look") at the thin end →
+   **event-carried state transfer** ("here's the full new state") at the fat end.
+2. **How is state stored?** *Current state* (a row you overwrite) vs **event sourcing**
+   (the state *is* the append-only log of events; current state is a fold over them).
+3. **How are reads vs writes served?** Together (one model) vs **CQRS** (separate
+   write model and read model, kept in sync by events).
+4. **How is a multi-service transaction coordinated?** A distributed ACID transaction
+   (avoid) vs a **saga** (a sequence of local transactions with compensations), in
+   **choreography** or **orchestration** flavor.
+5. **How do you publish reliably?** The naive dual write (broken) vs the
+   **transactional outbox** + **change data capture** (correct).
+
+Most real designs are a *composition* of these, not a single one.
+
+## Types / Variants
+
+**Event notification.** The event is a thin signal — `OrderShipped { orderId }` — that
+says *something happened* but carries little data; interested consumers call back to
+fetch details. *Pros:* small events, loose coupling, the source stays authoritative.
+*Cons:* a callback storm (every consumer queries back), and the source must be up to
+answer. Use for simple "go refresh" notifications.
+
+**Event-carried state transfer (ECST).** The event carries the *full relevant state* —
+`CustomerUpdated { id, name, address, tier, ... }` — so consumers maintain their own
+local replica and never call back. *Pros:* maximum decoupling (consumers work even if
+the source is down), no callback load, great for read replicas across services.
+*Cons:* fatter events, data duplication, and consumers hold (eventually consistent)
+copies. Use to decouple services that would otherwise hammer the source for data.
+
+**Event sourcing.** Don't store current state; store the **ordered sequence of events**
+that produced it. Current state is derived by replaying (folding) the events. The log
+is the source of truth. *Pros:* complete audit trail for free, time-travel/replay,
+rebuild any projection, natural fit for finance/ledgers (a transaction is an immutable
+fact). *Cons:* querying current state needs projections (you can't `SELECT * WHERE`
+the event log), event-schema evolution is hard, snapshots needed for performance, and
+a real mental-model shift. Use when history *is* the requirement (audit, ledgers,
+temporal queries) — not as a default.
+
+**CQRS (Command Query Responsibility Segregation).** Split the **write model**
+(optimized for commands/consistency) from the **read model** (optimized for queries),
+keeping the read side in sync via events. Often paired with event sourcing (write =
+event log, read = projections) but independent of it. *Pros:* each side scales and is
+shaped independently; complex domains get a clean write model and fast denormalized
+reads. *Cons:* two models to maintain, eventual consistency between them (a write may
+not be instantly visible to reads), more moving parts. Use when read and write
+workloads diverge sharply or the domain is complex — *not* for simple CRUD.
+
+**Saga.** Coordinates a business transaction spanning multiple services *without* a
+distributed ACID transaction. It's a sequence of **local transactions**; if step *k*
+fails, run **compensating transactions** to undo steps *1..k-1* (semantic rollback,
+since you can't roll back committed local transactions). Two coordination styles:
+- **Choreography:** each service listens for the prior event and emits the next. No
+  central coordinator. Simple for short flows; the workflow is implicit and gets
+  tangled as steps grow.
+- **Orchestration:** a central **orchestrator** sends commands and tracks state,
+  invoking compensations on failure. The workflow is explicit and observable; the
+  orchestrator is a dependency and a thing to build. Rule: choreography for 2–3 steps,
+  orchestration once there's branching, many steps, timeouts, or compensation logic.
+
+**Transactional outbox.** The fix for the **dual-write problem**: you cannot
+atomically (a) commit to your database *and* (b) publish to a broker — they're two
+systems, no shared transaction; a crash between them leaves DB and broker
+inconsistent (event lost, or event published for a write that rolled back). The outbox
+solves it: **in the same local DB transaction**, write your business row *and* an
+`outbox` row describing the event. The transaction is atomic, so both commit or
+neither does. A **separate relay** then reads the outbox and publishes to the broker
+(at-least-once; consumers dedup). The event is now guaranteed to reflect committed
+state.
+
+**Change data capture (CDC).** Tail the database's **transaction log** (WAL/binlog) and
+turn committed row changes into a stream of events. Often the *relay* mechanism for the
+outbox (Debezium reads the outbox table's inserts from the WAL and publishes them), or
+a way to event-ify a legacy database with no app changes. *Pros:* reliable (reads the
+authoritative log), no dual write, decoupled from app code. *Cons:* couples consumers
+to the DB schema unless you use the outbox to shape clean events; operational
+complexity (connectors, offsets, schema changes). CDC + outbox is the production-grade
+way to publish events reliably.
+
+## When to use / When NOT
+
+- **Event notification — use when:** a thin "go refresh" signal suffices and consumers
+  can call back. **Avoid when:** the callback load is high or the source must stay up
+  for consumers to function.
+- **Event-carried state transfer — use when:** consumers should keep working if the
+  source is down and you want to kill callback traffic. **Avoid when:** the state is
+  huge or changes so fast that replicas are perpetually stale.
+- **Event sourcing — use when:** full audit/history, replay, or temporal queries are
+  real requirements (ledgers, finance, compliance). **Avoid when:** you just need
+  current state and CRUD — the complexity, schema-evolution pain, and projection
+  overhead aren't worth it.
+- **CQRS — use when:** read and write workloads diverge sharply or the domain is
+  complex enough to warrant separate models. **Avoid for** simple CRUD — it doubles
+  the models and adds eventual consistency for no gain.
+- **Saga — use when:** a business transaction spans services and you can't (and
+  shouldn't) use a distributed ACID transaction. **Choreography** for short flows,
+  **orchestration** for complex ones. **Avoid when:** the operation fits in a single
+  service's local transaction.
+- **Transactional outbox — use when:** you must update the DB *and* publish an event
+  reliably (i.e. almost any event-producing service). **Avoid only when:** you have a
+  genuinely idempotent, retry-safe publish that tolerates the dual-write race (rare).
+- **CDC — use when:** you need reliable change streams off a database, want to event-ify
+  a legacy system, or are implementing the outbox relay. **Avoid when:** a simple app
+  publish suffices and you don't want connector ops.
+
+## Tradeoffs
+
+| Pattern | Couples consumers to | Decoupling | Main cost | Use when |
+| ------- | -------------------- | ---------- | --------- | -------- |
+| Event notification | Source API (callback) | Moderate | Callback storms | Thin "go refresh" signals |
+| Event-carried state transfer | Event schema | High | Data duplication, stale replicas | Consumers must survive source downtime |
+| Event sourcing | Event log | High | Projections, schema evolution | Audit, replay, ledgers |
+| CQRS | Read/write contracts | High | Two models, eventual consistency | Diverging read/write, complex domain |
+| Saga (choreography) | Each other's events | High | Implicit, tangled workflow | Short multi-service flows |
+| Saga (orchestration) | Orchestrator | Moderate | Coordinator to build/run | Complex flows, compensation |
+| Transactional outbox | DB transaction | — | Outbox table + relay | Reliable publish (the dual-write fix) |
+| Change data capture | DB schema (unless outbox) | Moderate | Connector ops | Reliable change streams / legacy |
+
+## Diagram
+
+The transactional outbox: one atomic DB transaction writes both the business row and
+the event; a relay (often CDC) publishes it reliably — no dual write.
+
+<Mermaid code={`graph TD
+  S[Service] -->|single local transaction| TX{DB transaction}
+  TX --> R1[(business row)]
+  TX --> R2[(outbox row = event)]
+  TX -->|commit: both or neither| OK[Atomic commit]
+  R2 --> CDC[Relay / CDC reads outbox]
+  CDC -->|publish at-least-once| B((Broker))
+  B --> C[Consumers dedup by event id]`} />
+
+## Try it
+
+Compare the patterns, then read the when/why/why-not for event sourcing — the one most
+often adopted for the wrong reasons.
+
+<CompareMatrix
+  client:visible
+  caption="Event-driven patterns at a glance"
+  columns={['Notification', 'ECST', 'Event sourcing', 'CQRS', 'Saga', 'Outbox', 'CDC']}
+  rows={[
+    { criterion: 'Answers', cells: ['How thin?', 'How fat?', 'How stored?', 'Reads vs writes', 'Coordinate txn', 'Reliable publish', 'Change stream'] },
+    { criterion: 'Event payload', cells: ['Thin (id only)', 'Full state', 'Each change', 'Either', 'Commands/events', 'Mirrors a write', 'Row change'] },
+    { criterion: 'Consumer calls back?', cells: ['Yes', 'No', 'No', 'No', 'No', 'No', 'No'] },
+    { criterion: 'Source of truth', cells: ['Source DB', 'Source DB', 'The event log', 'Write model', 'Each local txn', 'DB + outbox', 'DB WAL/binlog'] },
+    { criterion: 'Main benefit', cells: ['Simple, small', 'Survives source downtime', 'Full audit/replay', 'Independent read/write scaling', 'No distributed ACID txn', 'Fixes dual write', 'Reliable, app-agnostic'] },
+    { criterion: 'Main cost', cells: ['Callback load', 'Duplication, staleness', 'Projections, schema evo', 'Two models, eventual consistency', 'Compensations, complexity', 'Outbox + relay', 'Connector ops, schema coupling'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Event sourcing"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use event sourcing when the history of changes is itself a requirement: audit trails, financial ledgers, regulatory compliance, temporal queries ("what was the balance on March 3?"), or the ability to rebuild any read projection from scratch. It fits domains where a fact is naturally immutable — a payment, a trade, a state transition — rather than a row to overwrite.',
+    },
+    {
+      label: 'Why',
+      content: 'Storing the ordered events instead of the current state gives a complete, tamper-evident audit trail for free, lets you rebuild or add new projections by replaying history, and enables time-travel debugging and what-if analysis. Current state is just a fold over the events, so you can derive any view you later discover you need. It pairs naturally with CQRS (events feed read projections).',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Querying current state requires building and maintaining projections — you cannot simply SELECT against the event log. Event-schema evolution is genuinely hard (old events are immutable, so you version and upcast). You need snapshots to avoid replaying millions of events, and the whole approach is a significant mental-model shift. For plain CRUD where you only need current state, event sourcing is over-engineering — use a normal table.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Banking / ledgers** are the textbook event-sourcing fit: a transaction is an
+  immutable event, balance is a fold, and audit is intrinsic.
+- **Debezium** is the de facto CDC tool — it tails MySQL binlogs and Postgres WAL into
+  Kafka, and is the standard implementation of the outbox relay.
+- **Axon, EventStoreDB, and Marten** are purpose-built event-sourcing/CQRS frameworks.
+- **Uber, Netflix, and large e-commerce** use sagas (often orchestrated via tools like
+  **Temporal** or **AWS Step Functions**) to coordinate multi-service order/payment
+  workflows with compensation.
+- **The transactional outbox** is recommended across microservice references
+  (microservices.io, AWS Prescriptive Guidance) as the standard reliable-publish fix.
+
+## Further reading
+
+- [Martin Fowler — Event Sourcing](https://martinfowler.com/eaaDev/EventSourcing.html) and [What do you mean by "Event-Driven"?](https://martinfowler.com/articles/201701-event-driven.html) — notification vs ECST vs sourcing.
+- [microservices.io — Transactional outbox, Saga, CQRS](https://microservices.io/patterns/data/transactional-outbox.html) — the canonical pattern catalog with the dual-write framing.
+- [Debezium — Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html) — CDC-based outbox in practice.
+- [Chris Richardson — Saga pattern](https://microservices.io/patterns/data/saga.html) — choreography vs orchestration and compensations.

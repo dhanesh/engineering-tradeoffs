@@ -26,7 +26,13 @@ export default defineConfig({
         },
         {
           label: 'Event-Driven Architecture',
-          items: [{ label: 'Overview', slug: 'event-driven' }],
+          items: [
+            { label: 'Overview', slug: 'event-driven' },
+            { label: 'Message brokers', slug: 'event-driven/message-brokers' },
+            { label: 'Broker comparison', slug: 'event-driven/broker-comparison' },
+            { label: 'Delivery semantics', slug: 'event-driven/delivery-semantics' },
+            { label: 'Event-driven patterns', slug: 'event-driven/event-driven-patterns' },
+          ],
         },
         {
           label: 'Databases & CAP',

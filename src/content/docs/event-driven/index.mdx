@@ -1,12 +1,225 @@
 ---
 title: Event-Driven Architecture
-description: Messaging, streaming, and asynchronous decoupling.
+description: What EDA is — events vs commands vs messages, producers and consumers, pub/sub vs point-to-point, choreography vs orchestration, and the decoupling-versus-eventual-consistency tradeoff.
 last_reviewed: "2026-06-04"
 decision_guidance: true
 ---
 
-Overview of event-driven architecture. Real content lands here later —
-individual topics are authored from `templates/topic.mdx`.
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
-This cluster will cover message queues, event streaming, pub/sub, event
-sourcing, and delivery-guarantee tradeoffs.
+## Overview
+
+In a request/response system, the caller knows *who* does the work and *waits* for
+the answer: `order-service` calls `inventory-service`, blocks, gets a reply. That
+coupling is simple but rigid — the caller must know every downstream, every
+downstream must be up *right now*, and adding a new consumer means editing the
+caller. **Event-driven architecture (EDA)** inverts this. A component announces
+that *something happened* — `OrderPlaced` — to a broker, and walks away. It does
+not know or care who reacts. Zero, one, or twenty consumers may pick that event up,
+now or in five minutes, to charge a card, reserve stock, email a receipt, update
+analytics. The producer is **decoupled in space** (doesn't know the consumers),
+**in time** (consumers needn't be up when it fires), and **in flow** (doesn't wait).
+
+That decoupling is the whole point — and the whole cost. You buy independent
+scaling, resilience, and extensibility, and you pay in **eventual consistency**,
+**harder debugging** (no stack trace spans the system), and **ordering and
+duplication problems** that request/response never had. This cluster is about
+making that trade deliberately: what a broker does and which type to pick, which
+product, what delivery guarantees you actually get, and the patterns
+(event sourcing, CQRS, saga, outbox) that make EDA correct rather than just async.
+
+## Mental model
+
+Think of EDA as replacing **direct phone calls** with a **bulletin board**. In
+request/response, A phones B and stays on the line. In EDA, A pins a note to a board
+("Order 4417 placed") and leaves; anyone watching the board reads it on their own
+schedule. The board (the **broker**) is the load-bearing piece — it absorbs the
+mismatch between how fast notes are pinned and how fast they're read, and it decides
+whether a note is consumed once or read by everyone.
+
+Three distinctions define every event-driven design:
+
+1. **What is the message?** An **event** ("this happened", past tense, a fact) vs a
+   **command** ("do this", imperative, addressed to someone) vs a **message** (the
+   neutral envelope that carries either). The semantics differ even when the bytes
+   on the wire look identical.
+2. **How is it distributed?** **Point-to-point** (each message goes to exactly one
+   consumer — work distribution) vs **publish/subscribe** (each message goes to
+   *every* interested subscriber — fan-out / notification).
+3. **Who owns the workflow?** **Choreography** (each service reacts to events with no
+   central conductor) vs **orchestration** (a coordinator issues commands and tracks
+   the overall process).
+
+Get those three right and the rest is plumbing.
+
+## Types / Variants
+
+**Event vs command vs message — the semantic core.**
+
+- **Event:** a statement of fact about the past — `PaymentCaptured`, `UserSignedUp`.
+  The producer asserts what happened; it does *not* name a recipient or expect a
+  particular reaction. Events are the natural unit of pub/sub: many consumers, each
+  free to interpret. Naming is past-tense for a reason — it signals "this is
+  immutable history," not "please do X."
+- **Command:** a request to perform an action — `CapturePayment`, `ShipOrder`.
+  Imperative, addressed to a *specific* handler, and it can be *rejected*. Commands
+  usually go point-to-point to exactly one owner. A command implies an expected
+  outcome; an event does not.
+- **Message:** the transport-level envelope — headers + payload + metadata — that
+  carries either an event or a command. "Message broker" and "messaging" are
+  transport terms; "event" and "command" are *intent* terms layered on top.
+
+The trap: emitting an event when you mean a command. `OrderShippedEvent` consumed by
+exactly one service that *must* act on it is really a disguised command, and treating
+it as a broadcast fact invites a second consumer to quietly break the workflow.
+
+**Producers and consumers.** A **producer** (publisher) emits messages without
+knowledge of who consumes them. A **consumer** (subscriber) processes messages
+without knowledge of who produced them. Both scale independently; the broker is the
+indirection that lets neither know the other. A single service is usually both —
+consuming some events, producing others — which is how event *chains* form.
+
+**Point-to-point vs publish/subscribe.**
+
+- **Point-to-point (queue):** a message is delivered to *exactly one* of N competing
+  consumers. This is **work distribution / load balancing** — add consumers to
+  process faster. Used for tasks: "resize this image," "send this email."
+- **Publish/subscribe (topic):** a message is delivered to *every* subscriber. This
+  is **fan-out / notification** — one `PriceChanged` event updates the cache,
+  re-indexes search, and notifies watchers, each independently. Within pub/sub,
+  **consumer groups** reintroduce point-to-point *inside* one logical subscriber:
+  the group as a whole sees every message, but the message is handled by only one
+  instance in the group (covered in *Message brokers*).
+
+**Choreography vs orchestration — who owns the multi-step workflow.**
+
+- **Choreography:** no central brain. Each service emits events and reacts to others'
+  events. `OrderPlaced` → payment service reacts and emits `PaymentCaptured` →
+  shipping service reacts. Maximally decoupled, scales naturally, but the *workflow
+  exists nowhere explicitly* — it's emergent, which makes it hard to see, reason
+  about, and change.
+- **Orchestration:** a central **orchestrator** owns the process, issues commands to
+  each service in turn, and tracks state. The workflow is explicit and observable in
+  one place, at the cost of a coordinator that every step depends on. This is the
+  saga-orchestration model (see *Event-driven patterns*).
+
+The rule of thumb: choreography for *2–3 steps* with loose coupling; orchestration
+once a workflow has *many steps, branching, compensation, or timeouts* you need to
+see and manage centrally.
+
+## When to use / When NOT
+
+- **Use EDA when:** components must scale and deploy independently; you need fan-out
+  (one fact, many reactions) or buffering to absorb load spikes; producers must not
+  block on slow/optional downstreams (analytics, notifications); you want temporal
+  decoupling so a consumer can be down without dropping work; or the domain is
+  *naturally* a stream of facts (clicks, transactions, IoT, audit).
+- **Avoid EDA when:** the caller genuinely needs an immediate, synchronous answer
+  (read paths, "is this card valid right now?"); a simple request/response is enough
+  and async would only add a broker to operate and eventual-consistency bugs to
+  debug; strong, read-your-writes consistency is a hard requirement and you can't
+  redesign around it; or the team can't yet operate a broker and handle
+  duplicates/out-of-order delivery. **Async is not free** — adopt it where the
+  decoupling pays for the operational and cognitive cost, not by default.
+
+## Tradeoffs
+
+| Concern | Request/response (sync) | Event-driven (async) |
+| ------- | ----------------------- | -------------------- |
+| Coupling | Caller knows callees | Producer knows nobody |
+| Latency to caller | Pays full downstream latency | Returns immediately |
+| Consistency | Strong, read-your-writes easy | Eventual; must design for it |
+| Failure of a downstream | Caller fails / must handle | Buffered; consumer catches up |
+| Adding a new consumer | Edit the caller | Subscribe; producer untouched |
+| Debugging | One stack trace / span | Distributed; needs tracing + correlation IDs |
+| Ordering & duplicates | Implicit, in-order | Must be designed (keys, idempotency) |
+| Load spikes | Backpressure to caller | Absorbed by the broker buffer |
+
+| Concern | Point-to-point (queue) | Publish/subscribe (topic) |
+| ------- | ---------------------- | ------------------------- |
+| Delivery | One consumer per message | Every subscriber gets it |
+| Purpose | Work distribution | Fan-out / notification |
+| Scaling consumers | Faster throughput | Each subscriber independent |
+| New subscriber effect | Steals work from the pool | Adds an independent reaction |
+
+| Concern | Choreography | Orchestration |
+| ------- | ------------ | ------------- |
+| Coordination | Emergent from events | Central orchestrator |
+| Coupling | Loosest | Services coupled to coordinator |
+| Visibility of workflow | Implicit, scattered | Explicit, one place |
+| Best for | Few steps, loose coupling | Many steps, branching, compensation |
+
+## Diagram
+
+One `OrderPlaced` event fans out to many independent consumers; producer and
+consumers never reference each other directly.
+
+<Mermaid code={`graph LR
+  P[Order service] -->|OrderPlaced event| B((Broker / topic))
+  B --> C1[Payment service]
+  B --> C2[Inventory service]
+  B --> C3[Notification service]
+  B --> C4[Analytics pipeline]
+  C1 -->|PaymentCaptured| B2((Broker))
+  B2 --> C5[Shipping service]`} />
+
+## Try it
+
+Compare the two distribution models, then read when async pays off and when it does
+not.
+
+<CompareMatrix
+  client:visible
+  caption="Point-to-point vs publish/subscribe"
+  columns={['Point-to-point (queue)', 'Publish/subscribe (topic)']}
+  rows={[
+    { criterion: 'Who receives a message', cells: ['Exactly one consumer', 'Every subscriber'] },
+    { criterion: 'Primary purpose', cells: ['Work distribution / load balancing', 'Fan-out / notification'] },
+    { criterion: 'Add a consumer →', cells: ['Shares the workload (faster)', 'New independent reaction'] },
+    { criterion: 'Typical payload', cells: ['Commands / tasks', 'Events / facts'] },
+    { criterion: 'Coupling', cells: ['One known logical handler', 'Producer knows no subscribers'] },
+    { criterion: 'Example', cells: ['Resize-image job queue', 'PriceChanged → cache, search, alerts'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Event-driven architecture"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use EDA when components must scale and deploy independently, when one fact must trigger many reactions (fan-out), when you need to absorb load spikes with a buffer, when producers must not block on slow or optional downstreams, or when the domain is naturally a stream of facts (transactions, clicks, IoT, audit logs).',
+    },
+    {
+      label: 'Why',
+      content: 'Decoupling in space (producer knows no consumers), time (consumers can be down and catch up), and flow (producer does not wait) buys independent scaling, resilience to downstream failure, and trivial extensibility — a new consumer subscribes without touching the producer. The broker absorbs the rate mismatch between fast producers and slow consumers.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'You inherit eventual consistency (no read-your-writes for free), distributed debugging with no single stack trace, and ordering and duplicate-delivery problems that must be designed away with partition keys and idempotency. You add a broker to operate and make highly available. If the caller needs a synchronous answer or strong consistency, request/response is simpler and correct — do not adopt EDA by default.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Uber** runs a large event-driven platform on Kafka — trips, driver location, and
+  pricing flow as event streams consumed by dozens of independent services.
+- **Netflix** uses events for everything from playback telemetry to its Keystone
+  pipeline, decoupling producers from the many analytics and personalization
+  consumers downstream.
+- **Shopify** processes orders and webhooks through queues and streams so a checkout
+  never blocks on fulfilment, fraud, or email.
+- **Banking / payments** systems model the ledger as an append-only stream of events
+  (a transaction is a fact, never mutated), making event sourcing and audit natural.
+- **AWS** itself is event-driven internally; EventBridge, SNS, SQS, and Kinesis are
+  the externalized primitives customers build the same way.
+
+## Further reading
+
+- [Martin Fowler — What do you mean by "Event-Driven"?](https://martinfowler.com/articles/201701-event-driven.html) — disentangles the four meanings of "event-driven."
+- [Martin Fowler — Event Collaboration & choreography vs orchestration](https://martinfowler.com/eaaDev/EventCollaboration.html) — the coordination tradeoff.
+- [Enterprise Integration Patterns (Hohpe & Woolf)](https://www.enterpriseintegrationpatterns.com/) — the canonical messaging-pattern catalog.
+- [AWS — Event-driven architectures](https://docs.aws.amazon.com/lambda/latest/dg/concepts-event-driven-architectures.html) — vendor overview of the building blocks.

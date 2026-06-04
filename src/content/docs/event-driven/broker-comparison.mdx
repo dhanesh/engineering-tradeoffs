@@ -1,0 +1,282 @@
+---
+title: Broker Comparison
+description: Kafka, RabbitMQ, AWS SQS/SNS, NATS + JetStream, Apache Pulsar, Redis Streams, and Google Pub/Sub — model, ordering, delivery guarantees, throughput, retention/replay, ops cost, and the sweet spot for each, with a which-broker decision tree.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+"Which broker?" is the decision teams agonize over and most often get wrong by
+choosing on popularity rather than fit. The honest answer starts one level up: first
+decide the **type** you need — queue, log, or pub/sub (see *Message brokers*) — then
+the product almost picks itself, modulated by whether you want managed-vs-self-hosted,
+your throughput, and your replay needs. Kafka and RabbitMQ are not competitors so much
+as different tools: Kafka is a *log*, RabbitMQ is a *queue/router*. Pitting them
+head-to-head is usually a category error.
+
+This page profiles the seven brokers most teams actually choose between —
+**Kafka, RabbitMQ, AWS SQS/SNS, NATS (+ JetStream), Apache Pulsar, Redis Streams, and
+Google Pub/Sub** — on model, ordering, delivery guarantees, throughput,
+retention/replay, operational cost, and sweet spot. The goal is to make the pick
+defensible: not "everyone uses Kafka," but "we need replay and multiple consumer
+groups at high throughput and we can operate it, so Kafka."
+
+## Mental model
+
+Sort the field on two axes and most of the decision falls out.
+
+**Axis 1 — type (what survives after delivery).**
+- *Queue/router* (delete on ack): RabbitMQ, SQS.
+- *Log* (retain + replay): Kafka, Pulsar, Kinesis, Redis Streams, JetStream.
+- *Pub/sub* (fan-out): SNS, NATS core, Google Pub/Sub.
+(Several products straddle: Pulsar is a log that *also* does queue semantics; JetStream
+is a log bolted onto NATS pub/sub; Google Pub/Sub is durable pub/sub with replay.)
+
+**Axis 2 — who operates it.**
+- *Fully managed* (no servers): SQS, SNS, Google Pub/Sub, Kinesis, and managed Kafka
+  (MSK, Confluent Cloud) / managed RabbitMQ.
+- *You run it* (max control, max ops): self-hosted Kafka, RabbitMQ, Pulsar, NATS,
+  Redis.
+
+The single biggest cost driver in practice is **operational burden**, not features.
+Self-hosted Kafka and Pulsar are powerful and operationally heavy (ZooKeeper/KRaft,
+brokers, partitions, rebalancing; Pulsar adds BookKeeper). Managed cloud-native
+services (SQS/SNS, Google Pub/Sub) are nearly zero-ops but lock you to a cloud and cap
+some control. NATS is the lightest thing that still does durable streaming.
+
+## Types / Variants
+
+**Apache Kafka.** *Model:* partitioned, append-only log; dumb broker, smart consumer;
+pull. *Ordering:* total within a partition (key→partition). *Delivery:* at-least-once
+by default; exactly-once *within Kafka* via idempotent producer + transactions. *
+Throughput:* the throughput king — millions of msgs/s, sequential disk I/O,
+zero-copy. *Retention/replay:* first-class — time/size retention plus **log
+compaction**; replay by resetting offsets. *Ops:* heavy (brokers, partitions,
+rebalancing; KRaft removes ZooKeeper). *Sweet spot:* high-volume event streaming,
+event sourcing, CDC, multiple independent consumer groups, replay. *Not for:* simple
+task queues, per-message TTL/priority/delay, tiny low-volume apps.
+
+**RabbitMQ.** *Model:* smart broker — AMQP exchanges/bindings route to queues; push;
+delete on ack. *Ordering:* per-queue, but breaks with competing consumers/requeues;
+quorum/stream queues improve durability. *Delivery:* at-least-once with publisher
+confirms + consumer acks; at-most-once if you skip acks. *Throughput:* tens of
+thousands/s per queue — solid, well below Kafka. *Retention/replay:* none by default
+(messages vanish on ack); the newer **stream** queue type adds a replayable log.
+*Ops:* moderate; clustering and mirrored/quorum queues need care. *Sweet spot:*
+complex routing, per-message priorities/TTL/delay, request/reply, task queues, RPC.
+*Not for:* replay, very high throughput, retaining history.
+
+**AWS SQS / SNS.** *Model:* SQS = managed queue; SNS = managed pub/sub; the classic
+pattern is **SNS→SQS fan-out** (durable per-subscriber). *Ordering:* SQS Standard =
+best-effort (and possible duplicates); **SQS FIFO** = strict ordering + dedup within a
+message group, at lower throughput. *Delivery:* Standard = at-least-once; FIFO =
+exactly-once *processing* via dedup IDs. *Throughput:* Standard = effectively
+unlimited and auto-scaling; FIFO = capped (300–3000 msg/s with batching). *
+Retention/replay:* up to 14 days retention but **no replay** (consumed = deleted; not
+a log). *Ops:* near zero — fully managed. *Sweet spot:* AWS-native decoupling and task
+queues with no infra to run. *Not for:* replay, streaming analytics, multi-cloud,
+strict ordering at high throughput.
+
+**NATS (+ JetStream).** *Model:* NATS core = blazing-fast, transient pub/sub (and
+request/reply), no persistence. **JetStream** adds a durable, replayable **log** with
+streams, consumers (push *and* pull), and at-least-once / exactly-once dedup.
+*Ordering:* per-stream/subject sequence. *Delivery:* core = at-most-once (fire and
+forget); JetStream = at-least-once + dedup window for effectively-once. *Throughput:*
+very high, very low latency; single small binary. *Retention/replay:* JetStream
+retains and replays (limits, interest, or work-queue policies). *Ops:* the lightest —
+one Go binary, trivial to run, good at edge/IoT. *Sweet spot:* low-latency
+microservice messaging, edge/IoT, request/reply, and lightweight durable streaming
+without Kafka's weight. *Not for:* the deep Kafka ecosystem (Connect, ksqlDB, huge
+retention) when you truly need it.
+
+**Apache Pulsar.** *Model:* log like Kafka but with **compute/storage separation** —
+stateless brokers over **BookKeeper** storage; natively does *both* streaming (log)
+**and** queuing (shared subscriptions). *Ordering:* per-partition; subscription modes
+(exclusive/failover/shared/key-shared) trade ordering for parallelism. *Delivery:*
+at-least-once; exactly-once via transactions; per-message acks (unlike Kafka's
+offset). *Throughput:* Kafka-class, with easier scaling/rebalancing thanks to
+storage separation and **tiered storage** for cheap infinite retention. *Ops:* the
+heaviest — brokers *plus* BookKeeper *plus* ZooKeeper/metadata; powerful but a lot to
+run. *Sweet spot:* you want Kafka-grade streaming *and* queue semantics, strong
+multi-tenancy, geo-replication, and long/tiered retention in one system. *Not for:*
+teams wanting minimal operational surface.
+
+**Redis Streams.** *Model:* an append-only **log** data type inside Redis (`XADD`,
+`XREADGROUP`) with consumer groups and per-consumer pending lists. *Ordering:* total
+within a stream (single shard). *Delivery:* at-least-once with explicit `XACK`;
+pending-entries list enables claim/retry. *Throughput:* very high for in-memory
+workloads; bounded by Redis memory and single-shard nature. *Retention/replay:*
+capped by `MAXLEN`/`MINID` (trim) and by available memory; replay within retained
+range; persistence via RDB/AOF. *Ops:* low *if you already run Redis*; durability is
+weaker than disk-logs (async replication can lose recent writes). *Sweet spot:*
+teams already on Redis wanting a lightweight stream/queue without a new system; modest
+retention. *Not for:* large durable history, primary system-of-record streaming.
+
+**Google Cloud Pub/Sub.** *Model:* fully-managed, global **pub/sub** with durable
+per-subscription delivery; push *and* pull. *Ordering:* unordered by default;
+**ordering keys** give per-key ordering (lower throughput). *Delivery:* at-least-once;
+**exactly-once delivery** is supported per-subscription. *Throughput:* effectively
+unlimited, auto-scaling, multi-region. *Retention/replay:* configurable retention +
+**seek/snapshot** for replay (a managed log-like capability). *Ops:* near zero —
+serverless. *Sweet spot:* GCP-native event ingestion and fan-out at any scale without
+running infra. *Not for:* multi-cloud independence, the Kafka ecosystem, fine-grained
+self-managed control.
+
+## When to use / When NOT
+
+- **Kafka — pick when:** high-throughput streaming, replay, event sourcing/CDC, and
+  multiple consumer groups, and you (or a managed service) can operate it. **Skip
+  when:** you want a simple task queue with priorities/TTL/delay, or volume is tiny.
+- **RabbitMQ — pick when:** you need rich routing, per-message priority/TTL/delay,
+  request/reply, and reliable task queues at moderate volume. **Skip when:** you need
+  replay or Kafka-scale throughput.
+- **SQS/SNS — pick when:** you're on AWS and want zero-ops decoupling and fan-out
+  (SNS→SQS). **Skip when:** you need replay, streaming analytics, or multi-cloud.
+- **NATS/JetStream — pick when:** you want ultra-low-latency microservice messaging,
+  edge/IoT, or lightweight durable streaming without Kafka's weight. **Skip when:**
+  you need Kafka's mature ecosystem and very large retention.
+- **Pulsar — pick when:** you want streaming *and* queuing, multi-tenancy,
+  geo-replication, and tiered long retention in one platform. **Skip when:** you can't
+  absorb the heaviest operational footprint of the field.
+- **Redis Streams — pick when:** you already run Redis and want a lightweight
+  stream/queue with consumer groups and modest retention. **Skip when:** you need
+  durable large-scale history or strong durability guarantees.
+- **Google Pub/Sub — pick when:** you're on GCP and want serverless, global,
+  auto-scaling pub/sub with replay. **Skip when:** you need multi-cloud or Kafka's
+  ecosystem.
+
+## Tradeoffs
+
+The core tension: **Kafka/Pulsar** maximize throughput, replay, and consumer fan-out
+at high ops cost; **RabbitMQ** maximizes routing/queue features at moderate scale;
+**managed cloud (SQS/SNS, Pub/Sub)** minimize ops at the price of lock-in and limited
+control; **NATS/Redis Streams** minimize footprint at the price of ecosystem and
+durability depth. There is no "best" — only best-for-your-constraints.
+
+| Broker | Model | Ordering | Delivery | Throughput | Retention/replay | Ops cost |
+| ------ | ----- | -------- | -------- | ---------- | ---------------- | -------- |
+| Kafka | Partitioned log (pull) | Per partition | At-least-once; EOS in-Kafka | Very high | First-class + compaction | High |
+| RabbitMQ | Smart broker / queue (push) | Per queue (fragile) | At-least/at-most-once | Moderate | None (streams: yes) | Moderate |
+| SQS / SNS | Managed queue / pub-sub | FIFO opt; Std best-effort | At-least-once; FIFO dedup | Std: vast; FIFO: capped | Retention, no replay | Near zero |
+| NATS + JetStream | Pub/sub + durable log | Per subject/stream | Core: at-most; JS: at-least + dedup | Very high, low latency | JetStream replay | Lowest |
+| Pulsar | Log + queue (BookKeeper) | Per partition | At-least-once; txn EOS | Very high | First-class + tiered | Highest |
+| Redis Streams | In-memory log | Total (single shard) | At-least-once (XACK) | High (memory-bound) | Trim-bounded | Low (if on Redis) |
+| Google Pub/Sub | Managed pub/sub | Keys opt; else none | At-least-once; EOD opt | Vast, global | Seek/snapshot replay | Near zero |
+
+## Diagram
+
+The decision collapses to a few questions: replay? managed? routing vs streaming?
+
+<Mermaid code={`graph TD
+  Q1{Need replay / multiple<br/>independent consumer groups?} -->|Yes| Q2{Want zero-ops managed?}
+  Q1 -->|No| Q3{Need rich routing,<br/>priorities, TTL, delay?}
+  Q2 -->|Yes| M1[Managed Kafka / Kinesis<br/>or Google Pub/Sub]
+  Q2 -->|No, can self-host| M2[Kafka — or Pulsar<br/>if you also need queuing]
+  Q3 -->|Yes| M3[RabbitMQ]
+  Q3 -->|No, simple task queue| Q4{On AWS?}
+  Q4 -->|Yes| M4[SQS + SNS]
+  Q4 -->|No / already on Redis| M5[Redis Streams or NATS JetStream]`} />
+
+## Try it
+
+Compare all seven across the criteria that decide the pick, then walk the decision
+tree.
+
+<CompareMatrix
+  client:visible
+  caption="Seven brokers, side by side"
+  columns={['Kafka', 'RabbitMQ', 'SQS/SNS', 'NATS+JetStream', 'Pulsar', 'Redis Streams', 'Google Pub/Sub']}
+  rows={[
+    { criterion: 'Type', cells: ['Log', 'Queue / router', 'Queue + pub/sub', 'Pub/sub + log', 'Log + queue', 'Log (in-memory)', 'Pub/sub + replay'] },
+    { criterion: 'Delivery / push-pull', cells: ['Pull', 'Push', 'Pull (SQS)', 'Both', 'Both', 'Pull', 'Both'] },
+    { criterion: 'Ordering', cells: ['Per partition', 'Per queue (fragile)', 'FIFO opt', 'Per subject/stream', 'Per partition', 'Total (1 shard)', 'Per key (opt)'] },
+    { criterion: 'Delivery guarantee', cells: ['At-least; EOS in-Kafka', 'At-least / at-most', 'At-least; FIFO dedup', 'Core at-most; JS at-least', 'At-least; txn EOS', 'At-least (XACK)', 'At-least; EOD opt'] },
+    { criterion: 'Throughput', cells: ['Very high', 'Moderate', 'Std vast / FIFO capped', 'Very high, low latency', 'Very high', 'High (memory-bound)', 'Vast, global'] },
+    { criterion: 'Retention / replay', cells: ['Yes + compaction', 'No (streams: yes)', 'Retain, no replay', 'JetStream replay', 'Yes + tiered', 'Trim-bounded', 'Seek/snapshot'] },
+    { criterion: 'Ops cost', cells: ['High', 'Moderate', 'Near zero', 'Lowest', 'Highest', 'Low (if on Redis)', 'Near zero'] },
+    { criterion: 'Managed?', cells: ['MSK/Confluent', 'CloudAMQP etc.', 'Fully (AWS)', 'Synadia / self', 'StreamNative / self', 'ElastiCache etc.', 'Fully (GCP)'] },
+    { criterion: 'Sweet spot', cells: ['Streaming, sourcing, CDC, replay', 'Routing, task queues, RPC', 'AWS-native decoupling', 'Edge/IoT, low-latency, light streaming', 'Streaming + queuing in one', 'Lightweight stream on Redis', 'GCP-native fan-out at scale'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which broker?"
+  root={{
+    question: 'Do you need replay or multiple independent consumer groups reading the same data?',
+    branches: [
+      {
+        label: 'Yes — replay / multiple readers (streaming)',
+        next: {
+          question: 'Do you want a fully managed, zero-ops service?',
+          branches: [
+            {
+              label: 'Managed, zero-ops',
+              next: { leaf: { recommendation: 'Managed Kafka (MSK/Confluent), Kinesis, or Google Pub/Sub', detail: 'On AWS: managed Kafka or Kinesis. On GCP: Pub/Sub with seek/snapshot replay. You get streaming + replay without running brokers.' } },
+            },
+            {
+              label: 'I can self-host',
+              next: {
+                question: 'Do you also need queue semantics (per-message ack, shared subscriptions) and multi-tenancy in the same system?',
+                branches: [
+                  { label: 'Just streaming', next: { leaf: { recommendation: 'Apache Kafka', detail: 'The throughput king with first-class retention, compaction, and the richest ecosystem (Connect, CDC, ksqlDB). Heavy ops, but the default for serious streaming.' } } },
+                  { label: 'Streaming AND queuing + multi-tenancy', next: { leaf: { recommendation: 'Apache Pulsar', detail: 'Does log and queue in one, with storage separation, geo-replication, and tiered retention. Highest ops cost in the field, but one platform for both.' } } },
+                  { label: 'Lightweight / edge / already on Redis', next: { leaf: { recommendation: 'NATS JetStream or Redis Streams', detail: 'JetStream gives durable replayable streaming in one tiny binary; Redis Streams gives a log with consumer groups if you already run Redis. Both trade ecosystem depth for low footprint.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — fire-and-forget / task distribution',
+        next: {
+          question: 'Do you need rich routing, per-message priority, TTL, delay, or request/reply?',
+          branches: [
+            { label: 'Yes — complex routing / task queues', next: { leaf: { recommendation: 'RabbitMQ', detail: 'The smart broker: exchanges/bindings, priorities, TTL, delayed messages, RPC, dead-lettering. Moderate throughput, no replay, but unmatched routing flexibility.' } } },
+            {
+              label: 'No — simple decoupling / fan-out',
+              next: {
+                question: 'Which cloud / infra are you on?',
+                branches: [
+                  { label: 'AWS', next: { leaf: { recommendation: 'SQS (+ SNS for fan-out)', detail: 'Zero-ops managed queue; SNS→SQS for durable fan-out. FIFO queues add ordering + dedup at lower throughput. No replay.' } } },
+                  { label: 'GCP', next: { leaf: { recommendation: 'Google Cloud Pub/Sub', detail: 'Serverless, global, auto-scaling pub/sub with at-least-once (or exactly-once) and seek-based replay.' } } },
+                  { label: 'Already on Redis / want minimal footprint', next: { leaf: { recommendation: 'Redis Streams or NATS', detail: 'Redis Streams for a lightweight queue/log on infra you already run; NATS core for ultra-low-latency transient pub/sub and request/reply.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Kafka:** LinkedIn (its birthplace), Uber, Netflix, and most large streaming/CDC
+  pipelines; the de facto standard for high-volume event streaming.
+- **RabbitMQ:** widely used behind Celery/Sidekiq-style task systems, microservice
+  RPC, and anywhere routing flexibility beats raw throughput.
+- **SQS/SNS:** the default decoupling primitives across AWS-native architectures;
+  SNS→SQS fan-out is a textbook pattern.
+- **NATS/JetStream:** edge, IoT, and latency-sensitive microservice meshes; Synadia
+  and CNCF back it.
+- **Pulsar:** Yahoo (its origin), Tencent, and shops wanting unified streaming +
+  queuing with multi-tenancy and geo-replication.
+- **Redis Streams:** teams already on Redis adding event processing without a new
+  cluster.
+- **Google Pub/Sub:** GCP-native ingestion feeding Dataflow/BigQuery pipelines.
+
+## Further reading
+
+- [Kafka — Documentation](https://kafka.apache.org/documentation/) — design, delivery semantics, and ecosystem.
+- [RabbitMQ vs Kafka (RabbitMQ docs)](https://www.rabbitmq.com/blog/2023/10/02/rabbitmq-vs-kafka) — the queue-vs-log framing from the RabbitMQ side.
+- [Apache Pulsar — Concepts and Architecture](https://pulsar.apache.org/docs/concepts-architecture-overview/) — broker/BookKeeper separation and subscription modes.
+- [AWS — SQS vs SNS vs Kinesis](https://aws.amazon.com/messaging/) — when to use each AWS messaging primitive.
+- [Google Cloud Pub/Sub — Overview](https://cloud.google.com/pubsub/docs/overview) — managed pub/sub with replay.

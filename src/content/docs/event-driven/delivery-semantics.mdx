@@ -1,0 +1,250 @@
+---
+title: Delivery Semantics
+description: At-most-once, at-least-once, and exactly-once (really effectively-once) delivery — plus idempotency and dedup, ordering and partition keys, dead-letter queues, retries and backoff, backpressure, and poison messages.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Once you accept asynchronous delivery, you inherit the hard truths the network was
+hiding. Messages get **lost**, **duplicated**, and **reordered** — not occasionally,
+but as a normal consequence of acks crossing a lossy network. "Delivery semantics" is
+the contract for which of those failures the system prevents and which it leaves for
+you. There are three, and they form a strict hierarchy of cost: **at-most-once** (may
+lose, never duplicate), **at-least-once** (never lose, may duplicate), and
+**exactly-once** (neither — which, across a real network, is *effectively*-once
+achieved with extra machinery, not a free guarantee).
+
+The single most important practical fact: **at-least-once is the default and the
+right default**, and the duplicates it permits are *your* problem to neutralize with
+**idempotency**. Chasing true exactly-once usually means you misunderstood the
+guarantee; designing idempotent consumers means you understood it. This page covers
+the three semantics, the idempotency/dedup that makes at-least-once safe, ordering and
+partition keys, and the operational machinery — DLQs, retries with backoff,
+backpressure, and poison-message handling — that keeps a consumer alive under failure.
+
+## Mental model
+
+It comes down to **when you acknowledge relative to when you process**:
+
+- **Ack *before* processing → at-most-once.** If the consumer crashes after ack but
+  before finishing, the message is gone forever. Fast, lossy. Acceptable only when
+  losing a message is cheaper than handling a duplicate (metrics, some telemetry).
+- **Ack *after* processing → at-least-once.** If the consumer crashes after processing
+  but before ack, the broker redelivers — you process it *again*. Never lost, possibly
+  duplicated. The default for anything that matters.
+- **Exactly-once** would mean processing-and-ack are one atomic step across consumer
+  *and* side effects. Across an arbitrary network with external side effects, that's
+  impossible in general (it's the Two Generals problem). What real systems deliver is
+  **effectively-once**: at-least-once delivery + **idempotent processing** or
+  **transactional dedup**, so duplicates produce no *observable* duplicate effect.
+
+So the design question is rarely "give me exactly-once." It's "I'll take
+at-least-once, and I'll make my processing idempotent so a duplicate is harmless."
+That reframing is the whole game.
+
+## Types / Variants
+
+**At-most-once.** Deliver and forget; ack early or don't ack at all. Zero duplicate
+handling, lowest latency, but data loss on any consumer crash. Use only where loss is
+tolerable: high-frequency metrics, presence pings, best-effort telemetry. NATS core
+and fire-and-forget UDP-style messaging live here.
+
+**At-least-once.** Redeliver until acked; ack only after successful processing.
+Guarantees no loss; guarantees duplicates *will* eventually happen (a slow consumer,
+a redelivery after a transient failure, a rebalance). This is what Kafka, SQS,
+RabbitMQ-with-acks, and JetStream give you by default. Correctness then depends
+entirely on the consumer being **idempotent**.
+
+**Exactly-once / effectively-once.** Two flavors, often conflated:
+- *Within one system:* Kafka's **idempotent producer** (dedups producer retries via
+  sequence numbers) + **transactions** (atomic write across partitions and offset
+  commit) gives exactly-once for Kafka-to-Kafka stream processing. Pulsar and Google
+  Pub/Sub offer comparable transaction/dedup features.
+- *End-to-end with external side effects* (charge a card, send an email): there is no
+  true exactly-once. You get **effectively-once** by making the side effect idempotent
+  (dedup on a key) or by transactionally tying the side effect to the offset commit.
+
+The honest statement: "exactly-once" is a marketing-adjacent term for "at-least-once
+delivery plus a dedup mechanism that makes the duplicate invisible."
+
+**Idempotency & deduplication — the load-bearing technique.** An operation is
+*idempotent* if doing it twice equals doing it once. Make consumers idempotent by:
+- **Idempotency keys:** the producer stamps each message with a unique, stable ID;
+  the consumer records processed IDs and skips repeats (a dedup table, or a broker
+  feature like SQS FIFO's dedup ID or JetStream's `Nats-Msg-Id` window).
+- **Natural idempotency:** design the operation so repetition is harmless — `SET
+  balance = 500` (idempotent) instead of `balance += 100` (not). Upserts over inserts.
+- **Conditional writes:** "apply only if not already applied" via a version/expected
+  state (optimistic concurrency), so a replay is a no-op.
+
+Dedup is bounded — it needs a *window* (you can't remember every ID forever), so pair
+it with ordering or a reasonable retention of the dedup key.
+
+**Ordering guarantees & partition keys.** Global total order across a high-throughput
+broker is expensive and usually unnecessary. The practical guarantee is **ordering
+within a key**: route all messages that must stay ordered (same `account_id`) to the
+same partition via a **partition key**, accepting that messages across different keys
+may interleave. Parallelism and strict global ordering are fundamentally in tension —
+one partition = perfect order but no parallelism; N partitions = parallelism but order
+only within a key. SQS FIFO uses *message group IDs* for the same effect.
+
+**Dead-letter queues (DLQ).** A message that repeatedly fails (after a max retry
+count) is routed to a separate **dead-letter queue** instead of blocking the main
+flow forever. The DLQ quarantines the bad message for inspection/replay while healthy
+traffic keeps moving. Without a DLQ, a single un-processable message can stall a whole
+partition or re-loop endlessly.
+
+**Retries & backoff.** Transient failures (a timeout, a 503) should be retried — but
+naively retrying immediately and forever creates a thundering herd and burns the
+consumer. Use **exponential backoff** (1s, 2s, 4s, 8s…) with **jitter** (randomize to
+avoid synchronized retries), a **max attempt count**, and then send to the DLQ.
+Distinguish *retryable* (transient) from *non-retryable* (a malformed message will
+fail forever — send it straight to the DLQ).
+
+**Backpressure & flow control.** When producers outrun consumers, something must give:
+buffer (the broker absorbs, bounded by retention), slow the producer (flow control),
+or drop (load-shed). Pull-based brokers (Kafka, SQS) give natural backpressure —
+consumers fetch only what they can handle. Push-based brokers need explicit limits
+(RabbitMQ prefetch/QoS, consumer credits) or a fast consumer can be flooded.
+Unbounded buffering just relocates the failure to "out of disk."
+
+**Poison messages.** A message the consumer can *never* successfully process (bad
+schema, a bug, corrupt payload). Under at-least-once it redelivers forever, blocking
+progress — the **poison pill**. The fix is the retry-limit → DLQ pipeline above:
+detect the repeat-failure, stop retrying, quarantine it, alert, move on.
+
+## When to use / When NOT
+
+- **At-most-once — use when:** message loss is cheaper than duplicate handling
+  (metrics, telemetry, presence). **Avoid when:** any message represents money, state,
+  or an action that must happen.
+- **At-least-once — use when:** (almost always) loss is unacceptable and you can make
+  processing idempotent. **Avoid only when:** you genuinely cannot tolerate any
+  duplicate *and* cannot make the consumer idempotent (rare — usually you can).
+- **Exactly-once (effectively-once) — use when:** within one stream-processing system
+  (Kafka→Kafka) and the framework gives it cheaply, *or* the side effect can't be made
+  idempotent any other way. **Avoid chasing it when:** a simple idempotency key on an
+  at-least-once consumer solves the same problem with less machinery.
+- **DLQ — use always** for any at-least-once consumer doing real work; without it a
+  poison message stalls you.
+- **Partition keys for ordering — use when:** related messages must stay ordered (a
+  user's events, an account's transactions). **Avoid global ordering** unless you
+  truly need it — it kills parallelism.
+- **Backoff + jitter on retries — use always**; immediate infinite retries are an
+  outage generator.
+
+## Tradeoffs
+
+| Semantic | Lost? | Duplicated? | Cost / complexity | Use for |
+| -------- | ----- | ----------- | ----------------- | ------- |
+| At-most-once | Possible | Never | Lowest | Metrics, telemetry, presence |
+| At-least-once | Never | Possible | Low–moderate (needs idempotency) | Default for anything that matters |
+| Exactly-once (effectively) | Never | Effectively never | Highest (txns/dedup) | In-system stream processing; non-idempotent side effects |
+
+| Concern | Single partition (global order) | Many partitions (key order) |
+| ------- | ------------------------------- | --------------------------- |
+| Ordering | Total | Only within a key |
+| Parallelism / throughput | None (1 consumer) | Up to N |
+| When to choose | Strict global order required | Scale + per-entity order (the norm) |
+
+| Mechanism | Prevents | Cost |
+| --------- | -------- | ---- |
+| Idempotency key + dedup | Duplicate side effects | Dedup store + bounded window |
+| DLQ + retry limit | Poison-message stalls | Extra queue + monitoring |
+| Exponential backoff + jitter | Retry storms | Slight added latency on failure |
+| Backpressure / flow control | Consumer overload, OOM | Throughput throttled to consumer rate |
+
+## Diagram
+
+The retry → backoff → DLQ pipeline that neutralizes poison messages.
+
+<Mermaid code={`graph TD
+  M[Message delivered] --> P{Process succeeds?}
+  P -->|Yes| A[Ack — done]
+  P -->|No, retryable| R{Attempts < max?}
+  R -->|Yes| B[Wait: exponential backoff + jitter] --> M
+  R -->|No| D[(Dead-letter queue)]
+  P -->|No, non-retryable / poison| D
+  D --> I[Alert + inspect + manual or automated replay]`} />
+
+## Try it
+
+Compare the three semantics, then walk the decision tree for the guarantee you
+actually need.
+
+<CompareMatrix
+  client:visible
+  caption="The three delivery semantics"
+  columns={['At-most-once', 'At-least-once', 'Exactly-once (effectively)']}
+  rows={[
+    { criterion: 'Message loss', cells: ['Possible', 'Never', 'Never'] },
+    { criterion: 'Duplicates', cells: ['Never', 'Possible (expected)', 'Effectively never'] },
+    { criterion: 'Ack timing', cells: ['Before processing', 'After processing', 'Atomic with side effect / offset'] },
+    { criterion: 'Consumer must be idempotent', cells: ['No', 'Yes', 'Handled by txn/dedup'] },
+    { criterion: 'Complexity / cost', cells: ['Lowest', 'Low–moderate', 'Highest'] },
+    { criterion: 'Reality across a network', cells: ['Real', 'Real (default)', 'Really effectively-once'] },
+    { criterion: 'Use for', cells: ['Metrics, telemetry', 'Anything that matters', 'In-system streams; non-idempotent effects'] },
+    { criterion: 'Example', cells: ['NATS core', 'Kafka/SQS/RabbitMQ default', 'Kafka transactions, SQS FIFO dedup'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which delivery guarantee do you need?"
+  root={{
+    question: 'Can you tolerate losing an occasional message?',
+    branches: [
+      {
+        label: 'Yes — loss is cheaper than dup handling',
+        next: { leaf: { recommendation: 'At-most-once', detail: 'Ack early, no dedup. Use for metrics, telemetry, presence pings — anything where a missed message is harmless and you want minimum latency and complexity.' } },
+      },
+      {
+        label: 'No — must not lose messages',
+        next: {
+          question: 'Can you make the consumer idempotent (idempotency key, upsert, conditional write)?',
+          branches: [
+            { label: 'Yes — I can make it idempotent', next: { leaf: { recommendation: 'At-least-once + idempotent consumer (effectively-once)', detail: 'The default and best answer. Take at-least-once delivery, stamp messages with idempotency keys, dedup on the consumer (or design naturally idempotent ops). Duplicates become harmless. Always pair with a DLQ + backoff.' } } },
+            {
+              label: 'No — the side effect cannot be made idempotent',
+              next: {
+                question: 'Is the work contained within one stream-processing system (e.g. Kafka→Kafka)?',
+                branches: [
+                  { label: 'Yes — in-system', next: { leaf: { recommendation: 'Exactly-once via transactions', detail: 'Use the framework’s transactional EOS (Kafka idempotent producer + transactions, Pulsar transactions). Atomic across partitions and offset commit. Genuine effectively-once within the system.' } } },
+                  { label: 'No — external side effect (charge, email)', next: { leaf: { recommendation: 'Transactional outbox + idempotency key', detail: 'There is no true end-to-end exactly-once. Tie the side effect to a dedup key and/or the transactional outbox pattern so a replay is a verified no-op. See Event-driven patterns.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Kafka** defaults to at-least-once; **exactly-once semantics (EOS)** via idempotent
+  producer + transactions powers Kafka Streams stateful processing.
+- **AWS SQS Standard** is at-least-once; **SQS FIFO** adds ordering (message groups)
+  and dedup IDs for effectively-once processing, with built-in DLQ support.
+- **RabbitMQ** gives at-least-once with publisher confirms + consumer acks, dead-letter
+  exchanges, and per-message TTL for retry scheduling.
+- **NATS core** is at-most-once; **JetStream** adds at-least-once with a `Nats-Msg-Id`
+  dedup window for effectively-once.
+- **Stripe** and most payment APIs expose **idempotency keys** precisely so clients can
+  safely retry a charge without double-charging — the canonical idempotency pattern.
+- **Google Pub/Sub** offers at-least-once and an **exactly-once delivery** mode per
+  subscription, plus dead-letter topics.
+
+## Further reading
+
+- [Kafka — Exactly-once semantics / message delivery](https://kafka.apache.org/documentation/#semantics) — what EOS does and does not guarantee.
+- [Confluent — Exactly-once semantics is possible (and what it really means)](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/) — the effectively-once explanation.
+- [Stripe — Idempotent requests](https://docs.stripe.com/api/idempotent_requests) — idempotency keys in production.
+- [AWS — Amazon SQS dead-letter queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html) — DLQ mechanics and poison-message handling.

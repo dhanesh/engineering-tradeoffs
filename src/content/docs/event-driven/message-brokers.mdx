@@ -1,0 +1,249 @@
+---
+title: Message Brokers
+description: What a broker does and the three broker types — queue (point-to-point), log/stream (replayable), and pub/sub topic — plus push vs pull, smart-broker vs smart-consumer, partitioning, consumer groups, offsets, and retention.
+last_reviewed: "2026-06-04"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **message broker** is the middleman that sits between producers and consumers and
+absorbs everything that makes them different: producers are fast, consumers are slow;
+producers are up now, consumers are up later; one producer, many consumers. The
+broker buffers messages durably, routes them to the right place, and decides the most
+consequential thing in event-driven design — **what happens to a message after it's
+delivered.** That single decision splits brokers into three fundamentally different
+types, and picking the wrong type is the most common and most expensive EDA mistake.
+
+A **queue** deletes a message once a consumer acknowledges it: the message is *work*,
+consumed once, then gone. A **log** (stream) never deletes on consume — it's an
+append-only, ordered record that consumers read by *position* and can re-read,
+rewind, and fan out independently; the message is *history*. A **pub/sub topic**
+delivers a copy to every current subscriber and forgets it. These are not
+interchangeable products with different logos; they are different data structures
+with different guarantees. This page is about telling them apart and the mechanics —
+partitions, consumer groups, offsets, retention — that make each work.
+
+## Mental model
+
+The defining question is: **after delivery, does the message survive?**
+
+- **Queue = a to-do list.** You take an item, do it, cross it off. It's gone. The
+  list shrinks as work is done. Re-reading isn't possible — the item no longer exists.
+  Order is best-effort and competing consumers race through the list. Mental image:
+  `[task][task][task]` → consumer pops from the front, ack deletes it.
+- **Log = a ledger / tape.** Every record is appended and *stays*. Consumers hold a
+  **cursor (offset)** marking how far they've read; reading advances the cursor but
+  changes nothing in the log. Two consumers can sit at different positions; a consumer
+  can reset its cursor to replay last Tuesday. The log shrinks only by a *retention*
+  policy (age or size), never by consumption. Mental image: `0:[r] 1:[r] 2:[r] ...` →
+  consumer A at offset 5, consumer B at offset 99.
+- **Pub/sub topic = a live broadcast.** A copy goes to whoever is subscribed *right
+  now*. Miss it (you weren't subscribed) and it's gone — unless the broker adds
+  durable subscriptions on top. Mental image: one publish, N simultaneous copies out.
+
+The log is the powerful, modern default because it is a *superset*: with consumer
+groups it does work-distribution like a queue, with multiple groups it does fan-out
+like pub/sub, and it adds replay neither of the others can. The cost is that you now
+operate a partitioned, offset-tracked, retention-managed system instead of a list.
+
+## Types / Variants
+
+**Queue (point-to-point).** Messages line up; competing consumers each pull the next
+one; an **ack** deletes it, a **nack**/timeout requeues it. Built for *work
+distribution* — scale throughput by adding consumers. Ordering is typically only
+best-effort (strict ordering and parallel consumers are in tension). Classic
+examples: RabbitMQ queues, AWS SQS, Redis lists, Celery/Sidekiq backends. Use when
+each message is a *task to be done once*.
+
+**Log / stream (replayable).** An append-only, **partitioned**, ordered sequence.
+Consumers track **offsets**; messages persist for a **retention** window independent
+of consumption. Multiple independent consumer groups read the same log at their own
+pace, and any consumer can **replay** from an old offset. This is Kafka, Pulsar,
+Kinesis, Redis Streams, NATS JetStream. Use when you need replay, multiple
+independent readers of the same data, ordering within a key, or high sustained
+throughput. The log is the substrate event sourcing and CDC require.
+
+**Pub/sub topic.** A producer publishes to a topic; the broker fans a copy out to
+every subscriber. *Transient* pub/sub (plain NATS, MQTT, Redis pub/sub) drops
+messages with no live subscriber — fast, fire-and-forget telemetry. *Durable* pub/sub
+(SNS→SQS, JetStream, durable Google Pub/Sub subscriptions) persists per-subscriber so
+a subscriber can be offline and catch up. Use for *notification / fan-out* of facts
+to many independent reactions.
+
+**Push vs pull — how the message reaches the consumer.**
+
+- **Push:** the broker delivers to consumers as messages arrive (RabbitMQ default,
+  SNS, webhooks). Low latency, but the broker must manage flow control or it can
+  overwhelm a slow consumer — backpressure is the broker's problem.
+- **Pull:** consumers *poll* for the next batch when ready (Kafka, SQS, JetStream
+  pull). Naturally backpressure-safe (a consumer fetches only what it can handle) and
+  great for batching/throughput, at the cost of a little polling latency. Logs are
+  almost always pull, which is *why* one slow consumer can't be flooded — it simply
+  fetches less.
+
+**Smart-broker/dumb-consumer vs dumb-broker/smart-consumer.**
+
+- **Smart broker (RabbitMQ, SQS, JMS):** the broker does routing, filtering,
+  per-message retries, delays, dead-lettering, priorities. Consumers are thin. Rich
+  features, but the broker holds per-message state and becomes the throughput and
+  complexity bottleneck.
+- **Dumb broker / smart consumer (Kafka):** the broker is a fast, append-only log that
+  does almost nothing per message — no per-message acks, no server-side routing logic.
+  Consumers own their offsets and logic. This is *why* Kafka scales to millions of
+  msg/s: the broker isn't doing per-message work. The cost is pushing complexity
+  (offset management, retries, ordering) into the consumer.
+
+This axis, more than the brand, predicts behavior: smart brokers give you features,
+dumb brokers give you throughput and replay.
+
+**Partitioning, consumer groups, offsets, retention — the log mechanics.**
+
+- **Partition:** a topic is split into N partitions; each is an independent ordered
+  log. Partitioning is *how logs scale* — throughput and parallelism are bounded by
+  partition count. **Ordering is guaranteed only within a partition.** A **partition
+  key** (e.g. `customer_id`) routes related messages to the same partition so they
+  stay ordered relative to each other; unrelated keys spread across partitions for
+  parallelism.
+- **Consumer group:** a set of consumer instances that *share* a subscription. The
+  broker assigns each partition to exactly one member, so the group as a whole reads
+  every message once (queue semantics), while N partitions allow N parallel members.
+  Two *different* groups each get the full stream independently (pub/sub semantics).
+  **This is the trick:** consumer groups let one log behave as a queue or a fan-out
+  topic depending on how many groups you attach. Max useful parallelism per group =
+  partition count.
+- **Offset:** the per-group cursor position in each partition. Committing an offset
+  says "I've processed up to here." Replay = reset the offset backward. At-least-once
+  vs at-most-once often comes down to *when* you commit relative to processing (see
+  *Delivery semantics*).
+- **Retention:** how long the log keeps messages — by **time** (7 days), **size**
+  (100 GB), or **compaction** (keep only the latest value per key, turning the log
+  into a changelog/snapshot). Retention, not consumption, deletes log data.
+
+## When to use / When NOT
+
+- **Queue — use when:** each message is a discrete task done exactly once by one of
+  many workers, you want simple load-balancing, and you don't need replay or multiple
+  independent readers. **Avoid when:** you need to re-process history, multiple
+  subsystems must each see every message, or you need ordered high-throughput streams.
+- **Log/stream — use when:** you need replay, multiple independent consumer groups,
+  per-key ordering, event sourcing/CDC, or very high sustained throughput. **Avoid
+  when:** you have low volume and simple task dispatch — a log's partitions, offsets,
+  and retention are operational overhead you don't need; a queue is simpler.
+- **Pub/sub topic — use when:** one event must trigger many independent reactions
+  (fan-out / notification) and consumers are loosely coupled. **Avoid transient
+  pub/sub when** missing a message is unacceptable — use durable pub/sub or a log.
+- **Push — use when:** low delivery latency matters and consumers can keep up or the
+  broker manages flow control. **Pull — use when:** throughput, batching, and
+  backpressure safety matter (the standard for logs).
+- **Smart broker — use when:** you want routing, priorities, delays, and
+  dead-lettering handed to you and volume is moderate. **Dumb broker/log — use when:**
+  you need extreme throughput, replay, and are willing to own consumer logic.
+
+## Tradeoffs
+
+| Concern | Queue (point-to-point) | Log / stream | Pub/sub topic |
+| ------- | ---------------------- | ------------ | ------------- |
+| After delivery | Deleted on ack | Retained (retention window) | Forgotten (unless durable) |
+| Re-read / replay | No | Yes (reset offset) | No (transient) / limited (durable) |
+| Multiple independent readers | No (consumers compete) | Yes (consumer groups) | Yes (subscribers) |
+| Ordering | Best-effort | Per partition (by key) | Per subscription |
+| Scaling model | Add consumers | Add partitions | Add subscribers |
+| Primary use | Work distribution | History, replay, streaming | Fan-out / notification |
+| Typical products | RabbitMQ, SQS | Kafka, Pulsar, Kinesis | SNS, NATS, MQTT |
+
+| Concern | Push delivery | Pull delivery |
+| ------- | ------------- | ------------- |
+| Latency | Lower | Slightly higher (poll) |
+| Backpressure | Broker's problem | Consumer self-limits (safe) |
+| Batching | Harder | Natural |
+| Typical | RabbitMQ, SNS | Kafka, SQS, JetStream |
+
+| Concern | Smart broker / dumb consumer | Dumb broker / smart consumer |
+| ------- | ---------------------------- | ---------------------------- |
+| Per-message routing/retry/DLQ | In the broker | In the consumer |
+| Throughput ceiling | Lower (broker does work) | Very high (broker is a log) |
+| Consumer complexity | Thin | Owns offsets, retries, ordering |
+| Example | RabbitMQ, SQS | Kafka |
+
+## Diagram
+
+A partitioned log: a key routes a message to a partition; two consumer groups read the
+same partitions independently at their own offsets.
+
+<Mermaid code={`graph TD
+  P[Producer] -->|key=customer_id| T{Partitioner}
+  T --> P0[Partition 0]
+  T --> P1[Partition 1]
+  T --> P2[Partition 2]
+  P0 --> GA[Group A: order processing]
+  P1 --> GA
+  P2 --> GA
+  P0 --> GB[Group B: analytics]
+  P1 --> GB
+  P2 --> GB`} />
+
+## Try it
+
+Compare the three broker types across the criteria that actually decide your design.
+
+<CompareMatrix
+  client:visible
+  caption="Queue vs log vs pub/sub topic"
+  columns={['Queue', 'Log / stream', 'Pub/sub topic']}
+  rows={[
+    { criterion: 'Data structure', cells: ['Shrinking list', 'Append-only ordered log', 'Live broadcast'] },
+    { criterion: 'Fate after delivery', cells: ['Deleted on ack', 'Retained until retention expires', 'Forgotten (unless durable)'] },
+    { criterion: 'Replay / re-read', cells: ['No', 'Yes (reset offset)', 'No (transient)'] },
+    { criterion: 'Multiple independent readers', cells: ['No — they compete', 'Yes — one per consumer group', 'Yes — one per subscriber'] },
+    { criterion: 'Ordering guarantee', cells: ['Best-effort', 'Total within a partition', 'Per subscription'] },
+    { criterion: 'How you scale', cells: ['Add competing consumers', 'Add partitions', 'Add subscribers'] },
+    { criterion: 'Delivery style', cells: ['Push (usually)', 'Pull (usually)', 'Push'] },
+    { criterion: 'Broker intelligence', cells: ['Smart (routing, DLQ, retries)', 'Dumb (fast append-only)', 'Smart routing/filtering'] },
+    { criterion: 'Sweet spot', cells: ['One-time task distribution', 'History, replay, high-throughput streams', 'Fan-out notification of facts'] },
+    { criterion: 'Canonical product', cells: ['RabbitMQ, AWS SQS', 'Apache Kafka, Pulsar', 'AWS SNS, NATS, MQTT'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Choosing a broker type"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Pick a queue when each message is a discrete task done once by one of many workers. Pick a log/stream when you need replay, multiple independent consumer groups, per-key ordering, event sourcing, CDC, or very high throughput. Pick a pub/sub topic when one event must trigger many independent reactions and you only need live (or durably-fanned-out) delivery.',
+    },
+    {
+      label: 'Why',
+      content: 'The three differ in what happens after delivery — deleted (queue), retained and re-readable (log), or broadcast and forgotten (topic). A log is a superset: consumer groups give it queue-style work distribution, multiple groups give it pub/sub fan-out, and offsets give it replay neither queue nor topic has. Pull-based logs are also backpressure-safe because each consumer fetches only what it can handle.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'A log costs you partitions, offset management, and retention tuning that a simple queue never imposes — overkill for low-volume task dispatch. A queue cannot replay or feed multiple independent subsystems. Transient pub/sub silently drops messages with no live subscriber. Smart brokers add features but cap throughput because they do per-message work; dumb brokers push that work into your consumers.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Apache Kafka** is the archetypal log: partitioned, offset-based, retention-driven,
+  dumb-broker/smart-consumer, pull delivery — built for replay and throughput.
+- **RabbitMQ** is the archetypal smart broker: exchanges and bindings route to queues,
+  with per-message acks, priorities, delays, and dead-letter exchanges.
+- **AWS SQS** is a managed queue (standard = at-least-once, FIFO = ordered);
+  **AWS SNS** is managed pub/sub that commonly fans out into SQS queues for durability.
+- **Redis Streams** brings a lightweight log with consumer groups (`XADD`/`XREADGROUP`)
+  to teams already running Redis.
+- **NATS** is transient pub/sub by default; **JetStream** adds a durable, replayable
+  log layer on top with both push and pull consumers.
+
+## Further reading
+
+- [Kafka — Design](https://kafka.apache.org/documentation/#design) — partitions, offsets, consumer groups, and the dumb-broker rationale.
+- [RabbitMQ — AMQP concepts](https://www.rabbitmq.com/tutorials/amqp-concepts.html) — exchanges, bindings, and the smart-broker model.
+- [Jay Kreps — The Log: What every software engineer should know](https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying-abstraction) — why the log is the unifying abstraction.
+- [Enterprise Integration Patterns — Point-to-Point & Publish-Subscribe](https://www.enterpriseintegrationpatterns.com/patterns/messaging/PointToPointChannel.html) — the canonical channel patterns.
