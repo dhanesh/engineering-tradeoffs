@@ -9,6 +9,9 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
+    "verify": "astro build && node scripts/check-template-integrity.mjs && node scripts/check-pages-built.mjs",
+    "verify:template": "node scripts/check-template-integrity.mjs",
+    "verify:pages": "node scripts/check-pages-built.mjs",
     "astro": "astro"
   },
   "dependencies": {
