@@ -45,6 +45,18 @@ jobs:
       - name: All pages rendered
         run: npm run verify:pages
 
+      # Every content page carries dated, reviewable guidance (B2 invariant).
+      - name: Content frontmatter (last_reviewed)
+        run: npm run verify:frontmatter
+
+      # Every topic follows the fixed 9-section skeleton (U1 invariant).
+      - name: Page skeleton
+        run: npm run verify:skeleton
+
+      # Widgets stay readable without JS + keep a11y affordances (U3 invariant).
+      - name: A11y & no-JS baseline
+        run: npm run verify:a11y
+
       - name: Upload static site
         uses: actions/upload-artifact@v4
         with:

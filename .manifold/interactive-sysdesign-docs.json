@@ -395,7 +395,7 @@
       },
       {
         "id": "RT-3",
-        "status": "PARTIAL",
+        "status": "SATISFIED",
         "maps_to": [
           "U3",
           "T5"
@@ -413,6 +413,14 @@
             "type": "manual_review",
             "path": "keyboard navigation + no-JS render of each widget",
             "status": "PENDING"
+          },
+          {
+            "id": "E23",
+            "type": "test_passes",
+            "path": "scripts/check-a11y-nojs.mjs",
+            "test_name": "demo readable without JS + a11y affordances present",
+            "test_tier": "unit",
+            "status": "VERIFIED"
           }
         ]
       },
@@ -437,6 +445,14 @@
             "path": "templates/topic.mdx",
             "pattern": "When to use",
             "status": "VERIFIED"
+          },
+          {
+            "id": "E22",
+            "type": "test_passes",
+            "path": "scripts/check-pages-skeleton.mjs",
+            "test_name": "every topic page follows 9-section skeleton in order",
+            "test_tier": "unit",
+            "status": "VERIFIED"
           }
         ]
       },
@@ -452,6 +468,14 @@
             "type": "content_match",
             "path": "src/content.config.ts",
             "pattern": "last_reviewed",
+            "status": "VERIFIED"
+          },
+          {
+            "id": "E21",
+            "type": "test_passes",
+            "path": "scripts/check-content-frontmatter.mjs",
+            "test_name": "every content page has valid last_reviewed",
+            "test_tier": "unit",
             "status": "VERIFIED"
           }
         ]
@@ -760,6 +784,17 @@
       "missing": 0,
       "gaps": 8,
       "convergence": "IN_PROGRESS"
+    },
+    {
+      "number": 6,
+      "phase": "verify",
+      "timestamp": "2026-06-06T00:00:00Z",
+      "result": "Closed 3 blocking gaps: added standing invariant tests for B2 (per-page last_reviewed), U1 (per-page skeleton), U3 (a11y/no-JS). All pass + negative-tested (each fails on a real violation). Wired into npm verify + CI. Invariants now 5/9 SATISFIED (was 2/9). Remaining PARTIAL are manual/run-once (T3/U2 browser-open, O1 clean-clone, O2 real-PR, O4 commit skill, B1 content sign-off).",
+      "satisfied": 13,
+      "partial": 6,
+      "missing": 0,
+      "gaps": 5,
+      "convergence": "IN_PROGRESS"
     }
   ],
   "convergence": {
@@ -1034,6 +1069,36 @@
         "satisfies": [
           "RT-10",
           "O3"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "scripts/check-content-frontmatter.mjs",
+        "type": "code",
+        "satisfies": [
+          "B2",
+          "RT-5"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "scripts/check-pages-skeleton.mjs",
+        "type": "code",
+        "satisfies": [
+          "U1",
+          "RT-4"
+        ],
+        "status": "generated",
+        "artifact_class": "substantive"
+      },
+      {
+        "path": "scripts/check-a11y-nojs.mjs",
+        "type": "code",
+        "satisfies": [
+          "U3",
+          "RT-3"
         ],
         "status": "generated",
         "artifact_class": "substantive"

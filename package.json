@@ -9,9 +9,12 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "verify": "astro build && node scripts/check-template-integrity.mjs && node scripts/check-pages-built.mjs",
+    "verify": "astro build && node scripts/check-template-integrity.mjs && node scripts/check-pages-built.mjs && node scripts/check-content-frontmatter.mjs && node scripts/check-pages-skeleton.mjs && node scripts/check-a11y-nojs.mjs",
     "verify:template": "node scripts/check-template-integrity.mjs",
     "verify:pages": "node scripts/check-pages-built.mjs",
+    "verify:frontmatter": "node scripts/check-content-frontmatter.mjs",
+    "verify:skeleton": "node scripts/check-pages-skeleton.mjs",
+    "verify:a11y": "node scripts/check-a11y-nojs.mjs",
     "astro": "astro"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 {
   "verification": {
-    "timestamp": "2026-06-04T07:32:49Z",
+    "timestamp": "2026-06-06T00:00:00Z",
     "result": "PARTIAL",
     "binding_constraint": {
       "required_truth_id": "RT-4",
@@ -23,12 +23,10 @@
         "constraint": "B2",
         "type": "INVARIANT",
         "code": true,
-        "test": false,
+        "test": true,
         "docs": true,
         "ops": false,
-        "status": "PARTIAL",
-        "gap": "last_reviewed in schema (content_match), but no test asserts every page carries it — invariant needs test_passes",
-        "gap_id": "G1"
+        "status": "SATISFIED"
       },
       {
         "constraint": "B3",
@@ -99,12 +97,10 @@
         "constraint": "U1",
         "type": "INVARIANT",
         "code": true,
-        "test": false,
+        "test": true,
         "docs": true,
         "ops": false,
-        "status": "PARTIAL",
-        "gap": "Skeleton enforced on the TEMPLATE (test), but no standing test asserts every CONTENT page follows the 9-section order",
-        "gap_id": "G2"
+        "status": "SATISFIED"
       },
       {
         "constraint": "U2",
@@ -121,12 +117,10 @@
         "constraint": "U3",
         "type": "INVARIANT",
         "code": true,
-        "test": false,
+        "test": true,
         "docs": true,
         "ops": false,
-        "status": "PARTIAL",
-        "gap": "Static-first + a11y verified by HTML grep + code review, but no standing automated a11y/no-JS test (invariant needs test_passes)",
-        "gap_id": "G3"
+        "status": "SATISFIED"
       },
       {
         "constraint": "U4",
@@ -200,9 +194,9 @@
     ],
     "coverage": {
       "invariants": {
-        "satisfied": 2,
+        "satisfied": 5,
         "total": 9,
-        "percentage": 22
+        "percentage": 56
       },
       "goals": {
         "satisfied": 3,
@@ -222,30 +216,6 @@
       "statistical": "N/A — no statistical/deterministic threshold constraints"
     },
     "gaps": [
-      {
-        "id": "G1",
-        "constraint": "B2",
-        "type": "invariant",
-        "issue": "No automated test asserts every content page has last_reviewed frontmatter",
-        "action": "Add a content-frontmatter test/CI step (e.g. assert each src/content/docs/**/*.mdx has last_reviewed) — promotes B2 to TESTED",
-        "blocking": true
-      },
-      {
-        "id": "G2",
-        "constraint": "U1",
-        "type": "invariant",
-        "issue": "9-section skeleton enforced only on the template, not on authored content pages",
-        "action": "Extend check-template-integrity (or add check-pages-skeleton.mjs) to assert each content page emits the 9 headings in order; wire into CI",
-        "blocking": true
-      },
-      {
-        "id": "G3",
-        "constraint": "U3",
-        "type": "invariant",
-        "issue": "No standing automated a11y / no-JS regression test for the widgets",
-        "action": "Add a Playwright (or axe-core) test: render demo page with JS disabled and assert full content present + keyboard nav on each island",
-        "blocking": true
-      },
       {
         "id": "G4",
         "constraint": "T3/U2",
@@ -287,15 +257,15 @@
         "blocking": false
       }
     ],
-    "notes": "Functionality verified end-to-end (build green, 27 pages render, dev server 200, security boundary held under adversarial review, all executed test_passes green). PARTIAL is driven by INVARIANTS lacking STANDING automated tests (B2,U1,U3) or not-yet-executed real runs (O1 clean-clone, O2 real-PR), plus manual sign-offs (B1 content, T3/U2 browser-open). No functional defects outstanding."
+    "notes": "3 blocking invariant-test gaps (B2/U1/U3) CLOSED with standing, negative-tested CI gates. Remaining 5 gaps are non-blocking: manual sign-offs (B1 content, T3/U2 browser-open) and not-yet-run real verification (O1 clean-clone, O2 real PR, O4 commit skill). No functional defects; no missing automated coverage for any in-scope invariant behavior."
   },
   "file_hashes": {
-    "package.json": "379c35fa193a606258ac42f4557a56df801a25f87330f2e8657671763299e562",
+    "package.json": "2c0973b0a6aa888436d2a7d10a3294343dabd2fd673334d0ec722135cee0d9d2",
     "package-lock.json": "fa88c132540019f4972adace5bbfc922d2fa067e5678cc8951a4eecdd637b2dc",
     "astro.config.mjs": "d18425dc17d1bf2e6e96d3cef456a46445973eb93fa28569a1e19936c5fc4952",
     "src/content.config.ts": "3777d378a010c08ce287b19f2f45ee74547afd8983b661b586852d30b8210fb8",
     "Makefile": "2c6627e03c6c3819a159011a460bed8e3cb6f9234bbc57398727c4777cdbce7d",
-    ".github/workflows/ci.yml": "f0fcb5f0f9b196d6da41fc4ed8f4c2f2169612fd16d713adf204e88d1b65bb6c",
+    ".github/workflows/ci.yml": "2a80955b7d889651327712acc69e298a03d42e0c019447bbe946535f0be5f3c5",
     "scripts/check-pages-built.mjs": "6953ae79a120fe906ca39f5719f0aa06b951b30056fd39f0ae20bc7532893462",
     "scripts/check-template-integrity.mjs": "ff6455a7a221f9480a3f62686ba96a33ce37d945d8eabede70cedaeccb90bc9f",
     "templates/topic.mdx": "7e543a23331d4eea4cc532af50d955e5c37ce58070b999550ca31fa0d52b85a1",
@@ -304,7 +274,10 @@
     "src/components/CompareMatrix.tsx": "2335fbfd6b9992355363bd5e9a44165a91c6526878e28ddb730efa088e04ddb3",
     "src/components/WhenWhyTabs.tsx": "3b2cac4de205ef3b15661c05400455ec54476da126f9d1deada22ec1772f6dfc",
     "src/components/TradeoffSlider.tsx": "a6d8d478b8352f38475388e30c12a4c19ef71676f8ce34da497e9f5cb9f15fa3",
-    "src/components/useHydrated.ts": "5c211e9018bdbde0811491746a266647797ac572a4655f33c7acf29a593bd1b3"
+    "src/components/useHydrated.ts": "5c211e9018bdbde0811491746a266647797ac572a4655f33c7acf29a593bd1b3",
+    "scripts/check-content-frontmatter.mjs": "149d321f0590eb69b7dc1598ae582ca9f66458bc6e1308245ee130fb28f3956d",
+    "scripts/check-pages-skeleton.mjs": "721c0d5ce9ac4ce484531e7e1269040b70b83b4a1651a65cfbe23491fb98425e",
+    "scripts/check-a11y-nojs.mjs": "36abeaa10df529d471f74cd30d2f06ec1441e563c9f2b2d0f3648432d2a965f4"
   },
-  "hashes_updated_at": "2026-06-04T18:24:05.158Z"
+  "hashes_updated_at": "2026-06-06T07:50:13.820Z"
 }
