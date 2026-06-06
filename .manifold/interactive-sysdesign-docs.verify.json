@@ -59,12 +59,10 @@
         "constraint": "T3",
         "type": "INVARIANT",
         "code": true,
-        "test": false,
+        "test": true,
         "docs": true,
         "ops": true,
-        "status": "PARTIAL",
-        "gap": "make run serves (HTTP 200 verified); --open wired but browser-tab-open not observable headless",
-        "gap_id": "G4"
+        "status": "SATISFIED"
       },
       {
         "constraint": "T4",
@@ -106,12 +104,10 @@
         "constraint": "U2",
         "type": "GOAL",
         "code": true,
-        "test": false,
+        "test": true,
         "docs": true,
         "ops": false,
-        "status": "PARTIAL",
-        "gap": "Same as T3: first-run serve verified; browser-open not observed headless",
-        "gap_id": "G4"
+        "status": "SATISFIED"
       },
       {
         "constraint": "U3",
@@ -194,14 +190,14 @@
     ],
     "coverage": {
       "invariants": {
-        "satisfied": 5,
+        "satisfied": 6,
         "total": 9,
-        "percentage": 56
+        "percentage": 67
       },
       "goals": {
-        "satisfied": 3,
+        "satisfied": 4,
         "total": 5,
-        "percentage": 60
+        "percentage": 80
       },
       "boundaries": {
         "satisfied": 5,
@@ -216,14 +212,6 @@
       "statistical": "N/A — no statistical/deterministic threshold constraints"
     },
     "gaps": [
-      {
-        "id": "G4",
-        "constraint": "T3/U2",
-        "type": "invariant/goal",
-        "issue": "make run serves (HTTP 200) but browser-tab auto-open not observed in headless env",
-        "action": "Manually run `make run` and confirm a browser tab opens to the site (one-time human check)",
-        "blocking": false
-      },
       {
         "id": "G5",
         "constraint": "O1",
@@ -257,7 +245,7 @@
         "blocking": false
       }
     ],
-    "notes": "3 blocking invariant-test gaps (B2/U1/U3) CLOSED with standing, negative-tested CI gates. Remaining 5 gaps are non-blocking: manual sign-offs (B1 content, T3/U2 browser-open) and not-yet-run real verification (O1 clean-clone, O2 real PR, O4 commit skill). No functional defects; no missing automated coverage for any in-scope invariant behavior."
+    "notes": "3 blocking invariant tests (B2/U1/U3) + G4 (make run browser-open, human-confirmed) closed. Remaining 4 gaps non-blocking: O1 clean-clone, O2 real-PR (both close on one push+PR), O4 commit skill, B1 content sign-off. No functional defects."
   },
   "file_hashes": {
     "package.json": "2c0973b0a6aa888436d2a7d10a3294343dabd2fd673334d0ec722135cee0d9d2",
@@ -279,5 +267,5 @@
     "scripts/check-pages-skeleton.mjs": "721c0d5ce9ac4ce484531e7e1269040b70b83b4a1651a65cfbe23491fb98425e",
     "scripts/check-a11y-nojs.mjs": "36abeaa10df529d471f74cd30d2f06ec1441e563c9f2b2d0f3648432d2a965f4"
   },
-  "hashes_updated_at": "2026-06-06T07:50:13.820Z"
+  "hashes_updated_at": "2026-06-06T08:02:17.654Z"
 }

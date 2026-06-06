@@ -366,7 +366,8 @@
             "id": "E2",
             "type": "test_passes",
             "path": "make run (clean clone, documented prereqs only)",
-            "status": "STALE"
+            "status": "VERIFIED",
+            "note": "make run serves HTTP 200 + browser tab opened (human-confirmed 2026-06-06)"
           }
         ]
       },
@@ -794,6 +795,17 @@
       "partial": 6,
       "missing": 0,
       "gaps": 5,
+      "convergence": "IN_PROGRESS"
+    },
+    {
+      "number": 7,
+      "phase": "verify",
+      "timestamp": "2026-06-06T00:00:00Z",
+      "result": "G4 closed: make run verified end-to-end — dev server serves HTTP 200 and browser tab opened (human-confirmed). T3 invariant + U2 goal now SATISFIED. 15/19 constraints SATISFIED; invariants 6/9. Remaining 4 gaps (O1 clean-clone, O2 real-PR, O4 commit-skill, B1 content sign-off) all non-blocking.",
+      "satisfied": 15,
+      "partial": 4,
+      "missing": 0,
+      "gaps": 4,
       "convergence": "IN_PROGRESS"
     }
   ],
