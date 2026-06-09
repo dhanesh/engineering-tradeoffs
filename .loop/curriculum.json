@@ -15,33 +15,157 @@
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
   "dry_streak": 0,
-  "round": 0,
+  "round": 1,
   "clusters": [
-    { "slug": "design-patterns", "title": "Design Patterns", "status": "covered", "pages": 5, "tier": "existing" },
-    { "slug": "event-driven", "title": "Event-Driven Architecture", "status": "covered", "pages": 5, "tier": "existing" },
-    { "slug": "databases-cap", "title": "Databases & CAP", "status": "covered", "pages": 5, "tier": "existing" },
-    { "slug": "caching", "title": "Caching & Performance", "status": "covered", "pages": 6, "tier": "existing" },
-    { "slug": "search", "title": "Search Indexes", "status": "covered", "pages": 5, "tier": "existing" },
-
-    { "slug": "networking", "title": "Networking & Protocols", "status": "uncovered", "tier": "systems" },
-    { "slug": "apis", "title": "APIs & Service Communication", "status": "uncovered", "tier": "systems" },
-    { "slug": "concurrency", "title": "Concurrency & Parallelism", "status": "uncovered", "tier": "systems" },
-    { "slug": "distributed-systems", "title": "Distributed Systems", "status": "uncovered", "tier": "systems" },
-    { "slug": "scalability", "title": "Scalability & System Design", "status": "uncovered", "tier": "systems" },
-    { "slug": "reliability", "title": "Reliability & Resilience", "status": "uncovered", "tier": "systems" },
-    { "slug": "observability", "title": "Observability", "status": "uncovered", "tier": "systems" },
-    { "slug": "security", "title": "Security & Auth", "status": "uncovered", "tier": "systems" },
-    { "slug": "architecture", "title": "Software Architecture", "status": "uncovered", "tier": "systems" },
-    { "slug": "algorithms", "title": "Data Structures & Algorithms", "status": "uncovered", "tier": "systems" },
-    { "slug": "systems-fundamentals", "title": "Operating Systems & Computer Architecture", "status": "uncovered", "tier": "systems" },
-    { "slug": "testing", "title": "Testing & Quality", "status": "uncovered", "tier": "systems" },
-    { "slug": "delivery", "title": "Delivery & Operations", "status": "uncovered", "tier": "systems" },
-
-    { "slug": "frontend", "title": "Frontend Fundamentals", "status": "uncovered", "tier": "fullstack" },
-    { "slug": "mobile", "title": "Mobile Development", "status": "uncovered", "tier": "fullstack" },
-    { "slug": "data-engineering", "title": "Data Engineering & Pipelines", "status": "uncovered", "tier": "fullstack" },
-    { "slug": "ml-systems", "title": "ML / AI Systems", "status": "uncovered", "tier": "fullstack" },
-    { "slug": "languages", "title": "Programming Language Concepts", "status": "uncovered", "tier": "fullstack" },
-    { "slug": "craft", "title": "Code Quality & Craft", "status": "uncovered", "tier": "fullstack" }
+    {
+      "slug": "design-patterns",
+      "title": "Design Patterns",
+      "status": "covered",
+      "pages": 5,
+      "tier": "existing"
+    },
+    {
+      "slug": "event-driven",
+      "title": "Event-Driven Architecture",
+      "status": "covered",
+      "pages": 5,
+      "tier": "existing"
+    },
+    {
+      "slug": "databases-cap",
+      "title": "Databases & CAP",
+      "status": "covered",
+      "pages": 5,
+      "tier": "existing"
+    },
+    {
+      "slug": "caching",
+      "title": "Caching & Performance",
+      "status": "covered",
+      "pages": 6,
+      "tier": "existing"
+    },
+    {
+      "slug": "search",
+      "title": "Search Indexes",
+      "status": "covered",
+      "pages": 5,
+      "tier": "existing"
+    },
+    {
+      "slug": "networking",
+      "title": "Networking & Protocols",
+      "status": "covered",
+      "tier": "systems",
+      "pages": 6
+    },
+    {
+      "slug": "apis",
+      "title": "APIs & Service Communication",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "concurrency",
+      "title": "Concurrency & Parallelism",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "distributed-systems",
+      "title": "Distributed Systems",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "scalability",
+      "title": "Scalability & System Design",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "reliability",
+      "title": "Reliability & Resilience",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "observability",
+      "title": "Observability",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "security",
+      "title": "Security & Auth",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "architecture",
+      "title": "Software Architecture",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "algorithms",
+      "title": "Data Structures & Algorithms",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "systems-fundamentals",
+      "title": "Operating Systems & Computer Architecture",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "testing",
+      "title": "Testing & Quality",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "delivery",
+      "title": "Delivery & Operations",
+      "status": "uncovered",
+      "tier": "systems"
+    },
+    {
+      "slug": "frontend",
+      "title": "Frontend Fundamentals",
+      "status": "uncovered",
+      "tier": "fullstack"
+    },
+    {
+      "slug": "mobile",
+      "title": "Mobile Development",
+      "status": "uncovered",
+      "tier": "fullstack"
+    },
+    {
+      "slug": "data-engineering",
+      "title": "Data Engineering & Pipelines",
+      "status": "uncovered",
+      "tier": "fullstack"
+    },
+    {
+      "slug": "ml-systems",
+      "title": "ML / AI Systems",
+      "status": "uncovered",
+      "tier": "fullstack"
+    },
+    {
+      "slug": "languages",
+      "title": "Programming Language Concepts",
+      "status": "uncovered",
+      "tier": "fullstack"
+    },
+    {
+      "slug": "craft",
+      "title": "Code Quality & Craft",
+      "status": "uncovered",
+      "tier": "fullstack"
+    }
   ]
 }
