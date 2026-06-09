@@ -1,0 +1,230 @@
+---
+title: Consensus
+description: The consensus problem and why it's expensive — Paxos intuition, Raft (leader election, log replication, safety), ZAB, quorums, and the leader-based versus leaderless tradeoff that underlies every coordination service.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**Consensus** is the problem of getting a set of nodes to *agree on a single value*
+(or a single ordered sequence of values) despite some of them crashing and despite an
+unreliable network. It is the hardest core primitive in distributed systems, and an
+astonishing amount of real infrastructure reduces to it: electing a leader, committing
+a database transaction across replicas, holding a distributed lock, agreeing on cluster
+membership, ordering a replicated log. If you can solve consensus, you can build
+linearizable storage, fault-tolerant coordination, and reliable replication on top of
+it. This page covers the algorithms that solve it in practice — **Paxos**, **Raft**,
+and **ZAB** — and, just as importantly, *why consensus is expensive* and when you
+should avoid paying for it. The companions on time/ordering and replication build
+directly on the guarantees established here.
+
+## Mental model
+
+Consensus must satisfy four properties simultaneously, and the difficulty is doing so
+under crashes and message loss:
+
+- **Agreement:** no two correct nodes decide different values.
+- **Validity (integrity):** the decided value was actually proposed by some node (no
+  values invented out of thin air).
+- **Termination (liveness):** every correct node eventually decides.
+- **Stability:** once decided, the value never changes.
+
+FLP (see the cluster overview) proves you cannot guarantee *all* of these under full
+asynchrony with even one crash — so every real algorithm guarantees **safety**
+(agreement + validity + stability) *always*, and guarantees **liveness** (termination)
+only *when the network is well-behaved enough* (partial synchrony). The mantra:
+**never violate safety; sacrifice progress temporarily if you must.** A consensus
+system that stalls during a partition is behaving correctly; one that decides two
+different values is catastrophically broken.
+
+The engine underneath all of them is the **quorum**: a majority of nodes (⌊N/2⌋ + 1).
+Any two majorities of the same set **must overlap in at least one node**. That overlap
+is the whole trick — it guarantees that a new decision "sees" any prior decision
+through the shared node, so the system can't forget a committed value. With N nodes
+you tolerate the loss of ⌊N/2⌋ and still have a quorum. This is why consensus clusters
+are **odd-sized** (3, 5, 7): N=3 and N=4 both tolerate only 1 failure, so N=4 just adds
+cost with no extra fault tolerance. Larger clusters tolerate more failures but make
+*every* decision slower (more nodes to hear from), which is the central cost of
+consensus: **agreement requires a round trip to a majority on every committed operation.**
+
+## Types / Variants
+
+**Paxos (Lamport, 1998).** The original proven-correct consensus algorithm, and
+notoriously hard to understand. Single-decree Paxos agrees on *one* value via two
+phases run by a **proposer**:
+
+- **Phase 1 (Prepare/Promise):** the proposer picks a monotonically increasing ballot
+  number `n` and asks a majority of **acceptors** to *promise* not to accept anything
+  numbered below `n`. If an acceptor has already accepted a value, it returns it.
+- **Phase 2 (Accept/Accepted):** the proposer sends `(n, value)` — using the
+  highest-numbered value any acceptor reported, if any, otherwise its own — and the
+  value is **chosen** once a majority accepts it.
+
+The promise-with-highest-value rule is what preserves safety across competing
+proposers. **Multi-Paxos** optimizes the common case by electing a stable leader so
+Phase 1 can be skipped on every subsequent command (one round trip instead of two).
+Paxos is correct but underspecified — turning it into a working replicated log is its
+own research problem, which is exactly why Raft exists.
+
+**Raft (Ongaro & Ousterhout, 2014).** Designed for *understandability* while being
+equivalent in power to Multi-Paxos. Raft factors consensus into three subproblems:
+
+- **Leader election.** Time is divided into **terms** (a logical clock; each term has
+  at most one leader). A **follower** that hears no heartbeat within its randomized
+  election timeout becomes a **candidate**, increments the term, votes for itself, and
+  requests votes. A node grants its vote at most once per term and only to a candidate
+  whose log is **at least as up-to-date** as its own. A candidate winning a **majority**
+  becomes leader. Randomized timeouts make split votes rare and self-correcting.
+- **Log replication.** All client writes go to the leader, which appends to its log and
+  sends `AppendEntries` to followers. An entry is **committed** once it's replicated on
+  a **majority**; the leader then applies it to its state machine and tells followers
+  the commit index. The leader forces follower logs to match its own (overwriting
+  conflicting tails), giving a single, consistent, ordered log.
+- **Safety.** The **Election Restriction** (only a node with all committed entries can
+  win) plus the rule that **a leader only counts an entry committed once it has
+  replicated an entry from its *own* term** together guarantee committed entries are
+  never lost or reordered — the **Leader Completeness** and **State Machine Safety**
+  properties.
+
+**ZAB (ZooKeeper Atomic Broadcast).** ZooKeeper's protocol, predating Raft and very
+similar in spirit: a single **leader** assigns globally ordered, monotonically
+increasing **zxids** to transactions and broadcasts them; followers ack, and a
+transaction commits on a majority ack. ZAB's distinguishing concern is **recovery**:
+after a leader change it runs a *discovery/synchronization* phase to guarantee the new
+leader has every transaction that was committed under any previous leader (Primary
+Order property) before resuming. It guarantees FIFO order per client and total order
+across all updates — exactly what ZooKeeper's coordination API needs.
+
+**Leader-based vs leaderless consensus.** Paxos/Raft/ZAB in practice all elect a
+**leader** to serialize proposals — this turns the common case into one round trip and
+gives a natural place to order operations, at the cost of a leader bottleneck and an
+election stall on leader failure. **Leaderless / fully-symmetric** variants (Egalitarian
+Paxos, classic single-decree Paxos with dueling proposers) let any node propose,
+avoiding the single bottleneck and election pause, but risk **livelock** (competing
+proposers repeatedly preempt each other, never deciding) and need extra machinery to
+order concurrent commands. Almost all production systems choose leader-based for its
+simpler common case and predictable performance.
+
+## When to use / When NOT
+
+- **Use consensus when:** you need nodes to *agree* on critical shared state where
+  divergence is unacceptable — leader election, distributed locks, cluster membership,
+  config, or a replicated log/transaction commit. This is the right (and only sound)
+  tool for "exactly one node must own this."
+- **Use consensus when:** you need **linearizable** reads/writes on replicated data and
+  can pay the majority-round-trip latency for them.
+- **Avoid consensus when:** eventual consistency suffices (shopping carts, feeds,
+  metrics). Quorum-less, gossip/CRDT-based replication (see replication-consistency) is
+  far cheaper and stays available under partition — consensus would only add latency and
+  unavailability for no benefit.
+- **Avoid consensus on the hot path when:** you can elect a leader *once* via consensus
+  and then let that leader serve at memory speed, only re-running consensus on failure.
+  Don't run a consensus round per request if a lease will do.
+- **Avoid large consensus clusters when:** you want throughput — every added voter slows
+  every commit. Keep the voting group small (3 or 5) and scale reads with non-voting
+  **learners/observers** instead.
+- **Don't roll your own.** Use etcd/ZooKeeper/Consul or a vetted Raft library. Subtle
+  safety bugs in hand-rolled consensus are nearly guaranteed.
+
+## Tradeoffs
+
+| Dimension | Leader-based (Raft, Multi-Paxos, ZAB) | Leaderless (basic Paxos, EPaxos) |
+| --------- | ------------------------------------- | -------------------------------- |
+| Common-case latency | 1 round trip to a majority | Up to 2 (Phase 1 + Phase 2) |
+| Single bottleneck | Yes — leader serializes all writes | No — any node proposes |
+| Failure behavior | Election stall (seconds) on leader loss | No election, but livelock risk |
+| Ordering | Natural total order via the leader | Needs conflict detection/ordering |
+| Understandability | Higher (Raft especially) | Lower; harder to get right |
+| Throughput ceiling | Leader-bound | Potentially higher under low contention |
+
+The deeper, unavoidable tradeoffs of consensus *as a whole*:
+
+| Property | Cost |
+| -------- | ---- |
+| Strong agreement (linearizable) | Majority round trip on every committed write |
+| Fault tolerance of f nodes | Requires 2f+1 voters (3f+1 if Byzantine) |
+| Safety always preserved | Liveness sacrificed during partitions (CP) |
+| More replicas = more durability | More replicas = slower commits |
+
+Consensus is **CP** by nature: on the minority side of a partition there is no quorum,
+so it stops serving rather than risk divergence. That unavailability is the price of
+never deciding two different values.
+
+## Diagram
+
+Raft log replication for a single command: the client writes to the leader, which
+replicates to followers; the entry commits once a **majority** (here 2 of 3 including
+the leader) has it, then is applied.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant L as Leader (term 4)
+  participant F1 as Follower 1
+  participant F2 as Follower 2
+  C->>L: write(set x = 7)
+  Note over L: append entry @ index 9, term 4<br/>(uncommitted)
+  L->>F1: AppendEntries(idx 9, x=7)
+  L->>F2: AppendEntries(idx 9, x=7)
+  F1-->>L: ack (entry stored)
+  Note over L: majority has idx 9 (L + F1)<br/>=> COMMIT index 9
+  L->>L: apply x=7 to state machine
+  L-->>C: success
+  L->>F1: AppendEntries(commitIndex = 9)
+  L->>F2: AppendEntries(idx 9 retry + commit)
+  F2-->>L: ack (catches up)
+  Note over F1,F2: followers apply x=7 once they<br/>learn commitIndex >= 9`} />
+
+The entry is durable and committed the instant a *majority* stores it — the leader
+does not wait for the slow/lagging follower (F2) before acking the client. The quorum
+overlap guarantees any future leader will also have this entry, so it can never be lost.
+
+## Try it
+
+Compare the three production consensus protocols on the axes that drive a choice.
+
+<CompareMatrix
+  client:visible
+  caption="Consensus protocols: Paxos vs Raft vs ZAB"
+  columns={['Multi-Paxos', 'Raft', 'ZAB']}
+  rows={[
+    { criterion: 'Year / origin', cells: ['1998 (Lamport)', '2014 (Ongaro/Ousterhout)', '~2008 (ZooKeeper)'] },
+    { criterion: 'Primary goal', cells: ['Provable correctness', 'Understandability', 'Coordination service backbone'] },
+    { criterion: 'Leadership', cells: ['Stable leader (Multi-Paxos opt.)', 'Strong leader, terms', 'Single leader, epochs'] },
+    { criterion: 'Common-case round trips', cells: ['1 (after Phase 1 skip)', '1 (AppendEntries)', '1 (broadcast + ack)'] },
+    { criterion: 'Log model', cells: ['Underspecified — DIY', 'Built-in replicated log', 'Ordered txn stream (zxid)'] },
+    { criterion: 'Leader-change recovery', cells: ['Re-run Phase 1', 'Election + log reconciliation', 'Discovery + sync phase' ] },
+    { criterion: 'Fault tolerance', cells: ['f of 2f+1 (crash)', 'f of 2f+1 (crash)', 'f of 2f+1 (crash)'] },
+    { criterion: 'Ease of correct implementation', cells: ['Hard', 'Moderate', 'Moderate'] },
+    { criterion: 'Used by', cells: ['Chubby, Spanner, Cassandra LWT', 'etcd, Consul, CockroachDB, TiKV', 'ZooKeeper / Kafka (KRaft uses Raft)'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **etcd** (the Kubernetes control-plane store) and **Consul** and **CockroachDB**/
+  **TiKV** all build on **Raft** — Raft's understandability is exactly why it dominates
+  new systems.
+- **ZooKeeper** uses **ZAB** to provide ordered, linearizable coordination
+  (locks, leader election, config) for Hadoop, HBase, Kafka, and many more. Kafka's
+  newer **KRaft** mode replaces ZooKeeper with a Raft-based metadata quorum.
+- **Google Chubby** and **Spanner** use **Paxos** (Multi-Paxos): Chubby is a lock
+  service whose Paxos group elects a master; Spanner runs a Paxos group *per shard* to
+  replicate the tablet's log across datacenters.
+- **Cassandra's lightweight transactions (LWT)** use Paxos for compare-and-set
+  semantics on top of an otherwise leaderless, eventually-consistent store — a precise
+  illustration of paying for consensus only where you truly need agreement.
+- **MongoDB replica-set elections** use a Raft-inspired protocol to pick a new primary,
+  while data replication itself streams from that primary — consensus for *who leads*,
+  cheaper replication for the data.
+
+## Further reading
+
+- [Diego Ongaro & John Ousterhout — In Search of an Understandable Consensus Algorithm (Raft, 2014)](https://raft.github.io/raft.pdf) — start here; the clearest consensus paper written.
+- [The Raft visualization (raft.github.io)](https://raft.github.io/) — watch elections and log replication animate; the fastest way to build intuition.
+- [Leslie Lamport — Paxos Made Simple (2001)](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) — the canonical (still not-quite-simple) Paxos explanation.
+- [Junqueira, Reed & Serafini — Zab: High-performance broadcast for primary-backup systems (2011)](https://marcoserafini.github.io/papers/zab.pdf) — the ZAB protocol and its recovery guarantees.
+- [Heidi Howard — Distributed Consensus Revised](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-935.pdf) — a unifying view of Paxos/Raft and the quorum intersection idea.

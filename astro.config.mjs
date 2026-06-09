@@ -98,6 +98,17 @@ export default defineConfig({
             { label: 'Parallel patterns', slug: 'concurrency/parallel-patterns' },
           ],
         },
+        {
+          label: 'Distributed Systems',
+          items: [
+            { label: 'Overview', slug: 'distributed-systems' },
+            { label: 'Consensus', slug: 'distributed-systems/consensus' },
+            { label: 'Time & ordering', slug: 'distributed-systems/time-ordering' },
+            { label: 'Replication & convergence', slug: 'distributed-systems/replication-consistency' },
+            { label: 'Coordination', slug: 'distributed-systems/coordination' },
+            { label: 'Distributed failure', slug: 'distributed-systems/distributed-failure' },
+          ],
+        },
       ],
     }),
   ],

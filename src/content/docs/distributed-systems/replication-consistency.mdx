@@ -1,0 +1,266 @@
+---
+title: Replication & Convergence
+description: How distributed replicas stay (or become) consistent — sync/async/quorum replication, R+W>N, anti-entropy, read repair, Merkle trees, gossip, CRDTs and convergence, and conflict resolution (LWW versus semantic merge).
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Replication keeps copies of data on multiple nodes for availability, throughput, and
+locality — but the instant you have more than one copy, you face the central question
+of this page: **how do divergent replicas come back into agreement?** The CAP and
+replication-topology material lives in the *Databases & CAP* cluster; here the focus is
+the *mechanics of convergence* — the background machinery that detects and repairs
+divergence (**anti-entropy, read repair, Merkle trees, gossip**) and the data
+structures and policies that resolve concurrent writes (**CRDTs, last-write-wins vs
+semantic merge**). The framing question is whether your replicas must agree *before*
+acknowledging a write (synchronous/quorum, strong) or are allowed to diverge and
+**converge later** (asynchronous, eventually consistent) — and, if the latter, exactly
+*how* convergence is engineered so that "eventually consistent" doesn't quietly mean
+"eventually wrong." This builds directly on time-ordering (causality is what makes
+conflict detection correct) and consensus (the strong end of the spectrum).
+
+## Mental model
+
+Picture replicas as people keeping copies of a shared notebook. There are two
+fundamentally different ways to keep them in agreement:
+
+1. **Agree before you write (synchronous / quorum / consensus).** Nobody's write is
+   "done" until enough copies confirm it. Strong consistency, but the write blocks on
+   the network and stalls if too many copies are unreachable. This is the CP world.
+2. **Write now, reconcile later (asynchronous / eventual).** Each copy accepts writes
+   immediately and a **background reconciliation process** drags the copies back
+   together. Highly available, but you must answer two hard questions: *how do you
+   detect* that copies diverged, and *how do you merge* conflicting changes without
+   losing data?
+
+For the second model, the load-bearing concept is **anti-entropy**: continuous
+background work that compares replicas and repairs differences, so divergence is
+*transient* rather than permanent. The quorum inequality **R + W > N** (read quorum +
+write quorum exceeds replica count) is how you dial in *how much* you agree up front:
+it forces any read set to overlap any write set in at least one node, so a read sees
+the latest write — strong-ish consistency tuned per request. And **causality**
+(from time-ordering) is what tells you whether two writes truly conflict (concurrent)
+or one supersedes the other (causally ordered) — get that wrong and your "conflict
+resolution" silently discards good data.
+
+The cleanest mental model for conflict-free convergence: design your data so that the
+merge function is **commutative, associative, and idempotent** — then it doesn't matter
+what order replicas see updates in or how many times; they *mathematically must*
+converge to the same state. That is a **CRDT**, and it's the strongest available
+guarantee that "eventual" really does mean "consistent."
+
+## Types / Variants
+
+### Replication synchrony (the agree-up-front knob)
+
+- **Synchronous:** acknowledge only after replicas confirm. No data loss on node
+  crash; a slow/unreachable replica blocks writes. Rare in pure form.
+- **Asynchronous:** acknowledge immediately, replicate in the background. Fast and
+  partition-resilient; a crash loses un-shipped writes. The default for eventual systems.
+- **Quorum (R+W>N):** acknowledge after **W** of **N** replicas ack a write; read from
+  **R**. Overlapping quorums give tunable, strong-ish consistency without a leader.
+  `W=N,R=1` favors fast reads; `W=1,R=N` favors fast writes; `W=R=⌈(N+1)/2⌉` (majority)
+  balances both and tolerates one failure at N=3.
+
+### Anti-entropy: detecting and repairing divergence
+
+- **Read repair (on the read path).** When a read contacts multiple replicas and finds
+  one stale, the coordinator pushes the latest value to the laggard *while serving the
+  read*. Cheap, opportunistic, but only repairs keys that are actually read — cold data
+  stays stale.
+- **Active anti-entropy (background).** A scheduled process compares replicas wholesale
+  and repairs differences, covering data that's never read. The naïve version (compare
+  every key) is far too expensive at scale, which is why Merkle trees exist.
+- **Merkle trees.** A hash tree over the key range: each leaf hashes a key bucket, each
+  parent hashes its children, up to a single root. Two replicas compare roots; if equal,
+  the whole range is identical — *one hash comparison proves billions of keys match*.
+  If roots differ, they descend only the differing branches, so the data exchanged is
+  proportional to the **differences**, not the dataset. This is how Dynamo/Cassandra/
+  Riak make full anti-entropy affordable.
+- **Hinted handoff.** When a target replica is down, a healthy node stores a *hint* (the
+  write plus its intended destination) and replays it when the target returns —
+  bridging the gap until anti-entropy or read repair would catch it.
+
+### Gossip (epidemic dissemination)
+
+A **gossip protocol** spreads information (membership, state, anti-entropy metadata) the
+way a rumor spreads: each node periodically picks a few random peers and exchanges
+state. Information reaches all N nodes in **O(log N)** rounds with no central
+coordinator and graceful degradation under failure. Gossip underlies cluster membership
+and failure detection in Cassandra, Consul (via SWIM), and Dynamo. It's robust and
+scalable but only *eventually* consistent about the thing it's spreading — fine for
+membership and metadata, not for committing data.
+
+### CRDTs (Conflict-free Replicated Data Types)
+
+Data types engineered so that concurrent updates **always converge** with no
+coordination and no lost updates, because their merge is commutative, associative, and
+idempotent. Two flavors:
+
+- **State-based (CvRDT):** replicas exchange full state and merge via a **join** (least
+  upper bound) — e.g. a grow-only counter merges by element-wise max.
+- **Operation-based (CmRDT):** replicas broadcast operations that must be commutative
+  (and delivered causally).
+
+Common CRDTs: **G-Counter / PN-Counter** (counters), **G-Set / OR-Set**
+(observed-remove sets that handle concurrent add/remove correctly), **LWW-Register**,
+and sequence CRDTs (RGA, Logoot, Yjs) for collaborative text. The price: CRDTs carry
+metadata (tombstones, version info) that can grow, and not every datatype has a natural
+conflict-free form — you sometimes must reshape your domain to fit one.
+
+### Conflict resolution policies (when you don't / can't use CRDTs)
+
+- **Last-write-wins (LWW).** Keep the write with the highest timestamp; discard the
+  rest. Trivial and stateless, but **lossy** — it silently drops the loser, and if it
+  keys on wall-clock time, clock skew can drop the *causally newer* write (see
+  time-ordering). Acceptable only when losing a concurrent write is harmless.
+- **Causal / version-vector resolution.** Use vector/version clocks to keep one write
+  when it causally supersedes another, and surface genuine concurrent conflicts as
+  **siblings** (Dynamo/Riak) for the application to merge.
+- **Semantic merge.** Resolve using domain knowledge: union two shopping carts (never
+  lose an added item), sum counters, take the max balance, or invoke a custom
+  three-way merge. More work, but no silent data loss — the right choice when every
+  write matters.
+
+## When to use / When NOT
+
+- **Use synchronous/quorum (strong) when:** reads must reflect the latest write —
+  balances, inventory, uniqueness. **Avoid when:** you need to stay available under
+  partition or can't pay coordination latency.
+- **Use asynchronous + anti-entropy (eventual) when:** availability and low latency
+  dominate and brief divergence is tolerable (feeds, carts, presence, metrics).
+  **Avoid when:** divergence is unrecoverable (double-spend) — no merge fixes that.
+- **Use read repair when:** hot data dominates reads; pair it with background
+  anti-entropy so cold data also heals. **Avoid relying on read repair alone** for
+  rarely-read data — it will stay stale.
+- **Use Merkle-tree anti-entropy when:** datasets are large and you need efficient
+  full-replica comparison. **Avoid naïve key-by-key compare** at scale — it's
+  prohibitively expensive.
+- **Use gossip when:** disseminating membership/metadata across many nodes without a
+  coordinator. **Avoid gossip for committing data** — it's eventually consistent, not
+  a commit protocol.
+- **Use CRDTs when:** you need automatic, lossless convergence of concurrent writes
+  (collaborative editing, multi-region counters, offline-first). **Avoid when:** your
+  invariants need global coordination (uniqueness, "balance ≥ 0") — CRDTs can't enforce
+  cross-replica invariants; use consensus.
+- **Use LWW only when:** dropping a concurrent write is genuinely acceptable.
+  **Otherwise use semantic merge or CRDTs** — LWW's simplicity is paid for in lost data.
+
+## Tradeoffs
+
+| Mechanism | Consistency | Availability | Cost / caveat |
+| --------- | ----------- | ------------ | ------------- |
+| Synchronous / quorum (R+W>N) | Strong-ish to strong | Lower under partition | Coordination latency; minority unavailable |
+| Asynchronous + anti-entropy | Eventual | High | Transient divergence; needs repair machinery |
+| Read repair | Heals read keys | High | Cold data stays stale until background repair |
+| Merkle-tree anti-entropy | Converges all data | High | Tree maintenance; periodic full compare |
+| Gossip | Eventual (metadata) | High, decentralized | O(log N) rounds; not a data-commit protocol |
+| CRDTs | Strong eventual (converges, lossless) | High | Metadata growth; not all domains fit |
+| LWW | "Resolved" (lossy) | High | Silently drops concurrent writes; clock-skew bug |
+| Semantic / causal merge | No lost updates | High | App-specific logic; siblings to handle |
+
+The defining tradeoff: **agree before (consensus/quorum) costs latency and
+availability; reconcile after (eventual) costs the engineering of convergence.** The
+worst outcome is choosing "reconcile after" and then resolving with naïve LWW — you pay
+nothing up front and silently lose data forever. If you go eventual, invest in
+CRDTs/semantic merge so convergence is actually correct.
+
+## Diagram
+
+A leaderless quorum with **N=3, W=2, R=2**: a write commits on a 2-replica quorum (one
+replica was down and gets a *hint*), and a later read overlaps the write quorum,
+detects the stale replica, and **read-repairs** it.
+
+<Mermaid code={`graph TD
+  C[Client / coordinator] -->|write v2| R1[Replica 1]
+  C -->|write v2| R2[Replica 2]
+  C -. R3 down: hinted handoff .- R3[Replica 3]
+  R1 -->|ack| C
+  R2 -->|ack| C
+  C -->|"W=2 acks -> commit v2"| OK[Write OK]
+  RD[Reader] -->|read R=2| R2
+  RD -->|read R=2| R3
+  R2 -->|v2 newest| RD
+  R3 -->|"v1 stale -> read-repair to v2"| RD
+  BG[Background anti-entropy<br/>Merkle compare] -. heals cold keys .- R3`} />
+
+The W-quorum and R-quorum share **Replica 2**, so the read is guaranteed to see `v2`;
+the stale `Replica 3` is healed on the read path, and background Merkle anti-entropy
+fixes any cold keys that no read ever touches. That layered repair is what makes
+"eventually consistent" converge in bounded time.
+
+## Try it
+
+Walk the decision from "how strong must agreement be?" to a concrete convergence design.
+
+<DecisionTree
+  client:visible
+  caption="Choosing a replication & convergence strategy"
+  root={{
+    question: 'Must a read always reflect the latest committed write?',
+    branches: [
+      {
+        label: 'Yes — strong consistency required',
+        next: {
+          question: 'Can you tolerate unavailability on the minority side of a partition?',
+          branches: [
+            { label: 'Yes (CP is acceptable)', next: { leaf: { recommendation: 'Consensus or majority quorum (R+W>N, W=majority)', detail: 'Use Raft/Paxos-backed replication or majority quorums. Strong/linearizable reads; the minority partition stops serving. Pay the round-trip latency.' } } },
+            { label: 'No — must always answer', next: { leaf: { recommendation: 'You cannot have both — relax consistency', detail: 'CAP forbids strong consistency + availability under partition. Move to the eventual branch and engineer convergence (CRDTs/semantic merge) instead.' } } },
+          ],
+        },
+      },
+      {
+        label: 'No — brief divergence is acceptable',
+        next: {
+          question: 'Can concurrent writes be merged automatically without losing data?',
+          branches: [
+            {
+              label: 'Yes, the datatype has a clean merge',
+              next: { leaf: { recommendation: 'CRDTs + gossip/anti-entropy', detail: 'Model state as a CRDT (counters, OR-Sets, sequence CRDTs). Disseminate via gossip; heal with read repair + Merkle-tree anti-entropy. Strong eventual consistency, lossless convergence.' } },
+            },
+            {
+              label: 'No — merges need domain logic',
+              next: {
+                question: 'Is silently dropping a concurrent write acceptable?',
+                branches: [
+                  { label: 'No — every write matters', next: { leaf: { recommendation: 'Version vectors + semantic merge', detail: 'Track causality with version vectors; surface concurrent writes as siblings and merge with domain logic (union carts, sum counters). No lost updates.' } } },
+                  { label: 'Yes — losing a loser is fine', next: { leaf: { recommendation: 'Last-write-wins (with care)', detail: 'Acceptable only for harmless-to-lose data. Prefer a logical/HLC timestamp over wall-clock to avoid clock-skew dropping the causally-newer write.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Cassandra / ScyllaDB** combine quorum replication, **read repair**, **hinted
+  handoff**, and **Merkle-tree** anti-entropy (`nodetool repair`); membership/failure
+  spread via **gossip**. Default conflict resolution is **LWW by timestamp** — fast,
+  but the documented footgun when clocks skew.
+- **Riak** surfaces **siblings** via version vectors and lets the application merge them,
+  and ships built-in **CRDTs** (counters, sets, maps, registers) for automatic
+  convergence.
+- **Amazon Dynamo** is the origin of the read-repair + hinted-handoff + Merkle-tree +
+  gossip stack that most leaderless stores now use.
+- **Redis Enterprise (CRDB)** uses **CRDTs** to give active-active geo-replication with
+  conflict-free convergence across regions.
+- **Collaborative editors (Figma, Yjs/Automerge-based apps, Apple Notes)** use sequence
+  **CRDTs** so concurrent edits from offline clients merge without a central serializer
+  — the consumer-facing face of conflict-free convergence.
+
+## Further reading
+
+- [Shapiro et al. — Conflict-free Replicated Data Types (2011)](https://inria.hal.science/inria-00609399/document) — the foundational CRDT paper (state- and op-based).
+- [The Dynamo Paper (SOSP 2007)](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) — quorums, read repair, hinted handoff, Merkle anti-entropy, vector clocks.
+- [Demers et al. — Epidemic Algorithms for Replicated Database Maintenance (1987)](https://www.cs.cornell.edu/projects/spinglass/public_pdfs/Epidemic%20Algorithms.pdf) — the origin of gossip/anti-entropy.
+- [Martin Kleppmann — *DDIA* ch. 5 (Replication, conflict resolution)](https://dataintensive.net/) — multi-leader conflicts, LWW pitfalls, and convergence.
+- [crdt.tech — CRDT resources](https://crdt.tech/) — curated list of CRDT papers, talks, and libraries.

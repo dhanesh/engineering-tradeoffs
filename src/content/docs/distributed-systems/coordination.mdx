@@ -1,0 +1,259 @@
+---
+title: Coordination
+description: Distributed locks, leader election, service discovery, and membership built on ZooKeeper/etcd/Consul — plus the herd, split-brain, fencing tokens, and distributed transactions (2PC/3PC blocking, saga, TCC).
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+**Coordination** is the layer where independent nodes are made to act as one organized
+system: agreeing on *who is in charge* (leader election), *who is allowed to act*
+(distributed locks), *who exists* (membership), *where to find a service* (discovery),
+and *how a multi-node operation commits or aborts atomically* (distributed
+transactions). Almost all of it reduces to consensus underneath — which is why a small
+number of consensus-backed coordination services (**ZooKeeper, etcd, Consul**) sit at
+the heart of so many architectures, providing a tiny, linearizable, strongly-consistent
+store that everything else coordinates *through*. This page covers those primitives, the
+coordination services that provide them, and the failure modes that make naïve
+coordination dangerous — the **thundering herd**, **split-brain**, and the
+**fencing-token** fix — plus the spectrum of distributed-transaction protocols (2PC,
+3PC, saga, TCC) and why blocking commit protocols are so often the wrong default.
+
+## Mental model
+
+**Don't coordinate in the application; coordinate through a consensus store.** The
+durable mental model is a **single source of truth** — a small, strongly-consistent,
+highly-available service (etcd/ZooKeeper/Consul) that holds the *one* authoritative
+answer to "who's the leader / who holds the lock / who's alive / where is service X."
+Your nodes never try to agree *peer-to-peer* about these things (that's hard consensus
+you shouldn't re-implement); they all defer to the store, which has already solved
+consensus correctly.
+
+The second load-bearing idea: **a distributed lock is not a mutex.** A process can
+acquire a lock, then pause (GC, VM migration, network blip) *past its lease expiry*
+without knowing it; the lock service grants the lock to someone else; now **two**
+processes believe they hold it. A lock alone cannot prevent the stalled process from
+acting on stale belief. The fix is a **fencing token**: every lock grant carries a
+monotonically increasing number, and the *protected resource* rejects any operation
+carrying a token lower than the highest it has seen. The lock service provides mutual
+exclusion *most of the time*; the fencing token makes it *safe even when it fails*. Any
+distributed-lock design without fencing has a correctness hole.
+
+Third: **atomic commit across nodes is fundamentally harder than consensus, because it
+requires *unanimity*, not majority.** A transaction commits only if *all* participants
+can — so a single crashed participant can block everyone (2PC's defining weakness).
+That tension is why modern systems often abandon distributed ACID transactions for
+**sagas** (sequences of local transactions with compensations) that trade atomicity for
+availability.
+
+## Types / Variants
+
+### Coordination primitives
+
+- **Leader election.** Elect exactly one coordinator among peers. Implemented by
+  creating a single well-known key in the consensus store (the node that creates it
+  wins) with a lease/ephemeral lifetime so the leadership is released if the leader
+  dies. Used for single-writer designs, schedulers, and failover.
+- **Distributed lock / lease.** Mutual exclusion across nodes, almost always as a
+  **time-bounded lease** (auto-released on expiry) so a dead holder can't lock the
+  resource forever — paired with a **fencing token** for safety.
+- **Service discovery.** A registry mapping logical service names to current healthy
+  endpoints, so callers find providers despite churn. Push (clients watch for changes)
+  or pull (clients query/DNS). etcd/Consul + health checks, or Kubernetes Services.
+- **Membership.** The agreed set of live nodes in a cluster. Strong membership via the
+  consensus store, or scalable eventually-consistent membership via **gossip/SWIM**
+  (Consul, Serf, Cassandra) when exact agreement isn't required.
+
+### Coordination services
+
+- **ZooKeeper** (ZAB). The veteran. A hierarchical namespace of **znodes** with
+  **ephemeral** nodes (vanish when the session dies — perfect for locks/leases) and
+  **watches** (notify on change). Mature, battle-tested, used by Kafka (historically),
+  HBase, Hadoop. Java; heavier to operate.
+- **etcd** (Raft). The Kubernetes backbone. A flat key-value store with leases,
+  watches, and atomic compare-and-swap; clean gRPC API. The default for cloud-native
+  coordination.
+- **Consul** (Raft + gossip). Coordination *plus* first-class service discovery, health
+  checking, and a service mesh. Uses Raft for the strongly-consistent catalog and
+  **SWIM gossip** for scalable membership/failure detection.
+
+### The failure modes
+
+- **Thundering herd (the herd effect).** When a contended resource frees (a lock
+  releases, a leader dies), *every* waiter wakes and rushes at once, overwhelming the
+  store or the resource. Fixes: **sequential/queue locks** (each waiter watches only its
+  immediate predecessor, so exactly one wakes — ZooKeeper's lock recipe), randomized
+  backoff, and watch-fan-out limits.
+- **Split-brain.** A partition lets *two* nodes both believe they're the leader (or
+  primary), each accepting writes → divergence/corruption. Prevented by **quorum**
+  (only the majority side can hold leadership; the minority steps down) and made *safe*
+  by **fencing tokens** (stale leader's writes are rejected downstream).
+- **Fencing tokens.** The monotonic counter that turns "mostly-correct mutual exclusion"
+  into "safe mutual exclusion." Essential whenever a lock guards an external resource
+  (storage, a database) that can't itself participate in the consensus.
+
+### Distributed transactions (atomic commit across services)
+
+- **2PC (Two-Phase Commit).** A coordinator runs **prepare** (all participants vote
+  commit/abort and durably promise) then **commit/abort** (apply the unanimous
+  decision). Gives atomicity, but is a **blocking** protocol: if the coordinator crashes
+  after participants vote *yes* but before delivering the decision, participants hold
+  locks **indefinitely**, unsure whether to commit. A single coordinator failure can
+  freeze the system. Synchronous, lock-heavy, latency-bound.
+- **3PC (Three-Phase Commit).** Adds a **pre-commit** phase so participants can reach a
+  safe default and avoid indefinite blocking under a coordinator crash — but it assumes
+  bounded network delay (synchrony) and is **unsafe under network partitions**, so it's
+  rarely used in practice. It trades 2PC's blocking for an extra round and partition
+  fragility.
+- **Saga.** A long-running transaction split into a sequence of **local** transactions,
+  each with a **compensating** action that semantically undoes it. On failure, run the
+  compensations in reverse. No global locks, no blocking, stays available — but only
+  **eventual** atomicity, no isolation (intermediate states are visible), and you must
+  design idempotent, commutative compensations. Orchestrated (a coordinator drives the
+  steps) or choreographed (events trigger the next step). The default for
+  microservices.
+- **TCC (Try-Confirm/Cancel).** An application-level 2PC: **Try** reserves resources
+  (e.g. hold inventory), then **Confirm** finalizes or **Cancel** releases. Like a saga
+  with an explicit reservation step, giving more isolation than a raw saga without
+  database-level distributed locks. Used in payments/booking where a "reserve then
+  settle" model is natural.
+
+## When to use / When NOT
+
+- **Use a consensus coordination service when:** you need leader election, locks,
+  membership, config, or discovery with correctness guarantees. **Don't build these
+  peer-to-peer** in your app — defer to etcd/ZooKeeper/Consul.
+- **Use distributed locks + fencing tokens when:** exactly one node may act on a shared
+  external resource. **Never ship a distributed lock without a fencing token** if the
+  resource can't reject stale holders.
+- **Use gossip/SWIM membership when:** the cluster is large and *exact* agreement on
+  membership isn't required (failure detection, discovery hints). **Use the consensus
+  store** when membership must be authoritative (who's in the Raft group).
+- **Use 2PC only when:** participants are within one trust/admin domain, are all
+  XA-capable, and you can tolerate its blocking and latency (intra-DB cross-shard
+  commits). **Avoid 2PC across microservices / the internet** — coordinator failure
+  blocks everyone and locks don't survive service autonomy.
+- **Avoid 3PC** in real networks — its synchrony assumption breaks under partition;
+  prefer a saga or consensus-based commit.
+- **Use sagas when:** a business operation spans multiple services and availability
+  beats strict isolation (order → payment → shipping). **Avoid sagas when:**
+  intermediate visibility is unacceptable or you can't write correct compensations.
+- **Use TCC when:** a natural reserve/settle flow exists (payments, seat/inventory
+  booking) and you want more isolation than a bare saga.
+
+## Tradeoffs
+
+| Distributed-txn protocol | Atomicity | Isolation | Availability | Blocking risk |
+| ------------------------ | --------- | --------- | ------------ | ------------- |
+| 2PC | Strong (all-or-nothing) | Strong (locks held) | Low — coordinator is SPOF | **High** (coordinator crash blocks) |
+| 3PC | Strong (no indefinite block) | Strong | Low–medium | Lower, but **partition-unsafe** |
+| Saga | Eventual (compensations) | **None** (intermediates visible) | High | None |
+| TCC | Eventual (confirm/cancel) | Medium (reservations) | High | None |
+
+The defining tradeoff across coordination: **strong coordination (consensus, 2PC) buys
+correctness with unavailability and latency; relaxed coordination (gossip, saga) buys
+availability and scale by giving up atomicity/isolation.** And for *every* lock-based
+design, the non-negotiable: mutual exclusion is best-effort; **fencing tokens** are what
+make it actually safe.
+
+## Diagram
+
+Leader election via an ephemeral key in a consensus store, and the split-brain that
+**quorum + fencing tokens** prevent when the elected leader stalls during a partition.
+
+<Mermaid code={`sequenceDiagram
+  participant A as Node A
+  participant B as Node B
+  participant S as Consensus store (etcd/ZK)
+  participant R as Protected resource
+  A->>S: create /leader (ephemeral, lease)  => WINS, token=42
+  B->>S: create /leader => fails (exists), WATCH it
+  Note over A: A is leader (token 42)
+  Note over A,S: partition: A stalls (GC pause),<br/>lease EXPIRES at the store
+  S-->>B: /leader deleted (A's lease gone)
+  B->>S: create /leader => WINS, token=43
+  Note over B: B is leader (token 43)
+  A->>R: write (stale, carries token=42)
+  R-->>A: REJECT (42 < highest seen 43)
+  B->>R: write (token=43)
+  R-->>B: accept
+  Note over R: fencing token makes the stale<br/>leader harmless — no split-brain corruption`} />
+
+Quorum/lease ensures only one *current* leader; the **fencing token** makes the system
+safe even in the window where the old leader (A) hasn't realized it lost leadership —
+the resource rejects its stale write. Without the token, A and B would both write and
+corrupt the resource.
+
+## Try it
+
+Pick the coordination service, then reason about when distributed transactions are
+worth their cost.
+
+<CompareMatrix
+  client:visible
+  caption="Coordination services: ZooKeeper vs etcd vs Consul"
+  columns={['ZooKeeper', 'etcd', 'Consul']}
+  rows={[
+    { criterion: 'Consensus protocol', cells: ['ZAB', 'Raft', 'Raft (+ SWIM gossip)'] },
+    { criterion: 'Data model', cells: ['Hierarchical znodes', 'Flat key-value', 'KV + service catalog'] },
+    { criterion: 'Watches / notifications', cells: ['Yes (watches)', 'Yes (watch streams)', 'Yes (blocking queries)'] },
+    { criterion: 'Ephemeral/lease nodes', cells: ['Ephemeral znodes', 'Leases', 'Sessions + checks'] },
+    { criterion: 'Built-in service discovery', cells: ['No (DIY)', 'No (DIY)', 'Yes — first-class'] },
+    { criterion: 'Health checking', cells: ['Session liveness', 'Lease keepalive', 'Rich health checks'] },
+    { criterion: 'Membership at scale', cells: ['Quorum only', 'Quorum only', 'Gossip (SWIM) — scales out'] },
+    { criterion: 'Typical home', cells: ['Kafka(old), HBase, Hadoop', 'Kubernetes, cloud-native', 'Service mesh, multi-DC discovery'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Distributed transactions: when, why, why NOT"
+  tabs={[
+    {
+      label: 'When to use which',
+      content:
+        'Use 2PC only inside one admin/trust domain with XA-capable participants and tolerable blocking (cross-shard commit in a single DB). Use a SAGA when a business flow spans multiple autonomous services and availability beats strict isolation (order→payment→ship). Use TCC when a natural reserve→settle model exists (payments, seat booking) and you want reservation-level isolation. Avoid 3PC in real networks.',
+    },
+    {
+      label: 'Why distribute the transaction at all',
+      content:
+        'Sometimes a single business operation genuinely must touch data owned by multiple services or shards, and a partial outcome is unacceptable (money debited but order not created). The protocols exist to make such multi-node operations all-or-nothing (2PC/3PC) or eventually-consistent-with-compensation (saga/TCC) rather than leaving inconsistent state.',
+    },
+    {
+      label: 'Why NOT (the cost)',
+      content:
+        '2PC is a blocking protocol with the coordinator as a single point of failure: a crash after the prepare votes leaves participants holding locks indefinitely, and it serializes latency across all participants. 3PC removes indefinite blocking but breaks under network partitions. Sagas give up atomicity and isolation (intermediate states are visible) and force you to write correct, idempotent compensations. None are free — prefer redesigning so a single service owns the invariant, avoiding the distributed transaction entirely.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Kubernetes** stores all cluster state in **etcd** (Raft) and uses leader election
+  (via etcd leases) so exactly one controller-manager/scheduler is active — textbook
+  consensus-backed coordination.
+- **Apache Kafka** historically used **ZooKeeper** for controller election, broker
+  membership, and config (now replaced by Raft-based **KRaft**). HBase and Hadoop YARN
+  still rely on ZooKeeper for master election and coordination.
+- **HashiCorp Consul** powers service discovery and health-checked service meshes,
+  combining Raft (consistent catalog) with SWIM gossip (scalable failure detection).
+- **The Martin Kleppmann "How to do distributed locking" analysis** is the canonical
+  argument for **fencing tokens** — showing how a GC pause breaks a Redis/Redlock lock
+  and how a monotonic fencing token at the storage layer fixes it.
+- **Microservice e-commerce checkouts** routinely use **sagas** (order service emits
+  events; payment and shipping react, with compensations like refund/cancel on
+  failure), and **payment gateways** use **TCC**-style authorize-then-capture
+  (reserve funds, then settle or release).
+
+## Further reading
+
+- [Martin Kleppmann — How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) — the definitive case for fencing tokens and the limits of lock services.
+- [The ZooKeeper paper — Wait-free coordination for Internet-scale systems (2010)](https://www.usenix.org/legacy/event/atc10/tech/full_papers/Hunt.pdf) — znodes, watches, and the coordination recipes.
+- [Hector Garcia-Molina & Kenneth Salem — Sagas (1987)](https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf) — the original saga paper.
+- [Pat Helland — Life beyond Distributed Transactions (2007)](https://queue.acm.org/detail.cfm?id=3025012) — why large systems avoid distributed transactions and what to do instead.
+- [etcd documentation — leases, watches, and locks](https://etcd.io/docs/latest/learning/api/) — the practical coordination primitives in a Raft store.

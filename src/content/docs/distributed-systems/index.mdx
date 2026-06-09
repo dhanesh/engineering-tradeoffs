@@ -1,0 +1,218 @@
+---
+title: Distributed Systems
+description: The 8 fallacies of distributed computing, why you distribute at all (and what it costs), partial failure, the two-generals and FLP impossibility intuitions, and why the network is the enemy — the foundation for consensus, time, replication, and coordination.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **distributed system** is a set of independent computers that communicate only by
+passing messages over a network and that, to a user, appear as one coherent system.
+You build one when a single machine can no longer hold the data, serve the load, or
+survive the failures your service must tolerate. The catch: the moment you span more
+than one machine connected by a network, you inherit a new physics. Messages get
+lost, delayed, duplicated, and reordered; clocks disagree; nodes crash mid-operation
+and you cannot tell a crashed node from a slow one. Almost every hard problem in the
+rest of this cluster — consensus, ordering, replication, coordination, failure
+detection — is a direct consequence of those facts. This page is the foundation: it
+names the false assumptions that sink naïve designs, explains *partial failure* (the
+defining trait of distribution), and gives the impossibility-result intuitions
+(two generals, FLP) that bound what any algorithm can achieve.
+
+## Mental model
+
+**The network is an adversary, not a wire.** Treat every message as something that
+*may* be lost, delayed arbitrarily long, duplicated, or reordered — and treat every
+remote node as something that *may* have crashed, or may simply be slow, with **no
+reliable way to tell which**. That single ambiguity — "is it dead or just slow?" — is
+the root of most distributed-systems difficulty. You can never *know* a remote node's
+state; you can only infer it, with some probability, from messages that themselves
+may lie about timing.
+
+The defining property is **partial failure**: in a single machine, a fault is total
+and observable (the process crashes, you get an exception). In a distributed system,
+*some* components fail while others keep running, and the survivors often **cannot
+detect** the failure promptly or agree on whether it happened. A request that times
+out might have failed before executing, after executing, or be still in flight — three
+outcomes you cannot distinguish from the client. Designing for distribution means
+designing for that uncertainty on *every* call, not as an exceptional case.
+
+The 8 **fallacies of distributed computing** (Deutsch & Gosling, Sun, 1990s) are the
+false assumptions that turn working local code into broken distributed code:
+
+1. **The network is reliable.** It isn't — packets drop, links flap, NICs fail.
+2. **Latency is zero.** Round trips cost milliseconds locally, hundreds across regions.
+3. **Bandwidth is infinite.** It's finite and shared; fan-out saturates it.
+4. **The network is secure.** Assume eavesdropping and tampering; encrypt and authenticate.
+5. **Topology doesn't change.** Nodes, routes, and addresses move constantly.
+6. **There is one administrator.** Many teams, clouds, and policies; no single owner.
+7. **Transport cost is zero.** Serialization, framing, and TLS handshakes all cost.
+8. **The network is homogeneous.** Mixed hardware, protocols, MTUs, and versions.
+
+Every fallacy is a place where a local-first design silently assumes something the
+network does not provide — and breaks under load, partition, or scale.
+
+## Types / Variants
+
+There is no single "distributed system"; the term spans a spectrum, and the failure
+and consistency burden grows as you move down it:
+
+- **Replicated single service.** One logical service, multiple copies for availability
+  and read scale (stateless web tier, read replicas). Coordination is light; the hard
+  part is replica freshness.
+- **Partitioned (sharded) data.** Different data on different nodes to exceed one
+  machine's capacity. Adds cross-shard queries, rebalancing, and routing.
+- **Coordinated cluster.** Nodes must *agree* on shared state — who is leader, who
+  holds a lock, what the config is. This needs **consensus** and is the expensive core.
+- **Service mesh / microservices.** Many independently-deployed services calling each
+  other over the network; partial failure and cascading failure dominate.
+- **Geo-distributed.** Nodes across regions/continents; the speed of light makes
+  synchronous cross-region coordination painfully slow, forcing async or relaxed
+  consistency.
+
+A second axis is the **failure model** an algorithm assumes:
+
+- **Crash-stop (fail-stop):** nodes either work correctly or halt — the common
+  assumption for Raft/Paxos in a trusted datacenter.
+- **Crash-recovery:** nodes may crash and later rejoin with persisted state — what real
+  consensus implementations actually handle.
+- **Omission:** messages get dropped (the network model behind partitions).
+- **Byzantine:** nodes may behave arbitrarily or maliciously (lie, send conflicting
+  messages). Needed for blockchains and adversarial settings; far more expensive
+  (requires 3f+1 nodes to tolerate f faults vs 2f+1 for crash faults).
+
+The two impossibility results that bound *all* of these:
+
+- **The Two Generals Problem.** Two generals must agree on a time to attack but can
+  communicate only via messengers crossing enemy territory (the messenger may be
+  captured = message lost). It is *provably impossible* to guarantee agreement over an
+  unreliable channel with a finite number of messages: every message needs an
+  acknowledgement, which itself needs an acknowledgement, forever. The practical
+  lesson: **you cannot achieve guaranteed agreement with exactly-once certainty over a
+  lossy network.** You settle for "very probable" via retries — which is why
+  idempotency (covered in distributed-failure) is mandatory.
+- **FLP impossibility (Fischer, Lynch, Paterson, 1985).** In an *asynchronous* system
+  (no bound on message delay) where even **one** node may crash, **no deterministic
+  algorithm can guarantee consensus** in bounded time — because you can never
+  distinguish a crashed node from one that is merely slow, so the algorithm can be
+  forced to wait forever. FLP does **not** say consensus is useless; it says you cannot
+  have *all three* of safety, liveness, and fault-tolerance with certainty under full
+  asynchrony. Real systems escape FLP by adding **timing assumptions** (partial
+  synchrony — "messages usually arrive within Δ") and **randomization/leader election**,
+  trading guaranteed termination for *termination with overwhelming probability*. Raft
+  and Paxos live exactly in this escape hatch.
+
+## When to use / When NOT
+
+- **Distribute when:** the workload genuinely exceeds one machine (data > one disk,
+  throughput > one box), or you need availability through individual node failures, or
+  you need data near geographically spread users. These are real forcing functions.
+- **Distribute when:** a hard availability SLA requires surviving the loss of any
+  single machine, rack, or AZ — single-node systems cannot meet it regardless of how
+  big the node is.
+- **Avoid distributing when:** a single beefy server (modern boxes have terabytes of
+  RAM and dozens of cores) plus a hot standby can meet your load and durability needs.
+  Vertical scaling is dramatically simpler — no consensus, no partition handling, no
+  clock skew. **Most systems are distributed prematurely.**
+- **Avoid distributing when:** the team can't yet operate the *non*-distributed version
+  reliably. Distribution multiplies operational surface (monitoring, failure modes,
+  debugging across nodes); it makes a shaky operation worse, not better.
+- **Avoid distributing when:** the consistency requirement is strict *and* latency
+  must be low *and* you'd span regions — you cannot have all three; pick the constraint
+  you can relax before committing to the topology.
+
+## Tradeoffs
+
+| What you gain by distributing | What it costs you |
+| ----------------------------- | ----------------- |
+| Scale beyond one machine (data + throughput) | Coordination overhead on every shared decision |
+| Availability through node failure | Partial failure: ambiguous, hard-to-detect faults |
+| Geographic locality (latency to users) | Cross-region coordination is slow (speed of light) |
+| Fault isolation (blast-radius limits) | New failure modes: partitions, split-brain, cascades |
+| Independent deploy/scale of components | Distributed debugging, tracing, and consistency reasoning |
+| No single hardware ceiling | You inherit all 8 fallacies and FLP's limits |
+
+The meta-tradeoff: **distribution buys scale and availability with complexity and
+uncertainty.** Every guarantee that was free on one machine (a global clock, atomic
+visibility of a write, "the function ran exactly once") now costs a protocol, a round
+trip, or a relaxed guarantee. Pay only when the forcing function is real.
+
+## Diagram
+
+Partial failure: a client calls a service whose request crosses the network to a node
+that may be dead *or* merely slow — and the client cannot tell which, nor whether its
+write took effect.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant S as Service node
+  C->>S: write(x = 5)
+  Note over C,S: timeout fires — no response
+  Note over S: Did the node...<br/>(a) never receive it?<br/>(b) crash before applying?<br/>(c) apply it, then crash before acking?<br/>(d) apply it, ack lost on return path?
+  C-->>C: cannot distinguish (a)-(d)
+  C->>S: retry write(x = 5)
+  Note over C,S: retry may DUPLICATE the write<br/>(unless it is idempotent)`} />
+
+The client's timeout collapses four genuinely different outcomes into one observation.
+This is partial failure in one picture, and it is why distributed systems demand
+idempotent operations, explicit failure handling, and protocols that assume the
+network is hostile.
+
+## Try it
+
+When is going distributed the right call — and when is it premature complexity?
+
+<WhenWhyTabs
+  client:visible
+  caption="Going distributed: when, why, why NOT"
+  tabs={[
+    {
+      label: 'When to go distributed',
+      content:
+        'Go distributed when a real forcing function exists: (1) data exceeds one machine’s disk/RAM, (2) request throughput exceeds one box, (3) you must survive the loss of any single node/rack/AZ to meet an availability SLA, or (4) users are geographically spread and latency to a single region is unacceptable. The trigger is a hard ceiling you have actually hit or will provably hit, not a hypothetical future scale.',
+    },
+    {
+      label: 'Why it helps',
+      content:
+        'Distribution buys three things a single machine cannot: horizontal scale (add nodes to add capacity), availability through redundancy (other nodes serve when one dies), and locality (place data and compute near users). It also enables fault isolation — a failure in one shard or service need not take down the whole system if blast radius is contained.',
+    },
+    {
+      label: 'Why NOT (the costs)',
+      content:
+        'Every shared decision now needs coordination (a protocol, a round trip, or a relaxed guarantee). You inherit partial failure (dead-vs-slow ambiguity), the 8 fallacies, clock skew, split-brain, and cascading failures. FLP says you cannot have guaranteed consensus under full asynchrony. Debugging spans nodes; operations multiply. A single large server plus a hot standby is far simpler — most systems distribute prematurely. Exhaust vertical scaling first.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Amazon's Dynamo (2007)** was built precisely because partial failure is constant
+  at scale: it favors availability and treats node/network failure as the *normal*
+  case, not an exception — the design philosophy that flows from taking the fallacies
+  seriously.
+- **Google Spanner** confronts the "latency is zero" and "there is one clock" fallacies
+  head-on: it uses GPS/atomic-clock **TrueTime** to bound clock uncertainty so it can
+  offer external consistency across continents (see time-ordering).
+- **The AWS S3 2017 and us-east-1 outages** are textbook partial-failure cascades: a
+  subsystem slowed (not crashed), dependent services retried, retries amplified load,
+  and the gray failure spread — the network-as-enemy and cascading-failure dynamics in
+  the wild.
+- **Kubernetes** assumes topology constantly changes (fallacy #5): nodes join and
+  leave, pods reschedule, IPs churn — so it builds service discovery and reconciliation
+  loops rather than static configuration.
+- **TCP itself** exists because the network is *not* reliable (fallacy #1): acks,
+  retransmission, sequencing, and timeouts are TCP papering over an unreliable IP layer
+  — and even TCP cannot defeat the Two Generals problem (a connection can still be lost
+  mid-handshake with ambiguous outcome).
+
+## Further reading
+
+- [Peter Deutsch — The Eight Fallacies of Distributed Computing](https://nighthacks.com/jag/res/Fallacies.html) — the original list, still the best one-page sanity check.
+- [Fischer, Lynch & Paterson — Impossibility of Distributed Consensus with One Faulty Process (1985)](https://groups.csail.mit.edu/tds/papers/Lynch/jacm85.pdf) — the FLP result; the abstract alone is worth reading.
+- [Martin Kleppmann — *Designing Data-Intensive Applications*, ch. 8 (The Trouble with Distributed Systems)](https://dataintensive.net/) — partial failure, unreliable clocks, and unreliable networks, in depth.
+- [Two Generals' Problem (overview)](https://en.wikipedia.org/wiki/Two_Generals%27_Problem) — the impossibility of guaranteed agreement over a lossy channel.
+- [Jeff Dean — Numbers Every Engineer Should Know](https://static.googleusercontent.com/media/research.google.com/en//people/jeff/stanford-295-talk.pdf) — why latency is emphatically not zero.

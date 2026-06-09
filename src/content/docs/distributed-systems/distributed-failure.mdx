@@ -1,0 +1,240 @@
+---
+title: Distributed Failure
+description: Designing for partial failure — failure detectors, timeouts versus heartbeats, phi-accrual, network partitions, gray and cascading failures, idempotency and exactly-once intuition, and retries with backoff and jitter to defeat the thundering herd.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Everything above this page assumed failures happen; this page is about *handling* them
+well. In a distributed system, failure is not an exceptional event you can ignore — it
+is the steady-state condition you design *for*. The core difficulty, established in the
+cluster overview, is that you can never directly observe a remote node's state: you only
+infer "is it alive?" from messages, and a missing message could mean *crashed*,
+*slow*, *partitioned*, or *the ack was lost*. This page covers how systems make that
+inference (**failure detectors**, timeouts vs heartbeats, **phi-accrual**), the nastier
+failure shapes that evade naïve detection (**network partitions, gray failures,
+cascading failures**), and the client-side discipline that keeps failures from
+multiplying into outages: **idempotency** and the truth about "exactly-once,"
+**retries with exponential backoff and jitter**, and defeating the **thundering herd**.
+Get this layer wrong and a single slow node takes down the whole system; get it right
+and the system degrades gracefully.
+
+## Mental model
+
+**"Dead or just slow?" is unanswerable — so stop trying to answer it and design for
+both.** A **failure detector** is just a *suspicion* mechanism, never a *certainty*
+mechanism. Two unavoidable error modes:
+
+- **False positive:** you declare a healthy-but-slow node dead → you may fail over
+  unnecessarily, double-execute work, or cause split-brain.
+- **False negative:** you keep trusting a truly-dead node → requests hang, stall, and
+  pile up.
+
+Aggressive timeouts catch real failures fast but raise false positives; lax timeouts
+avoid false positives but let dead nodes hang you. There is **no timeout that's right in
+all conditions** — which is why adaptive detectors (phi-accrual) exist: they output a
+*continuous suspicion level* tuned to observed network behavior instead of a brittle
+binary on a fixed threshold.
+
+The second pillar: **assume every operation may run more than once, so make it
+idempotent.** Because you can't tell "request lost" from "response lost," a client that
+retries on timeout *will* sometimes duplicate a request that actually succeeded. If
+operations are **idempotent** (running them twice has the same effect as once — keyed by
+an idempotency token), this is harmless. **True exactly-once delivery is impossible**
+(it's the Two Generals problem); what production systems actually achieve is
+**at-least-once delivery + idempotent processing = effectively-once.** That phrase is
+the whole game: don't chase exactly-once on the wire; achieve it at the effect.
+
+Third: **failures amplify.** A small fault (one slow node) triggers retries, retries add
+load, load slows more nodes, and the system enters a **cascading failure** /
+**retry storm** that's far worse than the original fault. The defenses — **backoff,
+jitter, circuit breakers, load shedding, bounded retries** — exist to break that
+amplification loop. Naïve "just retry on error" is how a blip becomes an outage.
+
+## Types / Variants
+
+### Failure detection
+
+- **Heartbeats.** Each node periodically sends "I'm alive"; a missed run of heartbeats
+  marks it suspect. Simple and push-based; the question is *how many misses* and *over
+  what window* — too few → false positives on a GC pause, too many → slow detection.
+- **Timeouts.** Declare failure if no response within T. The same false-positive vs
+  detection-latency tension. A **fixed** timeout is wrong as soon as network conditions
+  change.
+- **Phi-accrual failure detector.** Instead of a boolean, output a **phi (φ)** value: a
+  continuously-rising suspicion level derived from the *statistical distribution* of
+  recent inter-arrival times. The application picks an action threshold (φ > 8 ⇒ act),
+  so the same detector can be conservative or aggressive per use, and it **adapts** to a
+  network that's normally jittery. Used by Cassandra, Akka, Hazelcast.
+- **Gossip-based detection (SWIM).** Nodes ping random peers and disseminate
+  suspicion/refutation via gossip, scaling failure detection to large clusters without a
+  central monitor (Consul/Serf, see coordination).
+
+### Failure shapes
+
+- **Crash (fail-stop).** A node halts cleanly — the easy case detectors are built for.
+- **Network partition.** A link/switch failure splits nodes into groups that can't
+  communicate but are each individually healthy. Looks like mutual death from each side
+  → the trigger for split-brain and the CAP choice. Quorum is the defense.
+- **Gray failure.** The insidious one: a node/service is *partially* working — slow,
+  dropping some requests, high tail latency — so it passes health checks ("is the port
+  open? yes") while failing real work. Detectors keyed on liveness miss it entirely;
+  you need *symptom*-based monitoring (latency, error rate from the *caller's*
+  perspective). Most large-scale outages start as gray failures.
+- **Cascading failure.** A localized problem propagates: node slows → callers retry and
+  hold connections → resource exhaustion spreads → healthy nodes fall over under the
+  redirected load. The AWS/Azure/GCP postmortem classic.
+- **Metastable failure.** The system stays in a degraded state even after the original
+  trigger is gone, because the load it created (retry backlog) sustains itself — broken
+  until you shed load.
+
+### Retry and amplification control
+
+- **Retries.** Re-issue a failed request. Mandatory for transient faults — **but only
+  for idempotent operations**, and never unbounded.
+- **Exponential backoff.** Wait `base · 2^attempt` between retries so you don't hammer a
+  struggling service. Cap it (`min(cap, base·2^n)`).
+- **Jitter.** Add randomness to backoff so that thousands of clients that failed at the
+  *same instant* don't retry in *synchronized waves* (the thundering herd / retry
+  storm). **Full jitter** (`sleep = random(0, min(cap, base·2^n))`) is the AWS-recommended
+  default and dramatically reduces contention vs plain exponential backoff.
+- **Circuit breaker.** After a failure threshold, *stop* sending to a failing dependency
+  (open the circuit), fail fast, and periodically probe (half-open) before resuming.
+  Prevents pouring retries into a downed service and gives it room to recover.
+- **Load shedding / backpressure.** Under overload, *reject* low-priority work early
+  (return 429/503) rather than accept everything and collapse. Bounded queues and
+  admission control keep the system in a recoverable regime.
+- **Idempotency keys.** A client-supplied unique token per logical operation; the server
+  deduplicates, so a retried request executes its *effect* once — the practical road to
+  "effectively-once."
+
+## When to use / When NOT
+
+- **Use heartbeats/fixed timeouts when:** the network is predictable and simple
+  liveness suffices (intra-rack, low jitter). **Avoid fixed timeouts when:** latency
+  varies widely (cross-region, shared cloud) — they'll false-positive or hang.
+- **Use phi-accrual when:** you need adaptive, tunable detection across variable
+  networks (large clusters, geo-distributed). **Avoid when:** a trivial liveness check
+  is enough — don't over-engineer a single-rack service.
+- **Use quorum-based partition handling when:** correctness during a split matters —
+  only the majority side acts. **Avoid letting both sides act** (no quorum) unless your
+  data is conflict-free (CRDTs) and divergence is acceptable.
+- **Monitor symptoms (latency/error rate), not just liveness, when:** gray failure
+  would otherwise hide — i.e. always, for anything important. **Don't trust "port is
+  open"** as health.
+- **Use retries + backoff + jitter when:** faults are transient and the operation is
+  **idempotent**. **Never retry non-idempotent operations** without an idempotency key —
+  you'll duplicate side effects (double charges).
+- **Use circuit breakers / load shedding when:** a dependency can fail or you can be
+  overloaded (i.e. always at scale) — to stop cascades. **Avoid unbounded retries and
+  unbounded queues** — they convert a blip into a metastable outage.
+- **Stop chasing exactly-once on the wire.** Design at-least-once + idempotent effect
+  instead; it's the only thing that actually works.
+
+## Tradeoffs
+
+| Mechanism | Buys you | Costs / risk |
+| --------- | -------- | ------------ |
+| Aggressive timeout | Fast failure detection | False positives → needless failover, split-brain |
+| Lax timeout | Few false positives | Slow detection → hung requests pile up |
+| Phi-accrual | Adaptive, tunable suspicion | More complexity than a fixed threshold |
+| Retries | Recover transient faults | Amplify load; duplicate non-idempotent effects |
+| Exponential backoff + jitter | Defuse retry storms / herds | Adds latency to recovery |
+| Circuit breaker | Stops cascades; fails fast | Can shed good traffic during recovery (false trips) |
+| Load shedding | Keeps system recoverable | Rejects some requests (partial unavailability) |
+| Idempotency keys | "Effectively-once" effects | Dedup store + key management overhead |
+
+The master tradeoff is **detection speed vs false positives**, and the master discipline
+is **bounded, idempotent, jittered recovery**. Unbounded "retry until it works" is the
+single most common way distributed systems turn a small fault into a large outage.
+
+## Diagram
+
+A cascading failure: one slow node triggers synchronized retries that exhaust resources
+across the tier — and where backoff+jitter, a circuit breaker, and load shedding break
+the loop.
+
+<Mermaid code={`graph TD
+  N1[Node A: slow / high tail latency<br/>gray failure] -->|requests time out| C[Callers]
+  C -->|"naive: immediate retry x3"| RT[Retry storm<br/>3x load, synchronized]
+  RT -->|connection + thread pileup| EX[Resource exhaustion<br/>spreads to healthy nodes]
+  EX -->|more timeouts| C
+  EX --> META[Metastable outage<br/>sustains itself]
+  RT -. "backoff + FULL JITTER" .-> FIX1[De-synchronized, reduced load]
+  C -. "circuit breaker opens" .-> FIX2[Fail fast, stop hammering A]
+  EX -. "load shedding / backpressure" .-> FIX3[Reject low-priority<br/>stay recoverable]
+  FIX1 --> OK[System degrades gracefully]
+  FIX2 --> OK
+  FIX3 --> OK`} />
+
+The left path is the amplification loop: a single gray-failing node → synchronized
+retries → resource exhaustion → a metastable outage that outlives the trigger. The
+dashed defenses — **jittered backoff** (de-synchronize), **circuit breakers** (stop
+feeding the failure), and **load shedding** (stay in a recoverable regime) — each cut
+the loop so the blip stays a blip.
+
+## Try it
+
+Given a remote call that just failed, decide how to recover safely.
+
+<DecisionTree
+  client:visible
+  caption="Recovering from a failed remote operation"
+  root={{
+    question: 'Did the call fail with a clear, permanent error (e.g. 400/validation)?',
+    branches: [
+      { label: 'Yes — permanent error', next: { leaf: { recommendation: 'Do not retry; fail fast', detail: 'Retrying a deterministic error just wastes capacity. Surface the error to the caller. Retries are only for transient faults.' } } },
+      {
+        label: 'No — timeout or transient error (5xx, network)',
+        next: {
+          question: 'Is the operation idempotent (or do you have an idempotency key)?',
+          branches: [
+            {
+              label: 'Yes — safe to repeat',
+              next: {
+                question: 'Could many clients be failing at the same instant?',
+                branches: [
+                  { label: 'Yes — shared dependency / mass failure', next: { leaf: { recommendation: 'Retry with exponential backoff + FULL jitter, bounded, behind a circuit breaker', detail: 'Jitter de-synchronizes the herd; the cap bounds load; the circuit breaker stops feeding a downed dependency. Add load shedding upstream so the tier stays recoverable.' } } },
+                  { label: 'No — isolated, low concurrency', next: { leaf: { recommendation: 'Bounded retries with exponential backoff', detail: 'A few retries with growing delay handles the transient fault. Still cap the attempts so a persistent failure does not loop forever.' } } },
+                ],
+              },
+            },
+            {
+              label: 'No — has side effects, not idempotent',
+              next: { leaf: { recommendation: 'Make it idempotent FIRST (idempotency key + server dedup), then retry', detail: 'Never blindly retry a non-idempotent op — you risk double charges / duplicate effects. Attach a unique idempotency token so the server executes the effect once (at-least-once delivery + idempotent processing = effectively-once).' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Cassandra, Akka, and Hazelcast** ship the **phi-accrual** failure detector so
+  suspicion adapts to network jitter instead of breaking on a fixed timeout.
+- **AWS** literally wrote the canonical guidance on **exponential backoff and jitter**
+  ("full jitter") after observing retry storms; the AWS SDKs implement it by default.
+- **Stripe and most payment APIs** require an **idempotency key** on write requests so a
+  client retry after a timeout can't double-charge — the textbook
+  at-least-once-plus-idempotent design (directly relevant to fintech ledger safety).
+- **Netflix Hystrix / resilience4j** popularized the **circuit breaker** and bulkhead
+  patterns to stop one failing dependency from cascading across a microservice fleet.
+- **Google's SRE book** documents **cascading failures** and **load shedding /
+  graceful degradation** as first-class operational concerns — and the AWS/Azure
+  postmortems repeatedly trace large outages to **gray failures** that liveness checks
+  missed and retry storms amplified.
+
+## Further reading
+
+- [Marc Brooker (AWS) — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) — the measured case for full jitter; charts and all.
+- [Hayashibara et al. — The φ Accrual Failure Detector (2004)](https://www.computer.org/csdl/proceedings-article/srds/2004/22390066/12OmNvT2phv) — the adaptive failure detector design.
+- [Google SRE Book — Addressing Cascading Failures](https://sre.google/sre-book/addressing-cascading-failures/) — load shedding, retries, and graceful degradation in production.
+- [Huang et al. — Gray Failure: The Achilles' Heel of Cloud-Scale Systems (HotOS 2017)](https://www.microsoft.com/en-us/research/publication/gray-failure-the-achilles-heel-of-cloud-scale-systems/) — why partial failures evade liveness checks.
+- [Bronson et al. — Metastable Failures in Distributed Systems (HotOS 2021)](https://sigops.org/s/conferences/hotos/2021/papers/hotos21-s11-bronson.pdf) — how systems stay broken after the trigger clears, and how to recover.

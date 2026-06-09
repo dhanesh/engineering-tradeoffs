@@ -1,0 +1,238 @@
+---
+title: Time & Ordering
+description: Why wall clocks lie — physical clocks and skew, NTP, Lamport and vector clocks, hybrid logical clocks, Spanner's TrueTime, causality, and total versus partial order in distributed systems.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+In a single program, "what happened first" is obvious — the CPU executes instructions
+in order. Across machines, it is not: each node has its own clock, those clocks drift
+and disagree, and messages take variable time to travel, so two events on two nodes
+have **no inherently comparable timestamp**. Yet ordering is exactly what you need to
+answer the questions distributed systems live on: which write is newest, did the read
+see the write, in what order did these operations happen? This page is about how to
+order events *without* a trustworthy global clock. It separates **physical time**
+(wall clocks, NTP, and why you must not trust them for ordering) from **logical time**
+(Lamport clocks, vector clocks, hybrid logical clocks — which capture causality
+instead of wall-time), and explains the one industrial system that made physical time
+trustworthy enough to order with: Google's **TrueTime**. Getting causality right here
+is what makes conflict resolution (replication-consistency) and consensus
+(consensus) sound.
+
+## Mental model
+
+**Two kinds of "before."** A *physical* "before" asks which event had the earlier
+wall-clock instant — meaningless across nodes whose clocks disagree by milliseconds.
+A *causal* "before" asks whether one event could have *influenced* another — and that
+is what actually matters for correctness. Lamport's **happens-before** relation (→)
+captures causality with three rules:
+
+1. If `a` and `b` are on the **same node** and `a` came first, then `a → b`.
+2. If `a` is **sending** a message and `b` is **receiving** it, then `a → b`.
+3. **Transitivity:** if `a → b` and `b → c`, then `a → c`.
+
+If neither `a → b` nor `b → a`, the events are **concurrent** (`a ‖ b`) — they could
+not have influenced each other, so the system is free to order them however it likes
+(or treat them as a conflict). The deep insight: **distributed order is a *partial*
+order, not a total one.** Causally related events have a definite order; concurrent
+events genuinely don't, and forcing a total order on them (e.g. by wall-clock
+timestamp) silently *invents* an ordering that may be wrong.
+
+The practical rule: **never use wall-clock timestamps to order distributed events for
+correctness.** Two servers can be tens of milliseconds apart even with NTP, and clocks
+can jump *backwards* (NTP correction, leap seconds, VM pauses). A "last-write-wins"
+scheme keyed on wall time can therefore silently discard the *causally* newer write
+because the loser's clock happened to read higher. Use logical clocks for causality;
+use physical time only when you can *bound its uncertainty* (TrueTime) or when
+approximate ordering is acceptable.
+
+## Types / Variants
+
+### Physical clocks and their problems
+
+- **Quartz / TSC clocks** drift — typically tens of ppm, so seconds of error per day if
+  uncorrected, and worse under temperature change.
+- **NTP (Network Time Protocol)** disciplines a machine's clock against time servers,
+  but is limited by network round-trip asymmetry to roughly **single-digit to tens of
+  milliseconds** of accuracy in practice (better with PTP/hardware timestamping). NTP
+  can **step the clock backward**, so monotonicity is not guaranteed. Use a
+  **monotonic clock** (never goes backward) for measuring *durations*, and the
+  wall clock only for *displaying* time — never for ordering across nodes.
+- **The fundamental limit:** even perfectly synchronized clocks can't be compared
+  reliably because you can't measure one-way network latency exactly. This is why
+  logical clocks exist.
+
+### Lamport clocks (scalar logical clocks)
+
+A single integer counter per node:
+
+- On any local event, **increment** your counter.
+- When **sending** a message, attach your counter.
+- When **receiving**, set your counter to `max(local, received) + 1`.
+
+Guarantee: if `a → b` then `LC(a) < LC(b)`. **But the converse fails** —
+`LC(a) < LC(b)` does *not* imply `a → b`; the two might be concurrent. So Lamport
+clocks give a consistent **total order** (break ties by node id) but **cannot detect
+concurrency**. Cheap (one integer), good for imposing *an* order; useless for asking
+"did these conflict?"
+
+### Vector clocks
+
+One integer **per node**, so each node tracks its view of everyone's progress:
+
+- On a local event, increment your own component.
+- On send, attach your whole vector.
+- On receive, take the **element-wise max** of local and received vectors, then
+  increment your own component.
+
+Compare vectors element-wise: `V(a) < V(b)` (every component `≤` and at least one `<`)
+means `a → b`; if neither dominates, the events are **concurrent** — a genuine
+conflict to be resolved. Vector clocks therefore **detect causality and concurrency
+exactly**, which is what Dynamo-style stores need to find conflicting writes. Cost:
+the vector grows with the number of writer nodes (mitigated by version vectors /
+dotted version vectors and pruning). **Version vectors** are the same idea applied to
+*replicas of one object* rather than processes.
+
+### Hybrid Logical Clocks (HLC)
+
+HLC combines a physical-time component with a logical counter into one timestamp that
+(a) stays close to wall-clock time (so timestamps are human-meaningful and roughly
+sortable) **and** (b) respects causality like a Lamport clock (monotonic, never moves
+backward even when the wall clock does). On each event it takes the max of the local
+physical time and the largest timestamp it has seen, bumping a logical counter to break
+ties. HLC is the sweet spot for many modern databases: causality-safe ordering with
+near-real timestamps, in constant space. Used by CockroachDB, YugabyteDB, MongoDB.
+
+### TrueTime (Spanner)
+
+Google's **TrueTime** API doesn't return a timestamp — it returns an *interval*
+`[earliest, latest]` guaranteed to contain the true time, with the **uncertainty
+bound ε** kept small (a few ms) by GPS receivers and atomic clocks in every datacenter.
+Spanner exploits this with **commit-wait**: after picking a commit timestamp `t`, a
+transaction *waits out the uncertainty* (sleeps until `now.earliest > t`) before
+releasing locks, guaranteeing that any later transaction gets a strictly greater
+timestamp. This makes wall-clock timestamps **safe to order with**, giving Spanner
+**external consistency** (linearizability) across continents — the only widely-deployed
+system to make physical time trustworthy for global ordering, at the cost of
+specialized clock hardware and that commit-wait latency (≈ 2ε per commit).
+
+### Total order vs partial order
+
+- **Partial order** (what causality gives you): some pairs ordered, concurrent pairs
+  unordered. Honest about what's truly comparable. Vector clocks expose it.
+- **Total order** (every pair ordered): required to build a replicated state machine /
+  consensus log, since all replicas must apply operations in the *same* sequence.
+  Achieved by funneling through a leader (consensus) or by Lamport timestamps with
+  deterministic tie-breaking — at the cost of imposing an order on concurrent events.
+- **Total order broadcast (atomic broadcast)** — delivering the same messages in the
+  same order to all nodes — is **equivalent to consensus**; that's the bridge to the
+  consensus page.
+
+## When to use / When NOT
+
+- **Use Lamport clocks when:** you need a cheap, single total order and don't need to
+  detect conflicts (e.g. tie-breaking, generating monotonic IDs across nodes).
+- **Avoid Lamport clocks when:** you must know whether two writes *conflict* — they
+  can't tell concurrency from causality; you'll silently lose data.
+- **Use vector clocks when:** you must detect concurrent/conflicting updates exactly
+  (leaderless replication, collaborative editing, sync). **Avoid when:** the writer set
+  is large and unbounded and you can't prune — the vectors bloat.
+- **Use HLC when:** you want causality-safe ordering *and* timestamps that track
+  wall-clock time, in constant space (most modern distributed SQL DBs). **Avoid when:**
+  you need exact concurrency *detection* per object — HLC gives an order, not a
+  conflict signal.
+- **Use TrueTime-style bounded clocks when:** you need globally-ordered, externally-
+  consistent transactions and can deploy GPS/atomic clock hardware (or a cloud that
+  exposes a bounded clock). **Avoid when:** you can't bound ε — then commit-wait is
+  unbounded and the approach collapses.
+- **Never:** order distributed events by raw NTP wall-clock timestamps for anything
+  where correctness depends on the order. That's the canonical LWW data-loss bug.
+
+## Tradeoffs
+
+| Clock type | Detects causality | Detects concurrency | Tracks wall time | Space | Cost / caveat |
+| ---------- | :---------------: | :-----------------: | :--------------: | ----- | ------------- |
+| Physical (NTP) | No | No | Yes | O(1) | ms-scale skew; can go backward |
+| Lamport (scalar) | Implies it | **No** | No | O(1) | total order only; hides conflicts |
+| Vector | Yes | **Yes** | No | O(N nodes) | vector grows with writers |
+| Hybrid Logical (HLC) | Yes | No (gives order) | ~Yes | O(1) | best general-purpose default |
+| TrueTime (bounded ε) | Yes | Yes (via ε) | Yes (bounded) | O(1) | needs GPS/atomic clocks; commit-wait |
+
+The recurring tradeoff is **information vs cost**: scalar clocks are tiny but blind to
+concurrency; vector clocks see everything but scale with the writer count; HLC and
+TrueTime buy back constant size and wall-clock meaning, HLC for free and TrueTime by
+spending hardware and commit latency.
+
+## Diagram
+
+Three nodes; arrows are messages. Each event carries its **Lamport** timestamp and its
+**vector** clock. Note how the vector clock distinguishes the concurrent events that
+the scalar Lamport clock flattens.
+
+<Mermaid code={`sequenceDiagram
+  participant A as Node A
+  participant B as Node B
+  participant C as Node C
+  Note over A: a1  L=1  V=[1,0,0]
+  A->>B: msg (carries L=1, V=[1,0,0])
+  Note over B: b1 (recv)  L=2  V=[1,1,0]
+  Note over C: c1  L=1  V=[0,0,1]
+  Note over B: b2  L=3  V=[1,2,0]
+  B->>C: msg (carries L=3, V=[1,2,0])
+  Note over C: c2 (recv)  L=4  V=[1,2,2]
+  Note over A,C: a1 -> b1 -> b2 -> c2 (causal chain)<br/>c1 is CONCURRENT with a1,b1,b2:<br/>V=[0,0,1] vs [1,0,0] — neither dominates<br/>Lamport alone (L=1 vs L=1) cannot tell`} />
+
+The causal chain `a1 → b1 → b2 → c2` has strictly increasing vector clocks. But `c1`
+(`V=[0,0,1]`) and `a1` (`V=[1,0,0]`) are **concurrent** — neither vector dominates —
+which the scalar Lamport values (both `L=1`) cannot reveal. Detecting that concurrency
+is precisely what conflict resolution needs.
+
+## Try it
+
+Match the clock to the question you actually need answered.
+
+<CompareMatrix
+  client:visible
+  caption="Choosing a clock for distributed ordering"
+  columns={['NTP wall clock', 'Lamport', 'Vector', 'HLC', 'TrueTime']}
+  rows={[
+    { criterion: 'Gives a total order', cells: ['Approx (unsafe)', 'Yes (with tie-break)', 'No (partial)', 'Yes', 'Yes (external consistency)'] },
+    { criterion: 'Detects conflicts', cells: ['No', 'No', 'Yes', 'No', 'Via bounded ε'] },
+    { criterion: 'Timestamp ~ real time', cells: ['Yes', 'No', 'No', 'Yes', 'Yes (bounded)'] },
+    { criterion: 'Space per event', cells: ['O(1)', 'O(1)', 'O(nodes)', 'O(1)', 'O(1)'] },
+    { criterion: 'Monotonic (never backward)', cells: ['No', 'Yes', 'Yes', 'Yes', 'Yes'] },
+    { criterion: 'Special hardware', cells: ['No', 'No', 'No', 'No', 'GPS + atomic clocks'] },
+    { criterion: 'Use it for', cells: ['Display only', 'Cheap total order', 'Conflict detection', 'General DB ordering', 'Global linearizable txns'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Amazon Dynamo / Riak** use **vector clocks** (version vectors) to detect concurrent
+  writes to the same key and surface siblings for resolution — the textbook production
+  use of causality tracking.
+- **Google Spanner** uses **TrueTime** + commit-wait to give externally-consistent,
+  globally-ordered transactions across continents — making wall-clock timestamps safe
+  to order with.
+- **CockroachDB** and **YugabyteDB** use **Hybrid Logical Clocks** to order
+  transactions causally without Spanner's clock hardware, accepting a small uncertainty
+  window instead of GPS/atomic clocks.
+- **Cassandra's last-write-wins** resolves conflicts by wall-clock timestamp — and is
+  the canonical cautionary tale: clock skew between coordinators can silently drop the
+  causally-newer write, which is why LWW is discouraged for anything that matters.
+- **CRDTs in collaborative editors** (Figma, Google Docs-style sync) rely on causal
+  ordering (logical clocks / version vectors) so concurrent edits converge without a
+  central serializer (see replication-consistency).
+
+## Further reading
+
+- [Leslie Lamport — Time, Clocks, and the Ordering of Events in a Distributed System (1978)](https://lamport.azurewebsites.net/pubs/time-clocks.pdf) — the founding paper; happens-before and logical clocks.
+- [Kulkarni et al. — Logical Physical Clocks (HLC, 2014)](https://cse.buffalo.edu/tech-reports/2014-04.pdf) — the hybrid logical clock design.
+- [Corbett et al. — Spanner: Google's Globally-Distributed Database (OSDI 2012)](https://research.google/pubs/pub39966/) — TrueTime and commit-wait in full.
+- [Martin Kleppmann — *DDIA* ch. 8 (Unreliable Clocks) & ch. 9 (Ordering, total order broadcast)](https://dataintensive.net/) — why clocks lie and how ordering maps to consensus.
+- [Jepsen — Distributed systems safety analyses](https://jepsen.io/analyses) — real systems where clock and ordering assumptions broke under test.
