@@ -109,6 +109,17 @@ export default defineConfig({
             { label: 'Distributed failure', slug: 'distributed-systems/distributed-failure' },
           ],
         },
+        {
+          label: 'Scalability & System Design',
+          items: [
+            { label: 'Overview', slug: 'scalability' },
+            { label: 'Back-of-the-envelope estimation', slug: 'scalability/back-of-envelope' },
+            { label: 'Sharding & partitioning', slug: 'scalability/sharding-partitioning' },
+            { label: 'Statelessness & sessions', slug: 'scalability/statelessness-sessions' },
+            { label: 'Rate limiting & throttling', slug: 'scalability/rate-limiting-throttling' },
+            { label: 'Scaling the data tier', slug: 'scalability/scaling-the-data-tier' },
+          ],
+        },
       ],
     }),
   ],

@@ -1,0 +1,231 @@
+---
+title: Rate Limiting & Throttling
+description: Protecting a system under load — token bucket, leaky bucket, fixed and sliding window algorithms, distributed rate limiting, backpressure, load shedding, admission control, and quotas.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Rate limiting caps how many requests a client may make in a window; throttling
+slows or rejects requests once a cap is hit. Together they are how a system
+*protects itself* — from abuse, from runaway clients, from accidental thundering
+herds, and from its own dependencies collapsing under more load than they can
+serve. Unbounded admission is how systems die: one misbehaving client, one
+retry storm, or one viral spike saturates a shared resource and takes everyone
+down. Rate limiting converts "fall over for everyone" into "say no to some,"
+which is almost always the better failure mode.
+
+It is also a fairness and cost tool: it enforces per-tenant quotas, prices API
+tiers, and keeps one customer from starving the rest on shared infrastructure.
+
+## Mental model
+
+Think of every protected resource as a **bucket with a fixed drain rate**.
+Requests pour in; the resource drains them at a steady pace. The questions a
+rate limiter answers are: *how much burst can the bucket hold before it
+overflows, and what happens to the overflow?* Every algorithm is a different
+answer to those two questions — how it accounts for burst, and whether overflow
+is **queued** (smoothed/delayed) or **dropped** (rejected fast).
+
+Layered on top is a hierarchy of defenses, from polite to brutal:
+**rate limit** (cap the steady rate) → **backpressure** (tell upstream to slow
+down) → **load shed** (drop low-value work to survive) → **admission control**
+(refuse new work at the door so in-flight work completes). You reach for the
+next, harsher tool only when the gentler one can't keep the system inside its
+safe operating envelope.
+
+## Types / Variants
+
+**Token bucket.** A bucket holds up to `B` tokens and refills at `R` tokens/sec.
+Each request removes a token; no token → reject (or wait). It **allows bursts up
+to `B`** (the saved-up tokens) while bounding the long-run average to `R`. The
+most popular algorithm: simple, memory-cheap (just a token count + timestamp),
+and burst-friendly, which matches real traffic. Used by AWS, Stripe, and most
+API gateways.
+
+**Leaky bucket.** Requests enter a queue (the bucket) and are processed
+(*leak*) at a fixed rate; if the queue is full, new requests are dropped. It
+**smooths** bursty input into a constant output rate — the opposite emphasis from
+token bucket, which *permits* bursts. Ideal when the downstream needs a steady
+feed (a payment processor, a legacy system) and you'd rather delay than spike.
+Cost: added latency from queuing, and a queue to size.
+
+**Fixed window counter.** Count requests per fixed clock window (e.g. per
+minute); reset to zero at each boundary. Trivial and cheap (one counter per
+client per window). Flaw: the **boundary burst** — a client can send a full
+window's worth at 0:59 and another full window at 1:00, doing 2× the limit across
+the two-second seam. Fine when approximate limiting is acceptable.
+
+**Sliding window log.** Store a timestamp for every request and count those
+within the trailing window on each new request. **Exact** — no boundary
+artifact — but memory grows with request volume (one entry per request) and it's
+costlier to evaluate. Use when precision matters and volume per client is
+modest.
+
+**Sliding window counter.** The pragmatic middle: keep the current and previous
+fixed-window counts and **interpolate** by how far into the current window you
+are (`count = current + previous × (1 − elapsed_fraction)`). Smooths the boundary
+burst at a tiny, fixed memory cost (two counters). The common production choice
+(Cloudflare uses a variant) — nearly as accurate as the log, nearly as cheap as
+fixed window.
+
+## When to use / When NOT
+
+- **Token bucket — use when:** you want to allow natural bursts while bounding the
+  average; the general-purpose default for public APIs and gateways.
+- **Leaky bucket — use when:** the downstream must receive a *smooth, constant*
+  rate and you'd rather queue/delay than reject; traffic shaping into a fragile
+  dependency.
+- **Fixed window — use when:** approximate limits are fine and you want the
+  cheapest possible implementation (one counter); internal/low-stakes limits.
+- **Sliding window log — use when:** you need exact enforcement and per-client
+  volume is low enough that storing per-request timestamps is affordable
+  (billing-grade quotas, security).
+- **Sliding window counter — use when:** you want near-exact limiting without the
+  boundary burst or the log's memory cost — the best general default at scale.
+- **Avoid rate limiting / keep it loose when:** the endpoint is internal,
+  trusted, and the cost of a false rejection exceeds the cost of overload; or
+  when you actually need *queuing/backpressure* (don't drop the work) rather than
+  rejection. Rate limiting rejects; if work must complete, shape or buffer it
+  instead.
+
+## Tradeoffs
+
+| Algorithm | Burst handling | Accuracy | Memory per client | Overflow behaviour |
+| --------- | -------------- | -------- | ----------------- | ------------------ |
+| Token bucket | Allows bursts up to bucket size | Good | O(1) — count + timestamp | Reject (or wait) |
+| Leaky bucket | Smooths bursts away | Good | O(queue size) | Queue then drop |
+| Fixed window | Permits 2× burst at the seam | Approximate | O(1) — one counter | Reject |
+| Sliding window log | Exact, no seam | Exact | O(requests in window) | Reject |
+| Sliding window counter | Smooths the seam | Near-exact | O(1) — two counters | Reject |
+
+**Distributed rate limiting.** A limit shared across many app instances can't
+live in any one instance's memory — each would enforce its own copy and the real
+limit would be `N×`. Options: (1) a **central store** (Redis) holding the
+counters/tokens, updated atomically (Lua scripts, `INCR` + `EXPIRE`) — accurate
+but adds a hop and a hot dependency; (2) **local limits with a global budget
+split** (each of N instances gets `limit/N`) — no shared state, but unfair when
+load is uneven; (3) **approximate/sloppy counters** synced periodically — cheap,
+eventually consistent, slightly leaky. The tradeoff is the usual one: accuracy vs
+the latency/availability cost of coordination.
+
+**Beyond rejection — the survival hierarchy:**
+
+- **Backpressure.** Instead of dropping, signal upstream to *slow down* — bounded
+  queues that block producers, TCP flow control, reactive-streams demand,
+  gRPC/HTTP2 windows. Propagates the limit up the chain so load is reduced at the
+  source rather than piling up. The cooperative cousin of rate limiting.
+- **Load shedding.** Under overload, *deliberately drop* the lowest-value work
+  (non-critical reads, optional features, low-priority tenants) to keep the
+  critical path alive. Better to serve 80% well than 100% badly. Shed at the edge,
+  by priority.
+- **Admission control.** Refuse *new* work at the door when the system is already
+  at capacity, so in-flight work can finish instead of everything timing out
+  together (the "concurrency limit" / bulkhead idea). Prevents the death spiral
+  where overload makes everything slow, which triggers retries, which deepen the
+  overload.
+- **Quotas.** Longer-horizon limits (per day/month, per tenant/plan) for fairness
+  and billing, distinct from the per-second protective limits above. Quotas price
+  and partition capacity; rate limits protect it moment to moment.
+
+## Diagram
+
+The token bucket: tokens refill at a steady rate `R` up to capacity `B`; each
+request spends one, and an empty bucket means reject.
+
+<Mermaid code={`graph TD
+  REFILL[Refill: add tokens at rate R, cap at B] --> BUCKET[(Token bucket: 0..B tokens)]
+  REQ[Incoming request] --> CHECK{Token available?}
+  BUCKET --> CHECK
+  CHECK -- yes --> TAKE[Remove 1 token] --> ALLOW[Allow / forward]
+  CHECK -- no --> REJECT[Reject: 429 Too Many Requests / or wait]
+  ALLOW -.burst absorbed up to B.-> OUT[Downstream]`} />
+
+## Try it
+
+Compare the algorithms, then walk the decision tree to choose one.
+
+<CompareMatrix
+  client:visible
+  caption="Rate-limiting algorithms compared"
+  columns={['Token bucket', 'Leaky bucket', 'Fixed window', 'Sliding window log', 'Sliding window counter']}
+  rows={[
+    { criterion: 'Bursts', cells: ['Allowed (up to B)', 'Smoothed away', '2× at the seam', 'Bounded, exact', 'Smoothed, near-exact'] },
+    { criterion: 'Accuracy', cells: ['Good', 'Good', 'Approximate', 'Exact', 'Near-exact'] },
+    { criterion: 'Memory per client', cells: ['O(1)', 'O(queue)', 'O(1)', 'O(requests)', 'O(1)'] },
+    { criterion: 'Output shape', cells: ['Bursty (capped avg)', 'Constant rate', 'Bursty', 'Bursty (capped)', 'Bursty (capped)'] },
+    { criterion: 'On overflow', cells: ['Reject or wait', 'Queue then drop', 'Reject', 'Reject', 'Reject'] },
+    { criterion: 'Best for', cells: ['General API default', 'Shaping into fragile downstream', 'Cheap internal limits', 'Exact billing/security', 'Best default at scale'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which rate-limiting approach?"
+  root={{
+    question: 'Do you need to reject excess requests, or buffer/smooth them so the work still completes?',
+    branches: [
+      {
+        label: 'Smooth / buffer (work must complete)',
+        next: { leaf: { recommendation: 'Leaky bucket (or backpressure)', detail: 'Queue requests and feed the downstream at a constant rate; drop only when the queue overflows. If you can push the slowdown to the source instead, prefer backpressure (bounded queues / flow control).' } },
+      },
+      {
+        label: 'Reject excess',
+        next: {
+          question: 'Is bursty traffic normal and acceptable as long as the average is bounded?',
+          branches: [
+            {
+              label: 'Yes — bursts are fine',
+              next: { leaf: { recommendation: 'Token bucket', detail: 'Allows bursts up to the bucket size while capping the long-run average. O(1) memory, burst-friendly — the general-purpose default for public APIs and gateways.' } },
+            },
+            {
+              label: 'No — need tight, smooth enforcement',
+              next: {
+                question: 'How much do you care about exactness vs cost, and is the limit shared across many instances?',
+                branches: [
+                  {
+                    label: 'Need near-exact + cheap, at scale',
+                    next: { leaf: { recommendation: 'Sliding window counter (in a shared store)', detail: 'Two counters per client interpolated across the window: kills the fixed-window boundary burst at O(1) memory. Back it with Redis (atomic ops) for a limit shared across instances.' } },
+                  },
+                  {
+                    label: 'Need provably exact (billing/security)',
+                    next: { leaf: { recommendation: 'Sliding window log', detail: 'Per-request timestamps give exact enforcement with no seam. Use when per-client volume is modest enough to store the log; pair with a central store for distributed accuracy.' } },
+                  },
+                  {
+                    label: 'Approximate is fine, want simplest',
+                    next: { leaf: { recommendation: 'Fixed window counter', detail: 'One counter per client per window — trivial and cheap. Accept the 2× boundary burst; fine for internal or low-stakes limits.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Stripe** rate-limits its API with a token-bucket scheme and returns
+  `429 Too Many Requests`, documenting limits and recommending exponential
+  backoff — the reference design for a public fintech API.
+- **Cloudflare** uses a sliding-window-counter approach at the edge to limit
+  requests across its distributed PoPs without storing per-request logs.
+- **Envoy / API gateways (Kong, AWS API Gateway)** implement token-bucket rate
+  limiting, often backed by a shared Redis for distributed enforcement.
+- **Netflix's concurrency-limits** library is a production admission-control
+  example: it adapts in-flight request limits (TCP-Vegas-style) to shed load
+  before latency collapses.
+
+## Further reading
+
+- [How we built rate limiting capable of scaling to millions of domains (Cloudflare)](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/) — the sliding-window-counter design at edge scale.
+- [Stripe — Rate limiters (engineering blog)](https://stripe.com/blog/rate-limiters) — token bucket, concurrency limiting, and load shedding in production.
+- [Designing a distributed rate limiter (System Design Interview, Alex Xu)](https://github.com/donnemartin/system-design-primer) — algorithm comparison and the distributed-counter problem.
+- Related: **Statelessness & sessions** (shared counters as state), **Distributed failure** in the Distributed Systems cluster (retry storms, backpressure).

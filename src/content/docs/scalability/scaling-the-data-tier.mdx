@@ -1,0 +1,232 @@
+---
+title: Scaling the Data Tier
+description: The database is the usual bottleneck — read replicas, replication lag and read-your-writes, CQRS for scale, denormalization, write scaling, connection pooling, and multi-region data.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+The stateless app tier is the easy part of scaling — clone it and you're done.
+The **database is where scaling actually gets hard**, and it is almost always
+the bottleneck the rest of the system hits first. App servers are
+interchangeable and hold no truth; the data tier holds the truth, must keep it
+consistent, and can't simply be duplicated without raising the consistency
+questions the Databases & CAP cluster is about. This page is the practical
+playbook for pushing the data tier further: offload reads to replicas, scale
+writes by partitioning and buffering, denormalize for read-shaped access, manage
+connections, and handle multi-region data — each with the staleness and
+complexity it costs.
+
+## Mental model
+
+Scale the data tier by attacking **reads and writes separately**, because they
+have opposite economics:
+
+- **Reads are easy to scale and cheap to duplicate.** Copy the data to N read
+  replicas (and caches) and spread reads across them. Reads dominate most
+  systems (often 90%+), so this alone buys enormous headroom. The cost is
+  **staleness** — replicas lag the primary.
+- **Writes are hard to scale because there is one source of truth.** Every write
+  must reach the authoritative copy and be ordered consistently. You can't just
+  duplicate the primary. Scaling writes means *partitioning* the truth (sharding,
+  the Z-axis) or *deferring* it (queue buffering), both of which complicate
+  consistency.
+
+So the playbook is always: **scale reads first (replicas + cache), and only when
+write throughput or data size binds, scale writes (shard or buffer).** Reach for
+the expensive write-scaling tools last, because they cost the most consistency.
+
+## Types / Variants
+
+**Read replicas.** The primary streams its changelog to read-only replica copies;
+the app sends reads to replicas and writes to the primary (read/write splitting).
+Near-linear read scaling and free standby capacity for failover. The catch is
+**replication lag** (below). Replicas help reads *only* — they do nothing for
+write throughput, and a write-heavy workload gets no benefit.
+
+**Caching.** The first and highest-leverage read-offload, in front of the
+replicas: the hot 20% of reads served from RAM removes most database load
+entirely. Covered fully in the **Caching** cluster — reference it; the data-tier
+point is just that *cache before you add replicas*, because a cache hit is
+cheaper than any replica read.
+
+**CQRS for scale (Command Query Responsibility Segregation).** Split the write
+model from the read model: writes go to a normalized authoritative store; reads
+go to one or more *separate, denormalized read stores* shaped exactly for each
+query, kept up to date asynchronously (often via the changelog or events). Lets
+you scale and optimize reads and writes independently, even using different
+databases (writes in Postgres, reads in Elasticsearch/a cache). Cost: eventual
+consistency between the models and the machinery to keep read stores in sync.
+
+**Denormalization.** Pre-join and duplicate data so a read needs one lookup
+instead of many joins. Trades write cost and storage (you update data in several
+places) for read speed and the ability to serve a query from a single shard/row.
+Essential at scale and the norm in NoSQL/wide-column stores; it's how you make
+reads single-shard friendly (see **Sharding & partitioning**).
+
+**Write scaling — sharding and buffering.** When one primary can't absorb the
+write rate (or hold the data), two levers: (1) **shard** the data so writes
+spread across many primaries, each owning a slice — the real fix, and the
+hardest (see **Sharding & partitioning**); (2) **buffer writes through a queue**
+— accept the write into a durable log (Kafka) and apply it to the database
+asynchronously, smoothing spikes and decoupling the client from database write
+latency. Buffering also enables batching (many small writes → one bulk write),
+which is far cheaper per row. Both trade immediate consistency for throughput.
+
+**Connection pooling.** Databases handle a *bounded* number of connections
+(each costs memory and a backend process); a stateless app tier of hundreds of
+instances opening connections directly will exhaust the database long before CPU
+does. A **connection pool** (in-app, or an external pooler like PgBouncer)
+multiplexes many app requests over a small, reused set of DB connections. Often
+the cheapest, highest-impact data-tier fix — and a frequent surprise bottleneck,
+because connections, not queries, are what saturates first under fan-out.
+
+**Multi-region data.** Serving users globally means data near them. Options:
+**read replicas per region** (local reads, writes still cross to a primary
+region — simple, but write latency for far users); **multi-primary / active-
+active** (each region accepts writes — low write latency but conflict resolution
+and the hardest consistency problems); or **geo-sharding** (each region owns its
+users' data outright — clean if users don't cross regions, plus it satisfies
+data-residency rules like GDPR/DPDP and RBI localization). The CAP and latency
+tradeoffs here are real — see **Databases & CAP** and **Consistency models**.
+
+## When to use / When NOT
+
+- **Add a cache when:** reads repeat and tolerate some staleness — always the
+  first move. Highest leverage, lowest cost.
+- **Add read replicas when:** the cache can't absorb all reads and the primary's
+  read load (not write load) is the bottleneck. Cheap, near-linear read scaling.
+- **Use CQRS / denormalized read stores when:** read and write shapes diverge
+  sharply, a single schema can't serve both efficiently, and you can tolerate
+  eventual consistency on reads.
+- **Shard (write scaling) when:** write throughput or data size exceeds one
+  primary even after caching and replicas. The last, hardest resort.
+- **Buffer writes through a queue when:** write spikes exceed sustainable DB
+  throughput, clients shouldn't wait on DB latency, or batching would slash
+  per-write cost — and the write can be applied asynchronously.
+- **Avoid when:** you reach for replicas/sharding before measuring that the *data
+  tier* is the bottleneck (it's often connection exhaustion or a missing index or
+  cache); or when the domain needs strict read-after-write everywhere and you
+  can't route those reads to the primary — replica lag will bite (a borrower
+  seeing a stale balance right after a repayment is a real fintech failure).
+
+## Tradeoffs
+
+| Technique | Scales | Consistency cost | Complexity | Reach for it |
+| --------- | ------ | ---------------- | ---------- | ------------ |
+| Cache | Reads | Staleness (bounded by TTL/invalidation) | Low | First |
+| Read replicas | Reads | Replication lag (eventual) | Low–medium | Second |
+| Connection pooling | Concurrency | None | Low | Early / always |
+| Denormalization | Reads | Update anomalies (multi-write) | Medium | When reads need it |
+| CQRS read stores | Reads + writes independently | Eventual (write↔read models) | High | When shapes diverge |
+| Write buffering (queue) | Write spikes/throughput | Async apply (delayed durability view) | Medium | Spiky/batchable writes |
+| Sharding | Writes + data size | Hardest (cross-shard, CAP) | High | Last resort |
+
+**Replication lag and read-your-writes.** Replicas are *eventually* consistent —
+a write committed on the primary takes time (milliseconds to seconds, more under
+load) to reach replicas. So a user who writes then immediately reads from a
+replica may not see their own change — a jarring, often *incorrect* experience.
+Fixes: **read-your-writes** consistency by routing a user's reads to the primary
+for a short window after they write (or until a known replication position is
+reached); **monotonic reads** by pinning a session to one replica so it never
+goes backwards in time; or simply tolerate the lag where it's harmless. Decide
+*per read path* whether stale is acceptable — it usually is for a feed, never for
+a balance or a confirmation screen.
+
+## Diagram
+
+Read/write splitting with the offload order: cache, then replicas for reads; the
+primary takes writes and streams its changelog to replicas (which lag it).
+
+<Mermaid code={`graph TD
+  APP[App tier - stateless] -->|reads| CACHE{Cache hit?}
+  CACHE -- hit --> APP
+  CACHE -- miss, read --> R1[(Read replica 1)]
+  CACHE -- miss, read --> R2[(Read replica 2)]
+  APP -->|writes| PRIMARY[(Primary - source of truth)]
+  PRIMARY -. async replication lag .-> R1
+  PRIMARY -. async replication lag .-> R2
+  APP -->|read-your-writes: route to primary briefly after a write| PRIMARY
+  POOL[Connection pool / PgBouncer] -.bounds DB connections.-> PRIMARY`} />
+
+## Try it
+
+Walk the decision tree to pick the next data-tier move for your bottleneck.
+
+<DecisionTree
+  client:visible
+  caption="What should I scale in the data tier next?"
+  root={{
+    question: 'Have you confirmed the database itself is the bottleneck (not a missing index, no cache, or connection exhaustion)?',
+    branches: [
+      {
+        label: 'Not yet / it might be connections',
+        next: { leaf: { recommendation: 'Add a connection pool + cache + indexes first', detail: 'Connection exhaustion and missing caches/indexes masquerade as "the DB can\'t scale". Add PgBouncer-style pooling, cache the hot reads, and fix query plans before touching topology. Cheapest, highest-impact.' } },
+      },
+      {
+        label: 'Yes — DB is genuinely the limit',
+        next: {
+          question: 'Is the bottleneck read load or write load / data size?',
+          branches: [
+            {
+              label: 'Read load',
+              next: {
+                question: 'Do your read shapes differ sharply from your write shape (and can reads be eventually consistent)?',
+                branches: [
+                  {
+                    label: 'Same shape, just more read volume',
+                    next: { leaf: { recommendation: 'Read replicas (with read/write split)', detail: 'Near-linear read scaling. Mind replication lag: route read-your-writes paths (balances, confirmations) back to the primary; let feeds/listings read replicas.' } },
+                  },
+                  {
+                    label: 'Read shapes diverge from writes',
+                    next: { leaf: { recommendation: 'CQRS + denormalized read stores', detail: 'Maintain separate read-optimized stores (search index, wide-column, cache) updated asynchronously from the write model. Scale reads and writes independently; accept eventual consistency.' } },
+                  },
+                ],
+              },
+            },
+            {
+              label: 'Write load / data size',
+              next: {
+                question: 'Are the writes spiky/batchable, or sustained beyond one primary?',
+                branches: [
+                  {
+                    label: 'Spiky or batchable',
+                    next: { leaf: { recommendation: 'Buffer writes through a durable queue', detail: 'Accept writes into a log (Kafka) and apply to the DB asynchronously, batching where possible. Smooths spikes and decouples clients from DB latency, at the cost of asynchronous durability visibility.' } },
+                  },
+                  {
+                    label: 'Sustained beyond one primary',
+                    next: { leaf: { recommendation: 'Shard the write tier (Z-axis)', detail: 'Partition data across primaries so writes spread out. The real but hardest fix — choose a shard key that keeps hot queries single-shard, and plan resharding. See Sharding & partitioning.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **GitHub / most rails-and-postgres shops** scale reads with replica pools and
+  read/write splitting, and famously fight connection limits with PgBouncer —
+  the connection-pool-as-bottleneck story in the wild.
+- **Instagram** scaled writes by sharding PostgreSQL on user ID and leaned hard
+  on denormalization to keep feed reads single-shard.
+- **Uber** moved high-write workloads onto a sharded MySQL layer (Schemaless) and
+  buffers/streams writes through Kafka to decouple ingestion from storage.
+- **CQRS + event sourcing** is standard in high-throughput trading and banking
+  ledgers, where the authoritative write log is replayed into many
+  read-optimized projections.
+
+## Further reading
+
+- [Designing Data-Intensive Applications, ch. 5 — Replication (Kleppmann)](https://dataintensive.net/) — leader/follower replication, lag, and read-your-writes/monotonic reads in depth.
+- [PgBouncer — lightweight connection pooler for PostgreSQL](https://www.pgbouncer.org/) — why and how connection pooling fixes the usual surprise bottleneck.
+- [Martin Fowler — CQRS](https://martinfowler.com/bliki/CQRS.html) — the read/write model split and when it pays off.
+- Related in this site: the **Caching** cluster (read offload), **Sharding & partitioning** (write scaling), and **Databases & CAP** / **Consistency models** (multi-region and replication tradeoffs).

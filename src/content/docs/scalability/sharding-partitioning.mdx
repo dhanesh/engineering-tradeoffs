@@ -1,0 +1,240 @@
+---
+title: Sharding & Partitioning
+description: Horizontal partitioning for scale — shard keys, range vs hash vs directory vs geo partitioning, consistent hashing with virtual nodes, hot shards, resharding, cross-shard queries, and the celebrity problem.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Sharding (horizontal partitioning) splits one logical dataset across many
+machines so that each node — a *shard* — holds and serves only a slice of the
+data. It is the Z-axis of the scale cube and the only way to scale **write
+throughput and dataset size past a single machine**: read replicas duplicate the
+whole dataset and help reads, but every write still hits one primary, and the
+data still has to fit somewhere. Sharding removes both limits by making the data
+itself horizontal. It is also the least reversible scaling decision you will
+make — choose the shard key carefully, because changing it later means
+rewriting and re-routing every row.
+
+This page focuses on the *scaling decisions*: how to pick a partition scheme and
+shard key, how consistent hashing keeps rebalancing cheap, and how to survive
+hot shards, resharding, and cross-shard queries. The replication mechanics that
+keep each shard durable live in the **Databases & CAP** cluster.
+
+## Mental model
+
+A shard key is a **routing function**: given a row, it decides which machine
+owns it. `shard = f(key)`. Everything good and bad about sharding flows from
+that one function:
+
+- If `f` spreads keys **evenly**, load is balanced and no shard saturates.
+- If `f` keeps **related rows together** (same key prefix → same shard), queries
+  that touch related data stay on one shard and avoid the network.
+- These two goals **fight each other.** Even spreading scatters related rows
+  (cross-shard queries get expensive); keeping related rows together creates
+  skew (hot shards). Every partition scheme is a different point on that
+  tradeoff, and the celebrity problem is what happens when one key is so hot that
+  no scheme spreads it.
+
+So picking a shard key is really: *"What access pattern do I optimize for, and
+what skew can I tolerate?"* Get the key right and shards are independent and
+linear; get it wrong and you fight hot shards and scatter-gather queries
+forever.
+
+## Types / Variants
+
+**Range partitioning.** Assign contiguous key ranges to shards (users A–F →
+shard 1, G–M → shard 2…; or by timestamp). Range scans and ordered queries are
+efficient because neighbors live together. Weakness: skew. Sequential keys
+(auto-increment IDs, timestamps) all land on the *newest* shard — a hot spot for
+writes. Used by HBase, Bigtable, and many time-series stores.
+
+**Hash partitioning.** Apply a hash to the key and assign by hash value
+(`shard = hash(key) mod N`). Spreads keys uniformly → excellent write balance,
+no sequential hot spot. Weakness: destroys ordering (range scans become
+scatter-gather across all shards), and naive `mod N` reshuffles almost
+*everything* when `N` changes (add one node → most keys move). Consistent hashing
+fixes the second problem.
+
+**Consistent hashing (+ virtual nodes).** Map both keys and shards onto a hash
+*ring*; a key belongs to the next shard clockwise. Adding or removing a shard
+moves only the keys between it and its neighbor — roughly `1/N` of the
+data — instead of nearly all of it. Plain consistent hashing can still produce
+uneven splits, so each physical node is represented by many **virtual nodes**
+(say 100–256 points on the ring): more points → smoother distribution and
+finer-grained, cheaper rebalancing. This is the backbone of Dynamo, Cassandra,
+Riak, and most distributed caches.
+
+**Directory (lookup-table) partitioning.** A separate lookup service maps each
+key (or key-range) to its shard explicitly. Maximum flexibility — you can place
+any key anywhere, migrate ranges, and split hot shards by editing the
+table — but the directory is now a critical dependency and a potential
+bottleneck/SPOF that must itself be replicated and cached. Used where placement
+must be controllable (multi-tenant systems pinning big customers to dedicated
+shards).
+
+**Geo / entity-group partitioning.** Partition by region or by a natural entity
+boundary (all of one tenant's / one user's data co-located). Geo keeps data near
+its users (latency, data-residency/compliance — relevant under GDPR/DPDP and
+RBI-style localization rules) and confines most queries to one region. Entity-
+group partitioning makes the common case (one user's data) single-shard and
+transactional, at the cost of cross-entity operations.
+
+## When to use / When NOT
+
+- **Shard when:** writes or dataset size genuinely exceed one primary (after
+  you've already added a cache and read replicas); you need write throughput a
+  single node can't sustain; or data-residency forces geo-partitioning. Sharding
+  is rung 3 of the scalability ladder — reach it because lower rungs are
+  exhausted, not by default.
+- **Avoid / defer when:** vertical scaling, caching, and read replicas still cope
+  (they almost always do longer than expected); your access pattern needs lots of
+  cross-entity joins/transactions that sharding would scatter; or you can't yet
+  identify a shard key that both balances load and keeps your hot queries
+  single-shard. **Premature sharding is one of the costliest, hardest-to-undo
+  mistakes in system design** — it taxes every query and migration forever.
+- **Choosing the scheme:** prefer **hash/consistent-hash** for even write
+  distribution and point lookups; **range** when ordered scans dominate and you
+  can mitigate sequential hot spots (e.g. hash-prefix the key); **directory**
+  when you need explicit, mutable placement (multi-tenant, hot-shard splitting);
+  **geo** when latency or data residency demands it.
+
+## Tradeoffs
+
+| Scheme | Load balance | Range scans | Rebalancing cost | Main weakness |
+| ------ | ------------ | ----------- | ---------------- | ------------- |
+| Range | Poor (skew/hot spots) | Excellent | Cheap (move a range) | Sequential keys hot-spot one shard |
+| Hash (`mod N`) | Excellent | None (scatter-gather) | Brutal (almost all keys move on resize) | Resizing reshuffles everything |
+| Consistent hash + vnodes | Very good | None | Cheap (~1/N moves) | More moving parts; no ordering |
+| Directory | Tunable (manual/auto) | Depends on layout | Cheap (edit table) | Lookup tier is a SPOF/bottleneck |
+| Geo / entity-group | Good if entities even | Within region | Region-bound | Cross-region/entity ops expensive |
+
+Cross-cutting hazards that apply to *every* scheme:
+
+- **Hot shards / the celebrity problem.** When one key is wildly hotter than the
+  rest — a celebrity's posts, a viral product, a single huge tenant — its shard
+  saturates while others idle, and no hash spreads a single key. Mitigations:
+  *split the key* (append a bucket suffix: `celeb:postid:0..9` → 10 sub-keys
+  across shards, fan-in on read), *cache the hot key* hard in front of the shard,
+  *replicate* the hot key to many read replicas, or *isolate* it on dedicated
+  capacity via a directory. There is no clean fix — you spread the heat or you
+  cache it.
+- **Resharding / rebalancing.** Splitting or moving shards while live is the
+  hardest operation in a sharded system: you must copy data, keep it consistent
+  during the copy (dual-write or change-data-capture), then atomically flip
+  routing. Consistent hashing and a directory both make this far cheaper than
+  `mod N`. Plan for it from day one — fixed-`N` `mod` hashing is a trap.
+- **Cross-shard queries and joins.** Any query whose keys span shards becomes
+  *scatter-gather*: fan out to every (or many) shard, then merge — slow, and
+  latency is bounded by the *slowest* shard. Aggregations, joins, and
+  `ORDER BY ... LIMIT` across shards are painful. Mitigate by choosing a shard
+  key that keeps your hot queries single-shard, denormalizing, or maintaining
+  secondary indexes/materialized views per access pattern. **Cross-shard
+  transactions** need two-phase commit or sagas — expensive; avoid by design.
+
+## Diagram
+
+Consistent hashing with virtual nodes: keys and (many virtual copies of) shards
+sit on one ring; a key is owned by the next vnode clockwise, so adding a shard
+only steals the slice between it and its neighbor.
+
+<Mermaid code={`graph TD
+  subgraph Ring["Hash ring (0 → 2^k → 0)"]
+    K1[key: user-42] --> VA1[vnode A-1 → Shard A]
+    K2[key: user-77] --> VB1[vnode B-1 → Shard B]
+    K3[key: order-9] --> VC1[vnode C-1 → Shard C]
+    K4[key: user-12] --> VA2[vnode A-2 → Shard A]
+  end
+  VA1 --> SA[(Shard A)]
+  VA2 --> SA
+  VB1 --> SB[(Shard B)]
+  VC1 --> SC[(Shard C)]
+  NEW[Add Shard D: place D's vnodes on ring] -.steals only neighboring slices.-> SC`} />
+
+## Try it
+
+Compare the partitioning schemes, then walk the decision tree to pick one for
+your workload.
+
+<CompareMatrix
+  client:visible
+  caption="Partitioning schemes compared"
+  columns={['Range', 'Hash (mod N)', 'Consistent hash + vnodes', 'Directory', 'Geo / entity-group']}
+  rows={[
+    { criterion: 'Write/load distribution', cells: ['Skewed (hot spots)', 'Even', 'Even', 'Tunable', 'Even if entities even'] },
+    { criterion: 'Ordered range scans', cells: ['Excellent', 'None (scatter-gather)', 'None', 'Layout-dependent', 'Within a region'] },
+    { criterion: 'Cost to add/remove a node', cells: ['Cheap (move range)', 'Very high (reshuffle)', 'Cheap (~1/N)', 'Cheap (edit map)', 'Region-bound'] },
+    { criterion: 'Point lookup by key', cells: ['O(1) route', 'O(1) route', 'O(1) route', 'Extra lookup hop', 'O(1) within region'] },
+    { criterion: 'Hot-key handling', cells: ['Worst (sequential)', 'Poor (single key)', 'Poor (single key)', 'Best (isolate/split)', 'Poor'] },
+    { criterion: 'Operational complexity', cells: ['Low', 'Low (until resize)', 'Medium', 'High (lookup tier)', 'Medium–High'] },
+    { criterion: 'Used by', cells: ['HBase, Bigtable', 'Simple hash shards', 'Cassandra, Dynamo, Riak', 'Multi-tenant SaaS', 'Globally distributed apps'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which partitioning scheme?"
+  root={{
+    question: 'Do data-residency or user-latency requirements pin data to regions?',
+    branches: [
+      {
+        label: 'Yes — region/residency matters',
+        next: { leaf: { recommendation: 'Geo / entity-group partitioning', detail: 'Partition by region (or co-locate each entity\'s data). Keeps data near users and satisfies residency rules; accept that cross-region operations are expensive.' } },
+      },
+      {
+        label: 'No — placement is free',
+        next: {
+          question: 'Do ordered range scans (time ranges, alphabetical, ORDER BY) dominate your reads?',
+          branches: [
+            {
+              label: 'Yes — range scans matter',
+              next: { leaf: { recommendation: 'Range partitioning (hash-prefix sequential keys)', detail: 'Contiguous ranges make scans efficient. If keys are sequential (IDs/timestamps), prefix or salt them to avoid hot-spotting the newest shard.' } },
+            },
+            {
+              label: 'No — mostly point lookups',
+              next: {
+                question: 'Do you need explicit, mutable placement (isolate big tenants, split hot shards on demand)?',
+                branches: [
+                  {
+                    label: 'Yes — need control',
+                    next: { leaf: { recommendation: 'Directory (lookup-table) partitioning', detail: 'A replicated, cached lookup service lets you place and migrate keys at will and isolate hot shards. Pay for the extra hop and the dependency.' } },
+                  },
+                  {
+                    label: 'No — just spread evenly + grow cheaply',
+                    next: { leaf: { recommendation: 'Consistent hashing with virtual nodes', detail: 'Even distribution, point lookups, and ~1/N rebalancing when nodes join/leave. The default for distributed stores and caches. Add hot-key splitting/caching for celebrities.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Cassandra / DynamoDB** partition with consistent hashing + virtual nodes;
+  the partition-key choice directly determines hot partitions — Dynamo even
+  charges per-partition throughput, making hot keys a billing problem too.
+- **Instagram** sharded PostgreSQL on user ID into thousands of logical shards
+  mapped onto fewer physical machines, so they could rebalance physical capacity
+  without changing the logical mapping.
+- **Vitess** (YouTube's MySQL sharding layer, now CNCF) automates resharding and
+  cross-shard query routing for MySQL — a production directory-style system.
+- **Twitter/X timelines** solve the celebrity problem with a hybrid: fan-out-on-
+  write for normal users, fan-out-on-read (pull/merge) for high-follower
+  accounts whose writes would otherwise overwhelm one path.
+
+## Further reading
+
+- [Dynamo: Amazon's Highly Available Key-value Store (SOSP '07)](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) — consistent hashing and virtual nodes in production.
+- [Designing Data-Intensive Applications, ch. 6 — Partitioning (Kleppmann)](https://dataintensive.net/) — the definitive treatment of range vs hash, secondary indexes, and rebalancing.
+- [Consistent Hashing (original Karger et al. paper)](https://www.akamai.com/site/en/documents/research-paper/consistent-hashing-and-random-trees-distributed-caching-protocols-for-relieving-hot-spots-on-the-world-wide-web-technical-publication.pdf) — where the ring came from.
+- Related: **Sharding & partitioning** complements **Replication & partitioning** in the Databases & CAP cluster; see also **Scaling the data tier** here.

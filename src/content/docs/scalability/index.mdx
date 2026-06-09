@@ -1,0 +1,214 @@
+---
+title: Scalability & System Design
+description: How to design a system to scale — vertical vs horizontal, the AKF scale cube, statelessness as the enabler, the scalability ladder, and bottleneck-first thinking.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Scalability is the property that a system's capacity can grow *roughly in
+proportion to the resources you add*, without a rewrite. It is not "make it
+fast" (that is performance) and it is not "keep it up" (that is availability),
+though all three interact. A system scales well if doubling the hardware
+roughly doubles the throughput it can sustain at an acceptable latency.
+
+This cluster is the synthesis layer. The other clusters give you the parts —
+caching absorbs read load, load balancers spread requests, replicated and
+partitioned databases hold the state, message brokers decouple producers from
+consumers. Here we cover the *decisions* that tie those parts into a system
+that grows: how to scale up vs out, how to think about the AKF scale cube, why
+statelessness is the precondition for almost all horizontal scaling, the
+ladder most systems climb (single box → read replicas → sharding → services),
+and the discipline of bottleneck-first reasoning. The recurring lesson: you
+never "scale the system." You find the one resource that saturates first, scale
+*that*, and repeat — because the next bottleneck is always waiting behind it.
+
+## Mental model
+
+Picture every system as a chain of stages a request flows through: load
+balancer → app server → cache → database → disk. **Throughput is set entirely
+by the narrowest stage** — the bottleneck — exactly like water through a series
+of pipes. Widening any other pipe does nothing; you must widen the narrow one.
+This is Amdahl's law and Little's Law made concrete: capacity is gated by the
+single most contended resource, and adding capacity elsewhere is wasted money.
+
+Two corollaries fall out of this:
+
+- **Scaling is iterative whack-a-mole.** Relieve the database and the app CPU
+  becomes the limit; relieve that and the load balancer or the network does.
+  There is no final state, only the *current* bottleneck. Good design is mostly
+  about which bottleneck you choose to hit next and how cheaply you can move it.
+- **The enabler is statelessness.** You can only add identical, interchangeable
+  copies of a stage if a request can land on *any* copy. The moment a stage
+  remembers something about a specific user between requests, you can no longer
+  freely add copies — you have to route, replicate, or migrate that state. So
+  the first move in almost every scaling story is to push state out of the
+  stages you want to clone.
+
+## Types / Variants
+
+Scaling comes in two fundamental directions and three independent axes.
+
+**Vertical scaling (scale up).** Make one machine bigger — more CPU, RAM, faster
+disk. Zero code change, no distribution complexity, strong single-node
+consistency. But there is a hard ceiling (the biggest box money can buy), price
+grows super-linearly near the top, and a single machine is a single point of
+failure. The right first move for almost everything, and often *enough* longer
+than engineers expect.
+
+**Horizontal scaling (scale out).** Add more machines and spread load across
+them. Near-unlimited headroom, commodity hardware, and redundancy for free
+(lose one of N, keep serving). The cost is distribution: load balancing, data
+partitioning, network failure, and the consistency problems the Databases & CAP
+and Distributed Systems clusters are entirely about. This is where real scale
+lives, but it is a different and harder engineering regime.
+
+The **AKF Scale Cube** (from *The Art of Scalability*) names three orthogonal
+axes you can scale along — independently or together:
+
+- **X-axis — horizontal duplication / cloning.** Run N identical copies behind a
+  load balancer; each can serve any request. Scales *capacity and availability*
+  but not data size — every clone still holds the whole dataset. This is read
+  replicas and stateless app tiers. Cheapest, most common, the default first
+  step out.
+- **Y-axis — functional decomposition / split by service.** Break the system
+  into services by responsibility (auth, billing, search, feed). Each scales,
+  deploys, and fails independently. This is the microservices axis: it scales
+  *teams and complexity*, not just load.
+- **Z-axis — data partitioning / split by data.** Shard the data so each node
+  owns a slice (users A–M here, N–Z there; or by region). Each shard handles a
+  fraction of the data and the traffic. This is the axis that scales *write
+  volume and dataset size* past one machine — covered in **Sharding &
+  partitioning**.
+
+Most large systems use all three: cloned (X) stateless services (Y) over a
+sharded (Z) data tier.
+
+## When to use / When NOT
+
+- **Scale up first when:** you are below the single-box ceiling, the workload is
+  not yet distributed, and engineering time is scarcer than hardware. Buying a
+  bigger instance is hours of work; sharding is months. Do the cheap thing until
+  it stops working.
+- **Scale out when:** you have hit (or will soon hit) the vertical ceiling; you
+  need redundancy/availability that one machine cannot give; your dataset or
+  write rate exceeds one node; or traffic is spiky and you want elastic
+  add/remove of capacity.
+- **Scale the X-axis when:** the bottleneck is request/compute throughput or
+  read load on a dataset that still fits one node. Clone the stateless tier, add
+  read replicas. Easiest win.
+- **Scale the Z-axis when:** the data itself (size or write throughput) is the
+  bottleneck — one database can no longer hold it or keep up with writes. Shard.
+- **Scale the Y-axis when:** the bottleneck is *organizational or
+  deployment* — one codebase/team/deploy pipeline can't move fast enough, or
+  different parts have wildly different scaling needs. Split into services.
+- **Avoid scaling out prematurely when:** you have no measured bottleneck, the
+  load fits comfortably on one (replicated-for-HA) box, or the distribution
+  complexity would cost more than it saves. Premature sharding is one of the
+  most expensive mistakes in this field — it is very hard to undo and it taxes
+  every query forever.
+
+## Tradeoffs
+
+The core tension is **scale up (simple, bounded) vs scale out (unbounded,
+complex)**, and within scale-out, *which axis* you pay for.
+
+| Dimension | Scale up (vertical) | Scale out (horizontal) |
+| --------- | ------------------- | ---------------------- |
+| Headroom | Hard ceiling (biggest box) | Effectively unlimited |
+| Cost curve | Super-linear near the top | ~Linear, commodity hardware |
+| Code/architecture change | None | Significant (LB, partition, consistency) |
+| Consistency | Trivial (single node) | Hard (CAP applies — see Databases & CAP) |
+| Availability | SPOF — one box, one failure | Redundant — survives node loss |
+| Operational complexity | Low | High (fleet, routing, rebalancing) |
+| Best first move? | Yes, almost always | Only after up is exhausted or HA demands it |
+
+The scalability ladder — the path most systems actually climb, each rung taken
+only when the previous bottleneck forces it:
+
+1. **Single box.** App + database on one machine. Vertically scale it as far as
+   cost allows. Add a stateless app tier behind a load balancer once CPU binds.
+2. **Read replicas + cache.** Reads dominate most systems. Add a cache (see the
+   **Caching** cluster) and database read replicas to offload the primary. The
+   write primary is still single.
+3. **Sharding.** When writes or data size exceed one primary, partition the data
+   across shards (Z-axis). The hardest, least reversible rung.
+4. **Services.** Split by function (Y-axis) so teams and subsystems scale
+   independently. Often interleaved with the rungs above, not strictly after.
+
+## Diagram
+
+The scalability ladder: each rung is climbed only when the prior bottleneck
+binds. State is pushed out so the app tier can be cloned freely.
+
+<Mermaid code={`graph TD
+  A[Single box: app + DB] -->|CPU/connection limit| B[Stateless app tier behind LB]
+  B -->|read load on DB| C[Add cache + read replicas]
+  C -->|write/data size exceeds one primary| D[Shard the data tier]
+  D -->|team/deploy/subsystem limits| E[Split into services]
+  S[(External state store: cache + DB)] -.-> B
+  S -.-> C`} />
+
+## Try it
+
+Compare the two scaling directions, then slide along the up→out spectrum to see
+where most systems should sit at each stage of growth.
+
+<CompareMatrix
+  client:visible
+  caption="Scale up vs scale out"
+  columns={['Scale up (vertical)', 'Scale out (horizontal)']}
+  rows={[
+    { criterion: 'How you add capacity', cells: ['Bigger single machine', 'More machines in parallel'] },
+    { criterion: 'Headroom', cells: ['Hard ceiling', 'Effectively unlimited'] },
+    { criterion: 'Cost behaviour', cells: ['Super-linear near the top', 'Roughly linear (commodity)'] },
+    { criterion: 'Code change required', cells: ['None', 'Load balancing, partitioning, consistency'] },
+    { criterion: 'Consistency', cells: ['Trivial (one node)', 'Hard (CAP applies)'] },
+    { criterion: 'Availability', cells: ['Single point of failure', 'Redundant by design'] },
+    { criterion: 'Operational complexity', cells: ['Low', 'High'] },
+    { criterion: 'When to reach for it', cells: ['First, almost always', 'After up is exhausted / HA needed'] },
+  ]}
+/>
+
+<TradeoffSlider
+  client:visible
+  caption="Where should this system sit on the up ↔ out spectrum?"
+  leftAxis="Pure scale up"
+  rightAxis="Pure scale out"
+  stops={[
+    { label: 'One vertical box', description: 'MVP / early product. One well-sized machine (replicated for HA). Cheapest, simplest, consistent. Stay here as long as the box copes — usually longer than you fear.' },
+    { label: 'Stateless tier + 1 DB', description: 'Clone the app tier behind a load balancer (X-axis), push state to an external store. The single database primary is still the limit, but compute now scales freely.' },
+    { label: 'Cache + read replicas', description: 'Most load is reads. A cache and read replicas offload the primary by 10–100x. Writes still funnel to one primary — fine until they do not.' },
+    { label: 'Sharded data tier', description: 'Writes or dataset size exceed one node. Partition the data (Z-axis). Real horizontal scale, but resharding and cross-shard queries are now your problem.' },
+    { label: 'Sharded + services', description: 'Full scale-out: cloned stateless services (Y) over a sharded (Z) data tier. Maximum headroom, maximum operational and consistency complexity.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Stack Overflow** famously ran enormous traffic on a handful of *vertically
+  scaled* servers — a standing reminder that scale-up plus aggressive caching
+  beats premature distribution for a long time.
+- **Instagram** scaled to hundreds of millions of users on PostgreSQL by sharding
+  on user ID across many logical shards mapped to fewer physical machines — a
+  textbook Z-axis story.
+- **Amazon's** move from a monolith to thousands of services is the canonical
+  Y-axis (functional decomposition) case, driven by team autonomy as much as
+  load.
+- **Netflix** runs stateless services (X-axis) auto-scaled across regions, with
+  state pushed into Cassandra and EVCache — the cloned-stateless pattern at
+  global scale.
+
+## Further reading
+
+- [The Art of Scalability — the AKF Scale Cube](https://akfpartners.com/growth-blog/scale-cube) — the X/Y/Z scaling model in the authors' own words.
+- [Scalability! But at what COST? (Frank McSherry et al.)](https://www.usenix.org/system/files/conference/hotos15/hotos15-paper-mcsherry.pdf) — a sharp reminder that distribution often just recovers the overhead it adds.
+- [Scaling up vs scaling out (Microsoft Azure architecture guide)](https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/scale-out) — vendor-neutral framing of the two directions.
+- Other pages in this cluster: **Back-of-the-envelope estimation**, **Sharding &
+  partitioning**, **Statelessness & sessions**, **Rate limiting & throttling**,
+  and **Scaling the data tier**.
