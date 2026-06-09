@@ -1,0 +1,161 @@
+---
+title: gRPC & RPC
+description: gRPC, Protobuf, HTTP/2 streaming (unary, server, client, bidirectional), code generation, deadlines and cancellation, when binary RPC beats REST/GraphQL for internal services, and the gRPC-Web gateway for browsers.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**RPC (Remote Procedure Call)** makes a network call *look like* a local function call:
+you invoke `client.GetUser(id)` and the framework marshals the arguments, ships them over
+the wire, runs the procedure on a remote server, and returns the result. **gRPC** is the
+modern, dominant RPC framework: it defines services and messages in **Protobuf** (a compact
+binary schema), generates strongly-typed client and server **stubs** in a dozen languages,
+and runs over **HTTP/2** to get multiplexed, bidirectional **streaming**. The result is the
+lowest-latency, smallest-payload, most strongly-contracted option for **internal,
+service-to-service** traffic — at the cost of being binary (not human-debuggable) and not
+natively callable from a browser.
+
+## Mental model
+
+**The schema generates the code; the procedure call hides the network.** You write a
+`.proto` file once — the **single source of truth** for both sides — and code generation
+produces type-safe client and server stubs. Calling a remote method then looks and feels
+like calling a local one, with the serialization, framing, and transport handled for you.
+Two properties fall out of this:
+
+- **Protobuf is a binary, schema-driven format**: fields are identified by **tag numbers**,
+  not names, so payloads are tiny and parsing is fast — but you *need* the schema to read
+  the bytes (no curl-and-eyeball). Schema evolution is governed by keeping tag numbers
+  stable.
+- **HTTP/2 is the transport**, so a single connection multiplexes many concurrent calls and
+  supports **streaming** in both directions — gRPC isn't limited to request/response.
+
+## Types / Variants
+
+**Protobuf (the IDL).** Strongly-typed messages and services in a `.proto`. Backward/forward
+compatibility rules: **never reuse or change a field's tag number**, add new fields as
+optional, and treat unknown fields as pass-through. This is what lets old and new clients/
+servers interoperate during a rollout.
+
+**The four call types (HTTP/2 streaming):**
+
+- **Unary** — one request, one response. The familiar RPC; replaces a REST `GET`/`POST`.
+- **Server streaming** — one request, a **stream** of responses (live feed, large result
+  set, progress updates).
+- **Client streaming** — a **stream** of requests, one response (uploading chunks, batching
+  telemetry).
+- **Bidirectional streaming** — both sides stream independently over the one connection
+  (chat, real-time sync, long-lived control channels). This is gRPC's headline capability
+  and where it clearly beats request/response REST.
+
+**Code generation & stubs.** `protoc` (with language plugins) generates the message classes
+and the client/server stubs, so the contract is enforced *at compile time* in every
+language — a strong guarantee REST/JSON can't make without extra tooling.
+
+**Deadlines, cancellation, and metadata.** Every gRPC call carries a **deadline** (an
+absolute time by which it must complete); when it passes, the call is cancelled **end to
+end** — the server learns the client gave up and can stop work, which prevents wasted
+compute and cascading overload. (Contrast bare REST, where a client timeout doesn't
+inherently tell the server to stop.) Calls also carry **metadata** (key/value headers, e.g.
+auth tokens) and rich **status codes** (`OK`, `DEADLINE_EXCEEDED`, `UNAVAILABLE`,
+`RESOURCE_EXHAUSTED`, …) that map cleanly onto retry policies.
+
+**When binary RPC beats REST/GraphQL.** For **internal east-west** traffic: Protobuf
+payloads are several times smaller than JSON and parse faster; HTTP/2 multiplexing avoids
+connection sprawl; the generated, strongly-typed contract eliminates a class of integration
+bugs; deadlines and streaming are first-class. At high call volume between services these
+add up to materially lower latency, CPU, and bandwidth than JSON-over-HTTP.
+
+**The browser problem & gRPC-Web gateway.** Browsers can't speak raw gRPC (no access to the
+HTTP/2 frames gRPC needs, and limited streaming control). **gRPC-Web** plus a proxy
+(Envoy, or a gateway) bridges browser ↔ gRPC; alternatively a **grpc-gateway** transcodes
+JSON/REST on the edge into gRPC internally — so you expose REST/JSON to the public and run
+gRPC behind it. This "REST at the edge, gRPC inside" pattern is extremely common.
+
+## When to use / When NOT
+
+- **Use gRPC when:** internal service-to-service traffic where latency, throughput, and
+  payload size matter; polyglot services that benefit from one generated contract;
+  streaming (server/client/bidi) is needed; you want end-to-end deadlines and cancellation;
+  you're building a microservice mesh.
+- **Avoid gRPC when:** the client is a browser with no proxy budget (use REST, or gRPC-Web/
+  transcoding); you need human-readable, curl-able payloads and easy ad-hoc debugging; the
+  consumers are arbitrary third parties who expect REST/JSON; or HTTP caching of responses
+  is central to the design (gRPC has none).
+- **Default placement:** REST or GraphQL at the **public edge**; gRPC for the **internal**
+  calls behind it.
+
+## Tradeoffs
+
+| Concern | gRPC | REST | GraphQL |
+| ------- | ---- | ---- | ------- |
+| Payload | Protobuf (binary, smallest) | JSON (text) | JSON |
+| Transport | HTTP/2 (multiplexed) | HTTP/1.1 or 2 | HTTP (one POST) |
+| Streaming | Server/client/bidi, first-class | SSE/long-poll bolt-ons | Subscriptions (WS/SSE) |
+| Contract | `.proto` → generated stubs (compile-time) | OpenAPI (optional) | Typed schema |
+| Browser | Needs gRPC-Web proxy | Native | Native |
+| Human-debuggable | No (binary) | Yes (curl) | Mostly |
+| HTTP caching | None | First-class | Hard |
+| Best fit | Internal east-west, low latency | Public/partner CRUD | Client aggregation |
+
+## Diagram
+
+The `.proto` is the single source of truth; both sides are generated from it. HTTP/2 carries
+all four call shapes over one connection.
+
+<Mermaid code={`graph TD
+  P[service.proto] -->|protoc codegen| CS[Client stub]
+  P -->|protoc codegen| SS[Server skeleton]
+  CS -->|HTTP/2 connection| SS
+  subgraph CALLS[Call types over the one HTTP/2 connection]
+    U[Unary: 1 req → 1 resp]
+    SR[Server stream: 1 req → N resp]
+    CR[Client stream: N req → 1 resp]
+    BD[Bidi stream: N req ↔ N resp]
+  end
+  CS -.-> CALLS
+  B[Browser] -->|JSON / gRPC-Web| GW[Envoy / grpc-gateway] -->|gRPC| SS`} />
+
+## Try it
+
+Compare the three synchronous styles on the dimensions that decide where gRPC fits.
+
+<CompareMatrix
+  client:visible
+  caption="REST vs GraphQL vs gRPC"
+  columns={['REST', 'GraphQL', 'gRPC']}
+  rows={[
+    { criterion: 'Contract unit', cells: ['Resource + HTTP verb', 'Query over typed schema', 'Procedure (method)'] },
+    { criterion: 'Payload format', cells: ['JSON (text)', 'JSON (text)', 'Protobuf (binary)'] },
+    { criterion: 'Transport', cells: ['HTTP/1.1 or 2', 'HTTP (single POST)', 'HTTP/2'] },
+    { criterion: 'Streaming', cells: ['SSE / long-poll', 'Subscriptions (WS/SSE)', 'Unary + server/client/bidi'] },
+    { criterion: 'Contract enforcement', cells: ['OpenAPI (optional)', 'Schema (runtime)', 'Generated stubs (compile-time)'] },
+    { criterion: 'Browser-native', cells: ['Yes', 'Yes', 'No (gRPC-Web proxy)'] },
+    { criterion: 'Human-debuggable', cells: ['Yes (curl)', 'Mostly', 'No (binary)'] },
+    { criterion: 'HTTP caching', cells: ['First-class', 'Hard', 'None'] },
+    { criterion: 'Deadlines/cancel', cells: ['Client-side timeout only', 'Client-side timeout only', 'End-to-end deadlines'] },
+    { criterion: 'Best home', cells: ['Public / partner edge', 'Client aggregation', 'Internal east-west, low latency'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google** runs internal services on **Stubby** (gRPC's predecessor) and open-sourced gRPC;
+  Protobuf is the lingua franca of its service fleet.
+- **Netflix, Square, and Dropbox** use gRPC for internal service-to-service traffic to cut
+  east-west latency and payload size versus JSON.
+- **Envoy** is the standard proxy for **gRPC-Web** transcoding and for putting gRPC services
+  behind a mesh/gateway.
+- **Kubernetes, etcd, and CockroachDB** expose gRPC APIs for their control/data planes,
+  relying on Protobuf's schema-evolution rules for rolling upgrades.
+
+## Further reading
+
+- [gRPC — core concepts (RPC types, deadlines, cancellation)](https://grpc.io/docs/what-is-grpc/core-concepts/) — the four call types and how deadlines/metadata work.
+- [Protocol Buffers — language guide & schema evolution](https://protobuf.dev/programming-guides/proto3/) — message types and the tag-number rules that keep old/new code compatible.
+- [grpc-gateway](https://github.com/grpc-ecosystem/grpc-gateway) — generate a JSON/REST edge in front of gRPC services (the "REST outside, gRPC inside" pattern).

@@ -76,6 +76,17 @@ export default defineConfig({
             { label: 'Load balancing & proxies', slug: 'networking/load-balancing-proxies' },
           ],
         },
+        {
+          label: 'APIs & Service Communication',
+          items: [
+            { label: 'Overview', slug: 'apis' },
+            { label: 'REST APIs', slug: 'apis/rest' },
+            { label: 'GraphQL', slug: 'apis/graphql' },
+            { label: 'gRPC & RPC', slug: 'apis/grpc-rpc' },
+            { label: 'API design & versioning', slug: 'apis/api-design' },
+            { label: 'API gateways & BFF', slug: 'apis/api-gateways-bff' },
+          ],
+        },
       ],
     }),
   ],

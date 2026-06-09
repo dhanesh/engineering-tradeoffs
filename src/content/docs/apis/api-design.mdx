@@ -1,0 +1,186 @@
+---
+title: API Design & Versioning
+description: Versioning strategies (URI, header, media-type), backward/forward compatibility, idempotency keys, rate limiting, pagination, Problem Details error formats, naming, deprecation policy, and contract-first/OpenAPI design.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Once you've picked a *style* (REST, gRPC, GraphQL), **API design** is the craft of making
+that contract usable, evolvable, and operable: how clients identify the version, how you
+add features without breaking callers, how you make unsafe operations safe to retry, how
+you protect the service from abuse, how you report errors consistently, and how you
+retire old behavior gracefully. These decisions are where APIs live or die in production —
+a beautiful resource model with no versioning story or no idempotency keys becomes an
+operational liability the first time you need to change it or a payment double-fires.
+
+## Mental model
+
+**An API is a promise you have to keep while both sides change.** The single hardest thing
+about API design is that you can't redeploy your clients. So design for **compatibility
+first**:
+
+- **Backward compatible** — a *new server* still satisfies *old clients* (you didn't break
+  anyone by deploying). Achieved by **only adding** — new optional fields, new endpoints,
+  new enum values old clients ignore. **Never** remove/rename a field, tighten validation,
+  or change a type in place.
+- **Forward compatible** — an *old server* tolerates *new clients* (ignore unknown fields
+  instead of rejecting them), so clients can roll out ahead of servers.
+
+If every change is additive, you rarely need a new version at all. Versioning is the
+**escape hatch for breaking changes** — and the goal is to need it as little as possible.
+
+## Types / Variants
+
+**Versioning strategies:**
+
+- **URI versioning** (`/v1/users`, `/v2/users`) — most common, dead obvious, trivially
+  routable/cacheable, easy to demo in a browser. Critics call it "un-RESTful" (the
+  resource identity shouldn't include a version), and it tempts you to fork whole API
+  surfaces. Pragmatic default for public APIs.
+- **Header versioning** (`Accept-Version: 2` or a custom header) — keeps URLs clean and
+  stable, version is metadata. Cost: invisible in a browser/curl-by-default, easy to
+  forget, and intermediaries must include the header in cache keys.
+- **Media-type / content negotiation** (`Accept: application/vnd.myco.v2+json`) — the
+  "purest" REST approach: the representation, not the resource, is versioned. Powerful but
+  fiddly; few teams use it well.
+- **No version / additive evolution** — GraphQL's preferred model and increasingly REST's:
+  never break, only add and deprecate fields. Best when you can enforce additive-only
+  discipline.
+
+**Idempotency keys (make `POST` safe to retry).** Network timeouts are ambiguous — did the
+create succeed? Let the client send an **`Idempotency-Key`** header (a unique value per
+logical operation); the server stores the key + result and **returns the original result**
+on any replay, so a retry never creates a second charge/order. Mandatory for payments and
+any non-idempotent mutation over an unreliable network. (REST's `PUT`/`DELETE` are already
+idempotent; this is the fix for `POST`.)
+
+**Rate limiting.** Protect the service and ensure fairness. Algorithms: **token bucket**
+(allows bursts up to a cap, refills steadily — the common default), **leaky bucket** (smooths
+to a constant rate), **fixed/sliding window** (count per interval). Communicate it with
+`429 Too Many Requests`, a `Retry-After` header, and `RateLimit-*` headers so well-behaved
+clients back off. Tie limits to an API key / principal, not just IP.
+
+**Pagination.** Standardize **cursor** pagination for large/changing collections (stable,
+O(1) at depth) and offset only for small/stable lists — see *REST* for the full tradeoff.
+Make the strategy consistent across the whole API.
+
+**Error formats — Problem Details (RFC 9457).** Return a typed, uniform error body
+(`application/problem+json`: `type`, `title`, `status`, `detail`, `instance`, plus your own
+fields) and the correct HTTP status. Consistency lets every client handle errors with one
+parser instead of N bespoke shapes. Never return `200 {error: ...}`.
+
+**Naming & conventions.** Be consistent: plural nouns for collections (`/orders`),
+nest sparingly (`/orders/9/items`), pick one case convention (snake_case or camelCase) and
+never mix it, use ISO-8601 timestamps and explicit units, and keep enums string-typed and
+documented. Consistency *is* usability.
+
+**Deprecation policy.** Breaking changes are sometimes unavoidable; do them humanely:
+announce, emit a **`Deprecation`** (and `Sunset`) header on affected responses, give a
+generous window with dual-running old/new, monitor remaining callers, and only then remove.
+A deprecation *policy* (how long, how communicated) is part of the contract.
+
+**Contract-first / OpenAPI.** Write the spec (**OpenAPI** for REST, the `.proto` for gRPC,
+the SDL for GraphQL) **before** the code. Benefits: design review before implementation,
+generated client/server stubs and docs, mocking before the backend exists, and
+**automated breaking-change detection** in CI (e.g. comparing specs). The spec becomes the
+enforced source of truth instead of drifting documentation.
+
+## When to use / When NOT
+
+- **URI versioning** — default for public/partner APIs and when easy routing/caching/demos
+  matter. **Avoid** when you want to evolve additively and never fork the surface.
+- **Header/media-type versioning** — when you must keep URLs stable or version at the
+  representation level. **Avoid** if discoverability and curl-ability matter more than purity.
+- **Idempotency keys** — required for any non-idempotent mutation (payments, order creation)
+  over an unreliable network. **Skip** only for naturally idempotent operations.
+- **Contract-first/OpenAPI** — use whenever multiple teams/clients consume the API or you
+  want CI to block breaking changes. **Skip** only for a throwaway internal endpoint.
+- **Rate limiting** — any public or shared API. **Relax** for trusted internal callers
+  behind a quota mesh.
+
+## Tradeoffs
+
+| Decision | Option A | Option B | The tension |
+| -------- | -------- | -------- | ----------- |
+| Versioning | URI (`/v2`) — visible, routable | Header/media-type — clean URLs | Discoverability vs purity & cache simplicity |
+| Evolution | New version on break | Additive-only, deprecate | Clarity of a clean break vs the cost of forking surface |
+| Retry safety | Idempotency keys | Hope/no retries | Correctness + state vs simplicity |
+| Errors | Problem Details (RFC 9457) | Ad-hoc JSON | One parser for all vs per-endpoint handling |
+| Spec | Contract-first (OpenAPI) | Code-first | Design review + CI gates vs faster first cut |
+
+## Diagram
+
+Idempotency keys turn an ambiguous retry into an exactly-once result.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant S as API
+  participant D as Idempotency store
+  C->>S: POST /charges (Idempotency-Key: k1)
+  S->>D: seen k1?
+  alt first time
+    D-->>S: no
+    S->>S: create charge, save result under k1
+    S-->>C: 201 Created (charge_1)
+  else retry after timeout
+    C->>S: POST /charges (Idempotency-Key: k1)
+    S->>D: seen k1?
+    D-->>S: yes → stored result
+    S-->>C: 201 Created (charge_1, same one)
+  end`} />
+
+## Try it
+
+Pick a versioning strategy for your situation.
+
+<DecisionTree
+  client:visible
+  caption="Which versioning strategy?"
+  root={{
+    question: 'Can you keep every change additive (new optional fields/endpoints, deprecate but never break)?',
+    branches: [
+      {
+        label: 'Yes — we can enforce additive-only',
+        next: { leaf: { recommendation: 'No explicit version + deprecation policy', detail: 'Evolve by adding fields and deprecating old ones with Deprecation/Sunset headers. This is GraphQL\'s default and the lowest-friction path for REST when you have the discipline (and CI breaking-change checks) to enforce it.' } },
+      },
+      {
+        label: 'No — breaking changes will happen',
+        next: {
+          question: 'Is this a public/partner API where easy routing, caching, and browser/curl demos matter most?',
+          branches: [
+            {
+              label: 'Yes, public — keep it obvious',
+              next: { leaf: { recommendation: 'URI versioning (/v1, /v2)', detail: 'Visible, trivially routable and cacheable, easy to demo. The pragmatic default for public APIs despite the "un-RESTful" critique. Avoid forking the whole surface for tiny changes — version only what breaks.' } },
+            },
+            {
+              label: 'No, internal / URLs must stay stable',
+              next: { leaf: { recommendation: 'Header or media-type versioning', detail: 'Keep URLs stable and put the version in a header (Accept-Version) or the media type (application/vnd.co.v2+json). Cleaner resource identity; remember to include the version in cache keys and accept reduced curl-ability.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Stripe** versions by **date** (`Stripe-Version: 2024-04-10` header), pins each account
+  to the version it integrated against, and ships idempotency keys + cursor pagination —
+  a textbook compatibility strategy.
+- **GitHub** runs **URI versioning** for REST (`/vN`) and additive evolution for GraphQL,
+  with explicit deprecation timelines.
+- **Twilio and AWS** use URI/date versioning plus published deprecation and sunset policies.
+- **OpenAPI + tools like `oasdiff`/Spectral** are widely wired into CI to **fail the build**
+  on a backward-incompatible spec change before it ships.
+
+## Further reading
+
+- [Stripe API versioning & idempotent requests](https://docs.stripe.com/api/versioning) — a production reference for date versioning, idempotency keys, and pagination together.
+- [RFC 9457 — Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457) — the standard, parseable error format.
+- [Microsoft REST API Guidelines](https://github.com/microsoft/api-guidelines/blob/vNext/Guidelines.md) — naming, versioning, pagination, and error conventions distilled into rules.

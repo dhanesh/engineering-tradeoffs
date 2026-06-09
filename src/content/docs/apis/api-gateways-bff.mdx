@@ -1,0 +1,152 @@
+---
+title: API Gateways & BFF
+description: API gateway responsibilities (auth, rate limiting, routing, aggregation, TLS), the Backend-for-Frontend pattern, when to introduce a gateway, the "god gateway" anti-pattern, and where the gateway ends and the service mesh begins.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+An **API gateway** is a single entry point that sits between clients and a fleet of backend
+services and handles the **cross-cutting concerns** every service would otherwise reimplement:
+authentication, rate limiting, TLS termination, routing, request aggregation, and observability.
+A **Backend-for-Frontend (BFF)** is a *specialized* gateway: one tailored API per client type
+(web, iOS, Android) that aggregates and reshapes backend data exactly for that frontend. Both
+exist to keep clients simple and services focused — but both can metastasize into a centralized
+bottleneck that owns business logic it shouldn't. The art is knowing what belongs at the edge,
+what belongs in the service, and where the **service mesh** takes over for internal traffic.
+
+## Mental model
+
+**The gateway is the front door; the mesh is the hallways.** Clients (north-south traffic)
+enter through one guarded door that checks identity, throttles abuse, and points each request
+to the right room. Once inside, service-to-service calls (east-west traffic) travel the
+**hallways**, which is the **service mesh's** job (mTLS, retries, load balancing between
+services) — *not* the gateway's. Keep that boundary sharp: the gateway handles **client-facing
+edge concerns**; the mesh handles **internal service-to-service concerns**. A BFF is just a
+front door **shaped per client** so each app gets exactly the API it wants instead of a
+lowest-common-denominator one.
+
+## Types / Variants
+
+**Core gateway responsibilities (the things worth centralizing):**
+
+- **Authentication & authorization** — validate tokens/API keys *once* at the edge so
+  backends trust an authenticated principal (often via a JWT it forwards).
+- **TLS termination** — terminate HTTPS at the edge; internal hops can use mTLS via the mesh.
+- **Rate limiting & quotas** — throttle per client/key, return `429` + `Retry-After`, shed
+  load before it reaches services.
+- **Routing & service discovery** — map external paths to internal services; handle
+  blue/green, canary, and path/host-based routing.
+- **Request aggregation / composition** — fan one client call out to several services and
+  combine the results (reduces client round trips). Keep this *thin* — orchestration, not
+  business rules.
+- **Protocol translation** — REST/JSON at the edge → gRPC internally (the transcoding pattern
+  from *gRPC & RPC*).
+- **Observability & resilience** — central logging, tracing, metrics; edge-level timeouts,
+  retries, and circuit breaking.
+
+**BFF (Backend-for-Frontend).** Instead of one gateway serving all clients, you run **one
+gateway per client experience**: a web BFF, an iOS BFF, an Android BFF. Each owns the
+aggregation/shaping its frontend needs, so a change for the iOS team never risks the web
+contract, and no client is stuck with a bloated one-size-fits-all API. Owned by the frontend
+team, the BFF is where client-specific orchestration lives. (GraphQL is often used to *build*
+a BFF.)
+
+**Gateway vs service mesh (the boundary).** They overlap (both do routing, retries, TLS) but
+serve different traffic:
+
+- **Gateway** — **north-south** (client ↔ system): auth, rate limiting, API keys,
+  aggregation, public TLS. One logical edge.
+- **Service mesh** (Istio, Linkerd) — **east-west** (service ↔ service): mTLS, retries,
+  circuit breaking, fine-grained traffic policy via sidecars. No business concerns, no public
+  auth.
+
+Don't make the gateway do the mesh's job (it becomes a choke point) or the mesh do the
+gateway's (it has no notion of your public API surface).
+
+## When to use / When NOT
+
+- **Introduce a gateway when:** you have multiple backend services behind one client surface
+  and are duplicating auth/rate-limiting/TLS per service; you need a stable public edge
+  decoupled from internal topology; you want central observability and abuse protection; or
+  you're exposing internal gRPC as public REST.
+- **Skip / defer a gateway when:** you have a single service or a small monolith (a load
+  balancer is enough); the added hop's latency and operational cost outweigh the benefit; or
+  you'd be tempted to dump business logic into it.
+- **Use a BFF when:** different clients (web/mobile) need materially different API shapes and
+  one generic API forces compromises; frontend teams want to own their aggregation.
+  **Avoid** a BFF when one client type or near-identical needs make the extra layer pure
+  overhead.
+
+**Anti-pattern — the "god gateway."** When the gateway accretes **business logic**,
+orchestration of domain workflows, data transformation, and per-feature rules, it becomes a
+distributed monolith's single point of failure and a deployment bottleneck every team must
+queue behind. Keep the gateway **thin and generic**: cross-cutting concerns and light
+aggregation only. Domain logic belongs in services; client-specific shaping belongs in a BFF
+owned by that client's team.
+
+## Tradeoffs
+
+| Concern | With a gateway/BFF | Without (clients → services directly) |
+| ------- | ------------------ | ------------------------------------- |
+| Cross-cutting concerns | Centralized once (auth, rate limit, TLS) | Duplicated in every service |
+| Client simplicity | One endpoint, aggregated/shaped responses | Clients juggle many services + concerns |
+| Coupling to topology | Hidden behind the edge | Clients couple to internal layout |
+| Latency | Extra hop | One fewer hop |
+| Failure surface | Edge is a critical SPOF (mitigate with HA) | No single choke point |
+| Risk | "God gateway" creep if undisciplined | Logic sprawl across clients |
+
+## Diagram
+
+North-south through the gateway/BFFs; east-west through the mesh. Keep the responsibilities split.
+
+<Mermaid code={`graph TD
+  W[Web app] --> WB[Web BFF]
+  I[iOS app] --> IB[iOS BFF]
+  A[Android app] --> AB[Android BFF]
+  WB --> GW{API gateway: auth, rate limit, TLS, routing}
+  IB --> GW
+  AB --> GW
+  GW --> S1[Orders service]
+  GW --> S2[Catalog service]
+  GW --> S3[Payments service]
+  subgraph MESH[Service mesh — east-west: mTLS, retries, circuit breaking]
+    S1 <--> S2
+    S2 <--> S3
+    S1 <--> S3
+  end`} />
+
+## Try it
+
+When a gateway/BFF earns its place at the edge — and when it just adds a hop.
+
+<WhenWhyTabs
+  client:visible
+  caption="API gateway & BFF: when, why, and why NOT"
+  tabs={[
+    { label: 'When to use', content: 'Introduce a gateway once you have several services behind one client surface and find yourself duplicating authentication, rate limiting, and TLS in each. Add a BFF when web and mobile clients need materially different API shapes and a single generic API forces awkward compromises. Reach for protocol translation at the edge when you expose public REST but run gRPC internally.' },
+    { label: 'Why it helps', content: 'Centralizing cross-cutting concerns means services trust an already-authenticated, already-throttled request and focus on domain logic. Clients hit one stable endpoint and stop coupling to internal topology, so you can re-shard or rename services freely. A BFF lets each frontend team own exactly the aggregation and shaping its app needs, and the edge becomes the natural home for central tracing, metrics, and abuse protection.' },
+    { label: 'Why NOT', content: 'For a single service or small monolith a load balancer is enough — a gateway just adds a hop, latency, and an operational component to keep highly available. The real danger is the "god gateway": once business logic, domain orchestration, and per-feature rules leak in, the edge becomes a deployment bottleneck and a single point of failure every team must coordinate around. Keep the gateway thin and generic; do not let it do the service mesh\'s east-west job, and do not build a BFF when one client type makes the extra layer pure overhead.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Netflix** popularized the **BFF** pattern (and the Zuul gateway) so each device family —
+  TV, mobile, web — gets an API tailored to its needs rather than a generic one.
+- **Amazon API Gateway, Kong, and Apigee** are managed/standalone gateways providing auth,
+  rate limiting, quotas, and routing as the edge of microservice systems.
+- **Envoy** serves both roles depending on deployment: as an edge gateway and as the sidecar
+  proxy inside **Istio**'s service mesh — illustrating the shared mechanics, different scope.
+- **Spotify and SoundCloud** documented BFFs per client to stop mobile and web needs from
+  fighting over one shared API.
+
+## Further reading
+
+- [Sam Newman — Backends For Frontends](https://samnewman.io/patterns/architectural/bff/) — the canonical write-up of the BFF pattern and its boundaries.
+- [Microsoft — Gateway aggregation / offloading / routing patterns](https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-aggregation) — the legitimate gateway responsibilities, separated cleanly.
+- [Istio — what a service mesh handles](https://istio.io/latest/about/service-mesh/) — the east-west concerns that belong to the mesh, not the gateway.

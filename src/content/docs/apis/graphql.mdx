@@ -1,0 +1,151 @@
+---
+title: GraphQL
+description: GraphQL's typed schema, queries/mutations/subscriptions, resolvers, the N+1 problem and DataLoader, how it solves over/under-fetching, why caching is hard, persisted queries, federation, and when GraphQL beats REST.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+**GraphQL** is a query language and runtime for APIs where the **client**, not the server,
+decides what data comes back. The server publishes a single **typed schema** describing
+every type and field; a client sends a **query** naming exactly the fields it wants
+(including nested relationships across what would be many REST endpoints) and receives
+exactly that shape — no more, no less. This directly attacks REST's two chronic fetch
+problems: **over-fetching** (a mobile screen downloads a fat user object to show a name)
+and **under-fetching** (the same screen makes five round trips to assemble one view). The
+tradeoff is that you move complexity from the client into the server: resolvers, the N+1
+problem, hard caching, and a real security/authorization surface.
+
+## Mental model
+
+**One typed graph, one endpoint, client-shaped responses.** REST exposes many URLs and
+the server fixes each response shape. GraphQL exposes **one endpoint** (`POST /graphql`)
+and **one schema graph**; the client traverses that graph and the response **mirrors the
+query exactly**. If you ask for `{ user { name, orders { total } } }` you get a user with
+a name and an orders array of totals — nothing else. The schema *is* the contract, and it
+is strongly typed and introspectable, so tooling (autocomplete, codegen, docs) is
+exceptional. The mental shift from REST: you stop designing endpoints and start designing
+a **type system** plus the **resolvers** that fetch each field.
+
+## Types / Variants
+
+**Schema & types.** You define `type`s, fields, scalars, enums, interfaces, and unions in
+the **Schema Definition Language (SDL)**. The schema is strongly typed and self-documenting
+via **introspection** (the same mechanism that powers GraphiQL and codegen).
+
+**The three operation types:**
+
+- **Query** — reads. Conceptually the `GET` of GraphQL: no side effects, fields resolved
+  (often in parallel).
+- **Mutation** — writes (`createOrder`, `updateUser`). Top-level mutation fields run
+  **sequentially** so ordering is deterministic.
+- **Subscription** — server-pushed streams over a persistent transport (WebSocket or SSE);
+  the client gets events as they happen (live scores, chat, notifications).
+
+**Resolvers.** Every field is backed by a **resolver** function that knows how to fetch
+that field's value. A query walks the tree, calling resolvers as it descends. This per-field
+fan-out is what makes GraphQL flexible — and what creates the N+1 trap.
+
+**The N+1 problem + DataLoader.** Query `{ posts { author { name } } }` over 100 posts: 1
+query for the posts, then **100** resolver calls for each post's author = 101 queries. The
+fix is **DataLoader** (or any batching/dedup layer): per-request, it **batches** the keys
+collected during one tick into a single `IN (...)` query and **caches** by key, collapsing
+N+1 into 2 queries. Batching + per-request caching is mandatory at any real scale; without
+it GraphQL silently hammers your database.
+
+**Over/under-fetching, solved.** Because the client names fields, it gets neither too much
+(over-fetch) nor too little (under-fetch) — one round trip returns precisely the data the
+screen needs, even when it spans multiple backend sources.
+
+**Why caching is hard.** REST caches on URL + `GET` + `ETag`, so CDNs and browsers cache
+for free. GraphQL sends everything as a **single `POST`** with the query in the body — opaque
+to HTTP caches, and every client query is potentially unique, so there's no stable cache
+key. You push caching elsewhere: **client-side normalized caches** (Apollo, Relay, urql)
+keyed by object id, and **persisted queries** (below) to recover GET-cacheability.
+
+**Persisted (a.k.a. trusted) queries.** Register queries ahead of time and have clients
+send a **hash** instead of the full query text. Benefits: smaller requests, an **allowlist**
+that blocks arbitrary/abusive queries, and the ability to send the hash as a `GET` so CDNs
+can cache it (**Automatic Persisted Queries**). The standard mitigation for both GraphQL's
+caching and security weaknesses.
+
+**Federation.** As the graph grows, one monolithic GraphQL server becomes a bottleneck.
+**Federation** (Apollo Federation, or the schema-stitching predecessor) lets multiple
+services each own a slice of the schema; a **gateway** composes them into one supergraph,
+so teams own their subgraphs while clients still see a single endpoint.
+
+**Security surface.** Client-controlled queries mean **deeply nested or wide queries can
+DoS** your backend. Defenses: query **depth/complexity limits**, **timeouts**, **persisted
+queries** (allowlist), and field-level **authorization** in resolvers (auth in GraphQL is
+your job — there's no per-URL `403` to lean on).
+
+## When to use / When NOT
+
+- **Use GraphQL when:** many heterogeneous clients (web, iOS, Android) each need different
+  slices of overlapping data; screens aggregate many backend sources and you want one round
+  trip; mobile bandwidth makes over-fetching expensive; you want strong typing, introspection,
+  and codegen; or you're unifying many backends behind one graph (federation/BFF).
+- **Avoid GraphQL when:** the API is simple CRUD (REST is less machinery); you depend on
+  **HTTP/CDN caching** of public read-heavy content; you need lowest-latency binary
+  service-to-service calls (→ **gRPC**); you can't staff the resolver/N+1/security
+  complexity; or the consumers are arbitrary third parties who expect plain REST.
+
+## Tradeoffs
+
+| Concern | GraphQL | REST (for contrast) |
+| ------- | ------- | ------------------- |
+| Fetch shaping | Client picks exact fields (no over/under-fetch) | Fixed per endpoint |
+| Round trips | One query spans many resources | Often many requests |
+| HTTP/CDN caching | Hard (single POST) — needs persisted queries | First-class (ETag, Cache-Control) |
+| Server complexity | High (resolvers, N+1/DataLoader, depth limits) | Lower |
+| Typing / tooling | Strong schema + introspection + codegen | OpenAPI (external) |
+| Security | Client-controlled queries → DoS surface, field-level authz | Per-URL/method, simpler |
+| Versioning | Evolve by adding fields, deprecate old (rarely versioned) | URI/header versions |
+
+## Diagram
+
+One GraphQL query traverses the graph; resolvers fan out, and DataLoader batches the N+1.
+
+<Mermaid code={`graph TD
+  C[Client] -->|"{ posts { author { name } } }"| GQL[GraphQL server]
+  GQL --> RP[posts resolver]
+  RP -->|1 query| DBP[(Posts table)]
+  GQL --> RA[author resolver x N]
+  RA --> DL[DataLoader: batch + dedup keys]
+  DL -->|1 batched IN query| DBA[(Users table)]
+  GQL -->|response mirrors the query exactly| C`} />
+
+## Try it
+
+When does GraphQL earn its complexity, and why — versus when it doesn't.
+
+<WhenWhyTabs
+  client:visible
+  caption="GraphQL vs REST: when, why, and why NOT"
+  tabs={[
+    { label: 'When to use', content: 'Choose GraphQL when many different clients (web, iOS, Android) each need different slices of the same data, when a single screen must aggregate several backend sources in one round trip, when mobile bandwidth makes REST over-fetching costly, or when you want one strongly-typed, introspectable graph (with federation) over many services. It is a natural fit for a client-facing aggregation/BFF layer.' },
+    { label: 'Why it helps', content: 'The client names exactly the fields it wants, so over-fetching and under-fetching disappear and N round trips collapse into one. The typed schema gives autocomplete, codegen, and live docs for free. You evolve the API by adding fields and deprecating old ones instead of cutting v2 endpoints, and federation lets teams own subgraphs behind a single endpoint.' },
+    { label: 'Why NOT', content: 'You inherit real server complexity: every field is a resolver, so the N+1 problem is ever-present and DataLoader-style batching is mandatory. HTTP/CDN caching no longer works out of the box because everything is one opaque POST — you need persisted queries to recover it. Client-controlled queries open a DoS surface that demands depth/complexity limits and timeouts, and authorization must be enforced per field. For plain CRUD or cache-heavy public reads, REST is simpler and cheaper.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Facebook** created GraphQL (2012, open-sourced 2015) to let its mobile apps fetch
+  exactly the nested data a news-feed screen needs over slow networks.
+- **GitHub** ships a public GraphQL API alongside its REST API, exposing the full
+  repository/issue/PR graph with introspection.
+- **Shopify** runs its storefront and admin on GraphQL and enforces a **query cost/complexity
+  budget** per call to protect its backend from expensive client queries.
+- **Netflix** pioneered large-scale **federation** (and its DGS framework) so dozens of
+  teams own subgraphs that compose into one supergraph behind a single gateway.
+
+## Further reading
+
+- [GraphQL Best Practices — graphql.org](https://graphql.org/learn/best-practices/) — pagination (Relay cursor connections), schema evolution, and caching guidance from the spec maintainers.
+- [DataLoader (Facebook)](https://github.com/graphql/dataloader) — the canonical batching/caching layer that defeats the N+1 problem; the README explains the mechanism.
+- [Apollo Federation docs](https://www.apollographql.com/docs/federation/) — how to split one graph across many services with a composing gateway.

@@ -1,0 +1,166 @@
+---
+title: APIs & Service Communication
+description: What an API contract is, the four dominant styles (REST, RPC/gRPC, GraphQL, event-driven), synchronous vs asynchronous communication, coupling, versioning, and why the contract is the real unit of decoupling.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+An **API** is the contract between two pieces of software: the *shape* of the request,
+the *shape* of the response, the *errors* that can come back, and the *guarantees*
+around them (idempotency, ordering, latency). When you "design an API" you are not
+choosing a library — you are choosing a **boundary** that two teams, two services, or a
+service and the whole internet will build against and that you must keep stable while
+both sides evolve independently. The *style* you pick (REST, RPC/gRPC, GraphQL, or
+event-driven messaging) and whether you communicate **synchronously** or
+**asynchronously** determine how tightly your services are coupled, how they fail, how
+they scale, and how painfully they change. This cluster is about making those choices
+deliberately instead of by default.
+
+## Mental model
+
+**The contract is the unit of decoupling — not the network call.** Two services that
+share a database table are tightly coupled even if they "talk over HTTP." Two services
+that share only a versioned, explicit contract can be rewritten, relocated, or rescaled
+independently as long as the contract holds. So every decision in this cluster reduces
+to one question: *what exactly are the two sides allowed to assume about each other, and
+how do we change that without breaking anyone?*
+
+Two axes organize the whole space:
+
+- **Shape of the contract** — is the unit a **resource** you manipulate (REST), a
+  **procedure** you call (RPC/gRPC), a **query** you compose (GraphQL), or an **event**
+  you publish and others react to (messaging)?
+- **Timing of the contract** — **synchronous** request/response (caller blocks, waiting
+  for an answer, coupled in *time* and *availability*) versus **asynchronous** messaging
+  (caller fires an event and moves on, decoupled in time, coupled only to the message
+  schema). Synchronous = temporal coupling; asynchronous = schema coupling plus
+  eventual-consistency.
+
+Hold those two axes and every style below is a point in the grid.
+
+## Types / Variants
+
+**REST (resource-oriented, over HTTP).** Model the domain as **resources** with URLs,
+manipulate them with HTTP methods (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`), lean on HTTP's
+status codes, caching, and idempotency semantics. Ubiquitous, browser- and
+proxy-friendly, cacheable, self-describing-ish. Weak when one screen needs data from
+many resources (over/under-fetching) or when the domain is verb-shaped rather than
+noun-shaped. See *REST*.
+
+**RPC / gRPC (procedure-oriented).** Model the API as **functions you call remotely**.
+**gRPC** uses Protobuf (a compact binary schema) over HTTP/2 with generated client and
+server stubs and first-class streaming. Lowest latency and payload size, strict
+schema, excellent for **internal service-to-service** traffic. Weak in the browser
+(needs a proxy) and less human-debuggable. See *gRPC & RPC*.
+
+**GraphQL (query-oriented).** Expose a single typed **schema**; the *client* writes a
+**query** describing exactly the fields it wants and gets exactly that back — solving
+over/under-fetching for clients that aggregate many resources. Costs: server-side
+**N+1** resolver risk, hard HTTP caching, and a more complex server. Strong for
+client-driven aggregation (mobile, rich frontends). See *GraphQL*.
+
+**Event-driven / asynchronous messaging.** The producer publishes an **event** ("order
+placed") to a broker; consumers react on their own schedule. No temporal coupling, great
+for fan-out, buffering, and resilience — at the cost of eventual consistency and harder
+end-to-end reasoning. The contract is the **event schema**, not a request shape.
+(Covered in depth in the *Event-Driven Architecture* cluster; here we contrast it with
+the synchronous styles.)
+
+**Sync vs async is orthogonal to style.** You can do request/response REST *or*
+async-over-a-queue; gRPC offers both unary (sync) and streaming. The style decides the
+*shape*; sync/async decides the *timing*.
+
+## When to use / When NOT
+
+- **REST — use when:** a public/partner API, CRUD-shaped resources, browser clients, and
+  you want HTTP caching and ubiquity. **Avoid when:** clients need to assemble many
+  resources per screen, or the domain is action-shaped (`transfer`, `refund`) rather than
+  resource-shaped.
+- **gRPC — use when:** internal east-west traffic, polyglot services, low latency / high
+  throughput, streaming, and a strict shared schema. **Avoid when:** the client is a
+  browser without a proxy, or you need human-readable, curl-able payloads.
+- **GraphQL — use when:** many heterogeneous clients (esp. mobile) need to fetch exactly
+  what they want from many backend sources, and you want to avoid endpoint sprawl.
+  **Avoid when:** the workload is simple CRUD, you depend on HTTP caching, or you can't
+  staff the resolver/N+1/security complexity.
+- **Event-driven — use when:** producers and consumers must be decoupled in time, you
+  need fan-out, buffering against load spikes, or audit/replay. **Avoid when:** the
+  caller genuinely needs an answer *now* (a synchronous read, a payment authorization).
+- **General rule:** default to **REST at the edge** (public/partner), **gRPC inside**
+  (service-to-service), **GraphQL** where a client-facing aggregation layer earns its
+  keep, and **events** wherever temporal decoupling pays off.
+
+## Tradeoffs
+
+| Dimension | REST | gRPC | GraphQL | Event-driven |
+| --------- | ---- | ---- | ------- | ------------ |
+| Contract unit | Resource | Procedure | Query/schema | Event schema |
+| Payload | JSON (text) | Protobuf (binary) | JSON | Any (often Avro/JSON) |
+| Coupling | Loose, temporal | Tight schema, temporal | Schema, temporal | Schema only, decoupled in time |
+| Browser-native | Yes | No (needs proxy) | Yes | No |
+| HTTP caching | Excellent | N/A | Hard | N/A |
+| Latency / size | Moderate | Lowest | Moderate | Async (no RT latency) |
+| Best fit | Public/partner CRUD | Internal east-west | Client aggregation | Fan-out, buffering |
+
+## Diagram
+
+The same "place order" capability expressed in each style — note where the coupling lives.
+
+<Mermaid code={`graph TD
+  subgraph SYNC[Synchronous request/response]
+    C1[Client] -->|REST: POST /orders| R[Order service]
+    C2[Client] -->|gRPC: PlaceOrder| G[Order service]
+    C3[Client] -->|GraphQL: mutation placeOrder| Q[Graph layer] --> R
+  end
+  subgraph ASYNC[Asynchronous messaging]
+    P[Client] -->|publish OrderPlaced| B[(Broker)]
+    B --> W1[Billing consumer]
+    B --> W2[Inventory consumer]
+    B --> W3[Email consumer]
+  end`} />
+
+## Try it
+
+Compare the four styles across the properties that actually drive the choice.
+
+<CompareMatrix
+  client:visible
+  caption="REST vs gRPC vs GraphQL vs Event-driven"
+  columns={['REST', 'gRPC', 'GraphQL', 'Event-driven']}
+  rows={[
+    { criterion: 'Contract unit', cells: ['Resource (URL)', 'Procedure (method)', 'Query over a schema', 'Event schema'] },
+    { criterion: 'Communication', cells: ['Sync req/resp', 'Sync + streaming', 'Sync req/resp', 'Async pub/sub'] },
+    { criterion: 'Payload format', cells: ['JSON (text)', 'Protobuf (binary)', 'JSON', 'Avro/JSON/Protobuf'] },
+    { criterion: 'Browser support', cells: ['Native', 'Needs gRPC-Web proxy', 'Native', 'Via push/SSE only'] },
+    { criterion: 'HTTP caching', cells: ['Excellent (built-in)', 'N/A', 'Hard (single POST)', 'N/A'] },
+    { criterion: 'Over/under-fetching', cells: ['Common problem', 'Fixed per-method', 'Solved (client picks fields)', 'N/A'] },
+    { criterion: 'Coupling', cells: ['Loose, temporal', 'Tight schema, temporal', 'Schema, temporal', 'Schema only, time-decoupled'] },
+    { criterion: 'Typical placement', cells: ['Public / partner edge', 'Internal east-west', 'Client aggregation layer', 'Fan-out, integration, audit'] },
+    { criterion: 'Main weakness', cells: ['Fetch inefficiency', 'Not browser/human-friendly', 'Caching, N+1, complexity', 'Eventual consistency'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Stripe, GitHub, Twilio** expose **REST** (JSON over HTTP) as their public API because
+  it is universally consumable, cacheable, and curl-able by any partner.
+- **Google, Netflix, and most large microservice fleets** use **gRPC** for internal
+  service-to-service calls — Protobuf + HTTP/2 streaming keeps east-west latency and
+  payloads small.
+- **GitHub** and **Shopify** also publish **GraphQL** APIs so client apps can fetch
+  exactly the nested data a screen needs in one round trip; GitHub runs REST and GraphQL
+  side by side.
+- **Uber, LinkedIn, and most payment systems** lean on **event-driven** messaging (Kafka)
+  for fan-out and decoupling — "trip completed" or "payment captured" fans out to billing,
+  analytics, and notifications without the producer waiting.
+
+## Further reading
+
+- [Roy Fielding — Architectural Styles and the Design of Network-based Software Architectures](https://www.ics.uci.edu/~fielding/pubs/dissertation/top.htm) — the dissertation that defined REST and the vocabulary of API styles.
+- [Martin Fowler — What do you mean by "Event-Driven"?](https://martinfowler.com/articles/201701-event-driven.html) — disentangles the flavors of async/event communication and their coupling.
+- [Google API Design Guide](https://cloud.google.com/apis/design) — a battle-tested, opinionated take on resource- vs procedure-oriented API design at scale.

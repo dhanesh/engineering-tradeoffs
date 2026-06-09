@@ -1,0 +1,215 @@
+---
+title: REST APIs
+description: REST's constraints, resource modeling, the Richardson maturity model, HATEOAS (and why it's rarely used), status codes, idempotency and safety, offset vs cursor pagination, filtering, error formats, and HTTP caching.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**REST** (Representational State Transfer) is an architectural style that models a system
+as a set of **resources**, each addressable by a URL, manipulated through a small, uniform
+set of HTTP methods, and represented as documents (almost always JSON). It is the default
+shape for public and partner APIs because it rides everything HTTP already gives you for
+free: caching, status codes, idempotency semantics, content negotiation, and a global
+army of proxies, CDNs, and tools that understand the protocol. "REST" in industry usually
+means "a clean, resource-oriented JSON-over-HTTP API" — true textbook REST (with HATEOAS)
+is rare, and that gap is itself one of the most important things to understand here.
+
+## Mental model
+
+**Nouns over verbs; let HTTP be the verb.** In RPC you expose *actions*
+(`getUser`, `deactivateUser`). In REST you expose *things* (`/users/42`) and act on them
+with the **uniform interface** — the same handful of methods mean the same thing for
+every resource:
+
+- `GET /users/42` — read it (safe, cacheable).
+- `PUT /users/42` — replace it (idempotent).
+- `PATCH /users/42` — partially update it.
+- `DELETE /users/42` — remove it (idempotent).
+- `POST /users` — create a new one under a collection (not idempotent).
+
+The payoff of that uniformity is **statelessness** plus **cacheability**: every request
+carries all the context it needs, so any server can handle it and any cache can store the
+result. The hard part is forcing an action-shaped domain (`/accounts/42/transfer`) into a
+noun-shaped model — sometimes you model the action itself as a resource (`POST /transfers`).
+
+## Types / Variants
+
+**Richardson Maturity Model** — the de-facto ladder of "how RESTful is it":
+
+- **Level 0 — one URL, one verb.** RPC tunneled through a single `POST` endpoint
+  (SOAP-style). Not REST in any meaningful sense.
+- **Level 1 — resources.** Distinct URLs per resource (`/users/42`), but still one verb.
+- **Level 2 — HTTP verbs + status codes.** Proper `GET`/`POST`/`PUT`/`DELETE` and
+  meaningful status codes. **This is where ~99% of real-world "REST" APIs live, and it is
+  perfectly fine.**
+- **Level 3 — HATEOAS (hypermedia controls).** Responses embed links telling the client
+  what it can do next (`{"_links": {"cancel": "/orders/9/cancel"}}`), so clients discover
+  transitions instead of hardcoding URLs.
+
+**HATEOAS — and why it's rarely used.** In theory it decouples clients from URL structure
+and lets the server evolve the state machine freely. In practice almost nobody does it:
+clients still hardcode URLs and field names; the indirection adds complexity without
+removing the need for out-of-band documentation; and JSON has no standard hypermedia
+format (HAL, JSON:API, Siren all compete). It shines in narrow cases (long-lived clients,
+workflow APIs, stateful protocols) but for typical APIs the cost outweighs the benefit —
+so Level 2 is the pragmatic default.
+
+**Method semantics (the contract that makes retries safe):**
+
+| Method | Safe? | Idempotent? | Meaning |
+| ------ | ----- | ----------- | ------- |
+| `GET` | Yes | Yes | Read, no side effects, cacheable |
+| `HEAD` | Yes | Yes | Like GET, headers only |
+| `PUT` | No | Yes | Replace resource at a known URL |
+| `DELETE` | No | Yes | Remove resource (repeat = still gone) |
+| `PATCH` | No | Not guaranteed | Partial update |
+| `POST` | No | No | Create / non-idempotent action |
+
+*Safe* = no observable side effects (so a crawler can call it freely). *Idempotent* =
+calling it N times leaves the same end state as once (so a client can **retry** after a
+timeout). This is why a flaky network can safely retry `PUT`/`DELETE` but not a bare
+`POST` — see *idempotency keys* in **API design** for making `POST` safe to retry.
+
+**Status codes (use the real ones, not `200 {error: true}`):** `2xx` success
+(`200 OK`, `201 Created` + `Location`, `202 Accepted`, `204 No Content`); `3xx`
+redirection (`301`, `304 Not Modified`); `4xx` client error (`400`, `401`
+unauthenticated, `403` forbidden, `404`, `409 Conflict`, `422 Unprocessable`,
+`429 Too Many Requests`); `5xx` server error (`500`, `502`, `503`, `504`). Correct codes
+let generic clients, proxies, and retry logic behave without parsing your body.
+
+**Pagination — offset vs cursor (the choice with real consequences):**
+
+- **Offset/limit** (`?offset=40&limit=20` or `?page=3`) — trivial, lets users jump to an
+  arbitrary page and shows total counts. Breaks down at scale: deep offsets are slow
+  (`OFFSET 1000000` still scans), and inserts/deletes during paging cause **skipped or
+  duplicated rows**.
+- **Cursor (keyset)** (`?after=<opaque-cursor>`) — the cursor encodes "where you left off"
+  (e.g. the last id/timestamp). Stable under concurrent writes and **O(1) regardless of
+  depth** because it seeks via an index instead of counting. Costs: no arbitrary page
+  jumps, no easy total count. The right default for large, frequently-mutated feeds.
+
+**Filtering, sorting, sparse fields.** Query params for filtering (`?status=active`),
+sorting (`?sort=-created_at`), and field selection (`?fields=id,name`) reduce
+over-fetching without leaving REST. Keep them on `GET` so results stay cacheable.
+
+**Error formats.** Prefer **RFC 9457 Problem Details** (`application/problem+json`:
+`type`, `title`, `status`, `detail`, `instance`) over ad-hoc shapes, so clients parse
+errors uniformly. Covered further in **API design**.
+
+**HTTP caching.** REST's killer feature: `Cache-Control` (`max-age`, `private`,
+`no-store`, `immutable`), and **conditional requests** via `ETag`/`If-None-Match` and
+`Last-Modified`/`If-Modified-Since` returning `304 Not Modified` to skip re-sending an
+unchanged body. CDNs and browsers do this automatically *because* the methods and codes
+are standard — see *CDN & edge caching*.
+
+## When to use / When NOT
+
+- **Use REST when:** the API is public or partner-facing; the domain is resource/CRUD
+  shaped; clients are browsers or arbitrary HTTP tools; you want HTTP caching, proxies,
+  and ubiquity; you value human-debuggable (curl-able) payloads.
+- **Avoid / reach elsewhere when:** a single screen needs to stitch many resources
+  (over/under-fetching → consider **GraphQL**); you need lowest-latency binary
+  service-to-service calls or streaming (→ **gRPC**); the domain is fundamentally
+  action/workflow-shaped and resource-modeling becomes contortion.
+- **Don't bother with HATEOAS (Level 3)** unless you have long-lived clients you can't
+  redeploy and a genuine evolving state machine — Level 2 is the right target.
+
+## Tradeoffs
+
+| Concern | REST does well | REST does poorly |
+| ------- | -------------- | ---------------- |
+| Ubiquity / tooling | Universal — any HTTP client, proxy, CDN | — |
+| Caching | First-class (`ETag`, `Cache-Control`, `304`) | — |
+| Retry safety | Clear via safe/idempotent methods | `POST` needs idempotency keys |
+| Fetch efficiency | Fine for single resources | Over/under-fetch across resources |
+| Discoverability | OpenAPI describes it well | No runtime introspection like GraphQL |
+| Payload size/latency | Acceptable JSON | Heavier than binary gRPC |
+
+## Diagram
+
+A conditional GET: the ETag lets the server answer `304` and skip re-sending the body.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant S as REST API
+  C->>S: GET /products/9
+  S-->>C: 200 OK + ETag "abc" + body
+  Note over C: caches body + ETag
+  C->>S: GET /products/9 (If-None-Match "abc")
+  alt unchanged
+    S-->>C: 304 Not Modified (no body)
+  else changed
+    S-->>C: 200 OK + ETag "def" + new body
+  end`} />
+
+## Try it
+
+Pick a pagination strategy, then compare REST against the other styles.
+
+<DecisionTree
+  client:visible
+  caption="Offset or cursor pagination?"
+  root={{
+    question: 'Is the collection large and/or frequently mutated while users page through it?',
+    branches: [
+      {
+        label: 'Yes — big and/or changing',
+        next: {
+          question: 'Do consumers need to jump to an arbitrary page number or see a total count?',
+          branches: [
+            {
+              label: 'No, sequential scroll is fine',
+              next: { leaf: { recommendation: 'Cursor (keyset) pagination', detail: 'Encode the last-seen key in an opaque cursor and seek via an index. O(1) at any depth and stable under concurrent inserts/deletes. The default for feeds and large lists.' } },
+            },
+            {
+              label: 'Yes, arbitrary page jumps / totals are required',
+              next: { leaf: { recommendation: 'Offset, but cap depth (or hybrid)', detail: 'Offset gives page numbers and counts but degrades at deep offsets and can skip/duplicate rows under writes. Cap the maximum offset, or offer cursor for deep scroll and offset only for shallow page jumps.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — small, stable list',
+        next: { leaf: { recommendation: 'Offset/limit pagination', detail: 'Simplest to build and consume; page numbers and totals are easy. The depth and consistency problems never bite on a small, rarely-changing collection.' } },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="REST vs gRPC vs GraphQL — when REST is the right pick"
+  columns={['REST', 'gRPC', 'GraphQL']}
+  rows={[
+    { criterion: 'Contract unit', cells: ['Resource + HTTP verb', 'Procedure (stub)', 'Query over schema'] },
+    { criterion: 'Payload', cells: ['JSON (human-readable)', 'Protobuf (binary)', 'JSON'] },
+    { criterion: 'HTTP caching', cells: ['Built-in (ETag/Cache-Control)', 'None', 'Hard'] },
+    { criterion: 'Browser-native', cells: ['Yes', 'No (proxy)', 'Yes'] },
+    { criterion: 'Fetch shaping', cells: ['Query params, sparse fields', 'Fixed per method', 'Client picks exact fields'] },
+    { criterion: 'Best home', cells: ['Public/partner CRUD', 'Internal east-west', 'Client aggregation'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Stripe's API** is the canonical pragmatic REST: resource URLs, proper status codes,
+  **idempotency keys** on `POST`, and **cursor pagination** (`starting_after`) for large
+  lists — Level 2, no HATEOAS.
+- **GitHub's REST API** uses `ETag`/`If-None-Match` conditional requests (a `304` doesn't
+  even count against rate limits) and per-resource caching.
+- **Twilio, Shopify, and Atlassian** publish OpenAPI specs describing resource-oriented
+  Level 2 REST; almost none ship Level 3 hypermedia.
+- **Slack and the Kubernetes API** model actions as resources where needed
+  (`/reactions`, declarative resource objects) rather than RPC verbs.
+
+## Further reading
+
+- [Roy Fielding — REST chapter (dissertation, ch. 5)](https://www.ics.uci.edu/~fielding/pubs/dissertation/rest_arch_style.htm) — the constraints (uniform interface, statelessness, cacheability) from the source.
+- [Martin Fowler — Richardson Maturity Model](https://martinfowler.com/articles/richardsonMaturityModel.html) — the levels, with clear examples of HATEOAS and why most stop at Level 2.
+- [RFC 9457 — Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457) — the standard error format to adopt instead of ad-hoc shapes.
