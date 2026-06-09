@@ -1,0 +1,47 @@
+{
+  "_comment": "LOOP STATE (LSC-4). The TRUSTED control ledger for the docs-expansion loop. The harness reads/writes this; model-proposed topics and generated content are UNTRUSTED data and never edit this file directly except via the verified, schema-checked update step.",
+  "goal": "Cover the full-stack SWE curriculum below to the established quality bar so an engineer reaches end-to-end confidence.",
+  "quality_bar": [
+    "9-section skeleton (templates/topic.mdx), verified by check-pages-skeleton.mjs",
+    "frontmatter last_reviewed present, verified by check-content-frontmatter.mjs",
+    "renders to dist (check-pages-built.mjs) and `npm run verify` exits 0",
+    "interactivity via Mermaid + widgets where it aids decisions; readable without JS"
+  ],
+  "backstop": {
+    "max_clusters_absolute": 26,
+    "max_rounds": 60,
+    "off_map_clusters_allowed": 0,
+    "dry_streak_to_done": 2,
+    "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
+  },
+  "dry_streak": 0,
+  "round": 0,
+  "clusters": [
+    { "slug": "design-patterns", "title": "Design Patterns", "status": "covered", "pages": 5, "tier": "existing" },
+    { "slug": "event-driven", "title": "Event-Driven Architecture", "status": "covered", "pages": 5, "tier": "existing" },
+    { "slug": "databases-cap", "title": "Databases & CAP", "status": "covered", "pages": 5, "tier": "existing" },
+    { "slug": "caching", "title": "Caching & Performance", "status": "covered", "pages": 6, "tier": "existing" },
+    { "slug": "search", "title": "Search Indexes", "status": "covered", "pages": 5, "tier": "existing" },
+
+    { "slug": "networking", "title": "Networking & Protocols", "status": "uncovered", "tier": "systems" },
+    { "slug": "apis", "title": "APIs & Service Communication", "status": "uncovered", "tier": "systems" },
+    { "slug": "concurrency", "title": "Concurrency & Parallelism", "status": "uncovered", "tier": "systems" },
+    { "slug": "distributed-systems", "title": "Distributed Systems", "status": "uncovered", "tier": "systems" },
+    { "slug": "scalability", "title": "Scalability & System Design", "status": "uncovered", "tier": "systems" },
+    { "slug": "reliability", "title": "Reliability & Resilience", "status": "uncovered", "tier": "systems" },
+    { "slug": "observability", "title": "Observability", "status": "uncovered", "tier": "systems" },
+    { "slug": "security", "title": "Security & Auth", "status": "uncovered", "tier": "systems" },
+    { "slug": "architecture", "title": "Software Architecture", "status": "uncovered", "tier": "systems" },
+    { "slug": "algorithms", "title": "Data Structures & Algorithms", "status": "uncovered", "tier": "systems" },
+    { "slug": "systems-fundamentals", "title": "Operating Systems & Computer Architecture", "status": "uncovered", "tier": "systems" },
+    { "slug": "testing", "title": "Testing & Quality", "status": "uncovered", "tier": "systems" },
+    { "slug": "delivery", "title": "Delivery & Operations", "status": "uncovered", "tier": "systems" },
+
+    { "slug": "frontend", "title": "Frontend Fundamentals", "status": "uncovered", "tier": "fullstack" },
+    { "slug": "mobile", "title": "Mobile Development", "status": "uncovered", "tier": "fullstack" },
+    { "slug": "data-engineering", "title": "Data Engineering & Pipelines", "status": "uncovered", "tier": "fullstack" },
+    { "slug": "ml-systems", "title": "ML / AI Systems", "status": "uncovered", "tier": "fullstack" },
+    { "slug": "languages", "title": "Programming Language Concepts", "status": "uncovered", "tier": "fullstack" },
+    { "slug": "craft", "title": "Code Quality & Craft", "status": "uncovered", "tier": "fullstack" }
+  ]
+}

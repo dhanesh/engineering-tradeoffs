@@ -1,0 +1,13 @@
+# Epinio uses THIS file (not .gitignore) to decide what to upload on `gq-deploy`.
+# Keep the upload to source only — the buildpack installs deps + builds on Linux.
+# Uploading node_modules ships macOS/native binaries that break the Linux build
+# (e.g. Rollup's @rollup/rollup-linux-x64-gnu "module not found").
+node_modules/
+dist/
+.astro/
+.git/
+.github/
+.context/
+.manifold/
+*.log
+.DS_Store

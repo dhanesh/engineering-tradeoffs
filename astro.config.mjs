@@ -68,4 +68,13 @@ export default defineConfig({
       ],
     }),
   ],
+
+  // Build environments that SYMLINK node_modules (Paketo/Cloud Native Buildpacks,
+  // pnpm, Nix) can break Astro's compile-metadata cache: the .astro compiler keys a
+  // module by one path while Vite requests its style virtual-module by the resolved
+  // symlink path → "No cached compile metadata found". Don't resolve symlinks so
+  // both sides use the same path. (No effect on a normal local build.)
+  vite: {
+    resolve: { preserveSymlinks: true },
+  },
 });
