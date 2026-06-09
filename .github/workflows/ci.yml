@@ -57,6 +57,10 @@ jobs:
       - name: A11y & no-JS baseline
         run: npm run verify:a11y
 
+      # No tool-call artifacts leaked into authored content (content hygiene).
+      - name: Content hygiene
+        run: npm run verify:artifacts
+
       - name: Upload static site
         uses: actions/upload-artifact@v4
         with:
