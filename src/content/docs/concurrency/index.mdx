@@ -1,0 +1,186 @@
+---
+title: Concurrency & Parallelism
+description: Concurrency versus parallelism, why concurrent code is hard (shared mutable state, nondeterminism), the scaling limits set by Amdahl's Law and the Universal Scalability Law, and the latency-versus-throughput tradeoff that frames every model choice.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**Concurrency** is *structuring* a program as independent tasks that can make progress
+in overlapping time periods; **parallelism** is *executing* multiple tasks at literally
+the same instant on multiple cores. They are orthogonal: you can have concurrency on a
+single core (an event loop interleaving thousands of connections) and you can have
+parallelism without meaningful concurrency in your code (a vectorized matrix multiply).
+Rob Pike's line is the durable one — "concurrency is about *dealing with* lots of things
+at once; parallelism is about *doing* lots of things at once." This cluster is about
+both, because the hard part is rarely making code parallel — it is making concurrent
+code *correct* when tasks share state, and knowing which scaling limit you are about to
+hit before you add the 33rd thread that makes everything slower.
+
+## Mental model
+
+Hold three ideas at once:
+
+1. **Concurrency is a property of the *design*; parallelism is a property of the
+   *execution*.** A concurrent design (tasks + a scheduler) *can* run in parallel if
+   the hardware has cores to spare, or interleaved on one core if it doesn't. You write
+   concurrency; the runtime decides the parallelism.
+
+2. **The enemy is shared mutable state under nondeterminism.** A single thread executes
+   one well-defined sequence of steps. Add a second thread touching the same memory and
+   the number of possible interleavings explodes; the scheduler picks one
+   nondeterministically each run. A bug that needs a specific interleaving may appear
+   once in a million runs — and only in production. Almost every concurrency primitive
+   (locks, channels, immutability, actors) exists to *shrink the space of interleavings*
+   back to something you can reason about.
+
+3. **Adding cores has hard diminishing returns, then negative ones.** Speedup is not
+   linear in core count. Two laws bound it:
+   - **Amdahl's Law** — if a fraction *p* of the work is parallelizable and *(1−p)* is
+     inherently serial, maximum speedup with *N* cores is `1 / ((1−p) + p/N)`. As
+     *N → ∞* this ceilings at `1 / (1−p)`. A program that is 95% parallel can *never*
+     exceed 20× no matter how many cores you buy — the serial 5% dominates.
+   - **Universal Scalability Law (USL)** — Amdahl is optimistic. The USL adds a
+     *coherency/crosstalk* term (the cost of cores coordinating — cache coherence, lock
+     contention, synchronization). Throughput is `N / (1 + σ(N−1) + κN(N−1))`. The κ
+     (coherency) term is quadratic, so beyond some core count throughput **goes down**:
+     contention costs more than the added core delivers. This *retrograde* region is why
+     "just add threads" can make a service slower.
+
+Keep latency and throughput separate too: **latency** is how long one request takes;
+**throughput** is how many you finish per second. Concurrency mostly buys throughput
+(and hides I/O latency); parallelism can cut the latency of one big *divisible* job.
+Optimizing one often costs the other — batching raises throughput but adds queuing
+latency; per-request threads cut latency but cap throughput on context-switch overhead.
+
+## Types / Variants
+
+Five recurring **concurrency models** show up across languages and runtimes. They differ
+in what unit they schedule, who schedules it, and how tasks coordinate:
+
+- **OS threads (preemptive, shared memory).** Kernel-scheduled threads sharing one
+  address space. True parallelism on multicore; preemption means no task can starve the
+  others. Cost: ~1 MB stack each, expensive context switches, and *you* must synchronize
+  shared state. The classic model (Java, C++, pthreads).
+- **Event loop / single-threaded async (cooperative).** One thread, a queue of
+  callbacks, non-blocking I/O. No data races *within* the loop because only one thing
+  runs at a time — but a single blocking/CPU-bound callback stalls *everything*. Scales
+  to huge connection counts cheaply (Node.js, Nginx, Redis).
+- **async/await coroutines (cooperative, multiplexed).** Functions that suspend at
+  `await` points, multiplexing thousands of logical tasks onto a few OS threads. Reads
+  like sequential code; yields only at explicit suspension points (Python asyncio, Rust
+  async, C#, Kotlin).
+- **Lightweight/green threads (M:N scheduling).** Many user-space tasks scheduled onto a
+  few OS threads by a *runtime* scheduler, with cheap stacks and runtime-managed
+  blocking. Goroutines (Go), virtual threads (Java 21 / Project Loom), Erlang processes.
+  Sequential-style blocking code that scales like async.
+- **Message-passing / share-nothing.** Tasks *own* their state and communicate only by
+  passing messages (actors, CSP channels). No shared mutable state means no data races by
+  construction (Erlang/Akka actors, Go channels). Covered in depth in *Concurrency
+  models*.
+
+Cutting the other way, **parallelism** comes in flavors too: **data parallelism** (same
+operation over many data elements — SIMD, map), **task parallelism** (different
+operations concurrently — pipeline stages), and **instruction-level / hardware
+parallelism** (pipelining, superscalar, multicore). See *Parallel patterns*.
+
+## When to use / When NOT
+
+- **Reach for concurrency when:** your workload waits on I/O (network, disk, DB) and you
+  want to overlap that waiting to raise throughput, or you must keep an interactive
+  system responsive while background work proceeds. This is most server software.
+- **Reach for parallelism when:** you have a CPU-bound, *divisible* job (encode video,
+  train a model, sort a billion rows) and idle cores. Parallelism cuts wall-clock time
+  on work that is genuinely splittable.
+- **Avoid adding concurrency when:** the work is trivially fast and serial — the
+  synchronization, scheduling, and debugging cost dwarfs any gain. Concurrency is not
+  free performance; it is a *correctness liability* you take on for a throughput or
+  responsiveness payoff.
+- **Avoid adding parallelism when:** the serial fraction is large (Amdahl ceilings you
+  early), the data doesn't partition cleanly, or coordination cost (USL's κ term) will
+  push you into the retrograde region. Measure the serial fraction *before* scaling out.
+- **Stop adding threads when:** throughput flattens or drops as you add workers — you've
+  hit the USL knee; the fix is reducing contention (sharding, lock-free structures,
+  batching), not more threads.
+
+## Tradeoffs
+
+The model choice is a trade between raw parallelism, memory/scheduling cost, and how
+hard correctness is to get right.
+
+<CompareMatrix
+  client:visible
+  caption="Concurrency models at a glance"
+  columns={['OS threads', 'Event loop', 'async/await', 'Green/virtual threads', 'Message-passing']}
+  rows={[
+    { criterion: 'Scheduling', cells: ['Preemptive (kernel)', 'Cooperative (1 thread)', 'Cooperative (coroutines)', 'M:N (runtime)', 'Runtime / mailbox'] },
+    { criterion: 'True parallelism', cells: ['Yes (multicore)', 'No (1 thread)', 'Limited (thread pool)', 'Yes', 'Yes'] },
+    { criterion: 'Cost per task', cells: ['High (~1MB stack)', 'Tiny (callback)', 'Tiny (coroutine frame)', 'Low (small stack)', 'Low (process/actor)'] },
+    { criterion: 'Shared mutable state', cells: ['Yes — you sync it', 'None within loop', 'None at await points', 'Yes — you sync it', 'None (share-nothing)'] },
+    { criterion: 'Data-race risk', cells: ['High', 'Low', 'Low–moderate', 'High', 'None by design'] },
+    { criterion: 'Blocking call hazard', cells: ['Blocks one thread', 'Stalls everything', 'Stalls the loop', 'Runtime handles it', 'Blocks one actor'] },
+    { criterion: 'Best for', cells: ['CPU-bound parallel', 'Massive I/O fan-out', 'I/O-bound, readable', 'I/O + simple code', 'Distributed / fault-tolerant'] },
+    { criterion: 'Examples', cells: ['Java, C++, pthreads', 'Node.js, Nginx, Redis', 'Python asyncio, Rust', 'Go, Java Loom, Erlang', 'Erlang, Akka, Go chans'] },
+  ]}
+/>
+
+## Diagram
+
+Concurrency interleaves tasks on one core; parallelism runs them at once on many.
+Same two tasks, two different executions.
+
+<Mermaid code={`graph TB
+  subgraph Concurrency["Concurrency (1 core, interleaved)"]
+    direction LR
+    C1[Task A step1] --> C2[Task B step1] --> C3[Task A step2] --> C4[Task B step2]
+  end
+  subgraph Parallelism["Parallelism (2 cores, simultaneous)"]
+    direction LR
+    P1[Core 1: Task A all steps]
+    P2[Core 2: Task B all steps]
+  end
+  Concurrency -.-> Note1[One thing runs at a time;<br/>scheduler interleaves]
+  Parallelism -.-> Note2[Both run literally<br/>at the same instant]`} />
+
+## Try it
+
+Amdahl's Law in numbers — why "more cores" stops helping. For a job that is *p*
+parallelizable, max speedup is `1 / ((1−p) + p/N)`, ceilinged at `1/(1−p)`:
+
+| Parallel fraction *p* | Serial *(1−p)* | Max speedup (N→∞) | Speedup at 8 cores | Speedup at 64 cores |
+| --------------------- | -------------- | ----------------- | ------------------ | ------------------- |
+| 50% | 50% | **2×** | 1.78× | 1.97× |
+| 90% | 10% | **10×** | 4.71× | 7.80× |
+| 95% | 5% | **20×** | 5.93× | 13.9× |
+| 99% | 1% | **100×** | 7.48× | 39.3× |
+
+Read it as a warning: at 95% parallel, going from 8 to 64 cores (8× the hardware) buys
+only ~2.3× more speed, and you can *never* beat 20×. The Universal Scalability Law is
+harsher still — its coherency term makes the curve bend back *down* past some core count,
+so real systems have an optimal concurrency level you must find empirically, not a
+monotonic "more is better."
+
+## Real-world examples
+
+- **Node.js / Nginx / Redis** are single-threaded event loops that handle tens of
+  thousands of concurrent connections precisely *because* they don't pay per-connection
+  thread cost — concurrency without parallelism, by design.
+- **Go** popularized cheap green threads (goroutines) + channels, letting you write
+  blocking-style code that scales to millions of concurrent tasks; **Java 21 virtual
+  threads** (Project Loom) bring the same model to the JVM.
+- **GPUs** are the extreme of data parallelism — thousands of cores running the same
+  instruction over different data (SIMT), which is why they dominate ML training.
+- **The USL in production:** databases and lock-heavy services routinely show throughput
+  *peaking* then declining as connection/thread counts rise — the textbook retrograde
+  region. Connection pools and admission control exist to keep systems left of that knee.
+
+## Further reading
+
+- [Rob Pike — "Concurrency Is Not Parallelism"](https://go.dev/blog/waza-talk) — the
+  canonical framing of the distinction, with Go examples.
+- [Neil Gunther — *Guerrilla Capacity Planning* (Universal Scalability Law)](http://www.perfdynamics.com/Manifesto/USLscalability.html) — the model that predicts the retrograde region real systems hit.
+- [Amdahl, "Validity of the Single Processor Approach…" (1967)](https://inst.eecs.berkeley.edu/~n252/paper/Amdahl.pdf) — the original two-page paper behind the speedup ceiling.

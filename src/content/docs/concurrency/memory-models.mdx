@@ -1,0 +1,208 @@
+---
+title: Memory Models & Visibility
+description: Memory visibility and instruction reordering, the happens-before relation, cache coherence and false sharing, volatile/memory barriers/fences, sequential consistency versus relaxed memory ordering, and the crucial distinction between a data race and a race condition.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+The most dangerous assumption in concurrent programming is that when one thread writes a
+value, another thread *sees it* — and sees it in the order you wrote it. Neither is
+guaranteed. Compilers reorder instructions, CPUs execute out of order, and each core
+caches memory locally, so a write on core 1 may be invisible to core 2 indefinitely, and
+two writes may appear to happen in the opposite order to a watching thread. A
+**memory model** is the contract — between you, the compiler, and the hardware — that
+defines *exactly* which writes become visible to which reads, and in what order. Without
+understanding it, "obviously correct" lock-free code is silently broken on real hardware
+and only fails under load on the wrong CPU. This is the most precision-demanding topic in
+concurrency; the payoff is being able to reason about visibility instead of hoping.
+
+## Mental model
+
+Stop imagining a single shared RAM that every thread reads and writes instantly. The real
+machine is a *distributed system inside your computer*: each core has its own store buffer
+and cache, writes propagate asynchronously, and there is no global clock. Two facts follow:
+
+1. **Without a synchronization point, there is no guarantee a write is ever seen by
+   another thread, or seen in program order.** Visibility and ordering are things you
+   *establish*, not things you get for free.
+
+2. **The tool that establishes them is the *happens-before* relation.** If action A
+   *happens-before* action B, then B is guaranteed to see A's effects. Happens-before is
+   created by specific events: a lock release happens-before the next acquire of that lock;
+   a volatile/atomic write happens-before the read that observes it; thread start
+   happens-before everything in the thread; everything in a thread happens-before its
+   join. **If two accesses to the same data are *not* ordered by happens-before and at
+   least one is a write, that is a *data race* — and the result is undefined.**
+
+The mental shorthand: **synchronization does two jobs at once — mutual exclusion
+*and* establishing happens-before (publishing your writes).** A lock isn't only about
+"one at a time"; releasing it *flushes* your writes so the next acquirer sees them. This is
+why removing a lock you thought was "just for mutual exclusion" can break visibility you
+were silently relying on.
+
+## Types / Variants
+
+### Data race vs race condition (not the same thing)
+
+- A **data race** is a *specific, mechanical* defect: two threads access the same memory
+  location concurrently, at least one writes, and there is no happens-before ordering
+  between them. In C/C++ a data race is **undefined behavior**; in Java it yields values
+  "out of thin air." It is about *unsynchronized memory access*.
+- A **race condition** is a *logic* bug: the program's correctness depends on timing/
+  interleaving (e.g. check-then-act: `if (!exists) create()` where two threads both pass
+  the check). You can have a race condition with *no* data race (all accesses properly
+  locked, but the *logic* is still order-dependent — e.g. write skew under snapshot
+  isolation), and a data race with no observable race-condition bug (until the compiler
+  miscompiles it). Fixing visibility (atomics) fixes data races; fixing logic (correct
+  critical-section boundaries) fixes race conditions. You often need both.
+
+### Reordering — three sources
+
+- **Compiler reordering** — the optimizer moves loads/stores it can prove are equivalent
+  *for a single thread*, with no idea another thread is watching.
+- **CPU out-of-order execution** — the core reorders independent instructions to keep
+  pipelines full.
+- **Memory-system / store-buffer reordering** — a write sits in a core's store buffer
+  before reaching cache, so other cores see it late, and one core can observe its *own*
+  writes in an order different from another core (the classic *store-buffer* / Dekker
+  reordering: both threads read 0 in `x=1;r1=y || y=1;r2=x`).
+
+### Cache coherence vs false sharing
+
+- **Cache coherence** (MESI and friends) is the hardware protocol that keeps *the same
+  cache line* consistent across cores — when one core writes a line, others' copies are
+  invalidated. Coherence is automatic; you don't program it. But it costs: a contended
+  line ping-pongs between cores' caches.
+- **False sharing** is the performance trap built on coherence: two threads write *two
+  different variables* that happen to sit on the *same 64-byte cache line*. Logically
+  independent, but coherence treats the line as one unit, so every write invalidates the
+  other core's copy — the line bounces back and forth and throughput collapses. Fix by
+  *padding/aligning* hot per-thread variables onto separate cache lines (e.g. Java's
+  `@Contended`, manual padding).
+
+### The tools that impose order
+
+- **Memory barriers / fences** — instructions that forbid reordering across them.
+  *Acquire* fence: no later access moves before it (used after a lock acquire / atomic
+  read). *Release* fence: no earlier access moves after it (used before a lock release /
+  atomic write). A *full* fence forbids all reordering across it (and is what you need to
+  prevent store-buffer reordering, the expensive one).
+- **`volatile` (Java/C#) / atomics** — a `volatile` read/write in Java is an
+  acquire/release with a happens-before edge: writes before a volatile write are visible
+  to a thread that reads that volatile. (C/C++ `volatile` is *different* — it only
+  prevents compiler caching of the variable for memory-mapped I/O and gives **no**
+  thread-ordering guarantees; use `std::atomic` instead. A common, dangerous confusion.)
+
+### Memory ordering models (from strict to relaxed)
+
+- **Sequential consistency (SC)** — there is *some* single global interleaving of all
+  threads' operations consistent with each thread's program order. The intuitive model
+  most people *assume* — and the one hardware does *not* give you by default because it's
+  expensive. `memory_order_seq_cst` (the C++ default) restores it with full fences.
+- **Acquire-release** — pairwise ordering: a release-store synchronizes-with an
+  acquire-load of the same variable, establishing happens-before for that pair without a
+  global total order. The sweet spot for most lock-free code — cheaper than SC, strong
+  enough for publishing a value.
+- **Relaxed** — atomicity only, *no* ordering guarantees. Fastest, almost never what you
+  want except for things like a statistics counter where order doesn't matter.
+
+## When to use / When NOT
+
+- **Plain locks (mutex/synchronized) — use when:** anything non-trivial. They give you
+  happens-before *and* mutual exclusion, so you almost never have to think about fences.
+  This is the right default and lets most engineers ignore memory ordering entirely.
+- **`volatile`/atomic acquire-release — use when:** publishing a single flag or pointer
+  across threads (a `ready` flag, a lazily-initialized singleton) and you understand the
+  happens-before edge it creates. **Avoid when:** the invariant spans multiple variables —
+  `volatile` makes each access ordered but does *not* make a multi-word update atomic.
+- **Explicit fences / relaxed atomics — use when:** writing a vetted lock-free data
+  structure where you've proven exactly which orderings you need and SC is too slow.
+  **Avoid otherwise** — hand-rolled relaxed-ordering code is the single most error-prone
+  thing in systems programming.
+- **Cache-line padding (false-sharing fix) — use when:** profiling shows a hot per-thread
+  counter/struct ping-ponging between cores. **Avoid prematurely** — padding wastes memory
+  and only helps a measured hotspot.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Memory ordering models compared"
+  columns={['Sequential consistency', 'Acquire-release', 'Relaxed', 'C/C++ volatile (NOT atomic)']}
+  rows={[
+    { criterion: 'Atomicity', cells: ['Yes', 'Yes', 'Yes', 'No (compiler-level only)'] },
+    { criterion: 'Ordering guarantee', cells: ['Global total order', 'Pairwise (per variable)', 'None', 'None across threads'] },
+    { criterion: 'Establishes happens-before', cells: ['Yes (everywhere)', 'Yes (release→acquire pair)', 'No', 'No'] },
+    { criterion: 'Cost / fences needed', cells: ['Full fences (slow)', 'Acquire/release fences', 'Cheapest', 'Cheapest (but unsafe)'] },
+    { criterion: 'Reasoning difficulty', cells: ['Intuitive', 'Moderate', 'Hard / error-prone', 'Trap — looks safe, isn’t'] },
+    { criterion: 'Typical use', cells: ['Default for correctness', 'Publishing a value lock-free', 'Stats counters', 'Memory-mapped I/O only'] },
+    { criterion: 'C++ syntax', cells: ['memory_order_seq_cst', 'memory_order_acquire/release', 'memory_order_relaxed', 'volatile keyword'] },
+  ]}
+/>
+
+## Diagram
+
+Acquire-release publishing: the release-store of `ready` *synchronizes-with* the
+acquire-load that observes it, so all writes *before* the release (here, `data = 42`) are
+guaranteed visible to the reader *after* the acquire. Without that edge, the reader could
+see `ready == true` but stale `data`.
+
+<Mermaid code={`sequenceDiagram
+  participant P as Producer thread
+  participant M as Shared memory
+  participant C as Consumer thread
+  P->>M: data = 42 (plain write)
+  P->>M: ready = true (RELEASE store)
+  Note over P,M: release: data=42 cannot move<br/>after the ready store
+  C->>M: read ready (ACQUIRE load) → true
+  Note over M,C: acquire synchronizes-with release →<br/>happens-before established
+  C->>M: read data → guaranteed 42 (not stale)`} />
+
+## Try it
+
+A diagnostic checklist — work top to bottom; the first "yes" tells you what you're
+actually dealing with.
+
+1. **Do two threads touch the same memory, with no lock/atomic/happens-before between
+   them, and at least one writes?** → That's a **data race**. Undefined behavior. Add a
+   lock or make the access atomic. (The *only* way to be sure: a race detector — Go's
+   `-race`, C/C++ ThreadSanitizer, Java's stress testing.)
+2. **Is the bug that a write made by one thread is *never seen* (or seen stale) by
+   another?** → A **visibility** problem. You're missing a happens-before edge — use
+   `volatile`/atomic (acquire-release) or a lock to publish the write.
+3. **Does the bug appear only on some CPUs / under load, where operations seem to happen
+   "out of order"?** → **Reordering**. You need a fence/barrier (or the lock/atomic that
+   inserts one). Don't "fix" it by adding sleeps — that just hides the window.
+4. **Are all accesses properly synchronized, but the *logic* still depends on
+   interleaving (check-then-act, multi-step invariant)?** → A **race condition**, not a
+   data race. Widen the critical section so the whole invariant is atomic.
+5. **Is correctness fine but throughput collapses with per-thread counters?** → **False
+   sharing**. Pad the hot fields onto separate cache lines.
+
+## Real-world examples
+
+- **The Java Memory Model (JSR-133, 2004)** is the canonical, rigorously specified
+  happens-before model; it precisely defines `volatile`, `final`, and lock semantics and
+  is the reference most other language models learned from.
+- **C++11's `std::atomic`** introduced the seq_cst / acquire-release / relaxed taxonomy to
+  systems programming; getting these orderings right (or wrong) is a routine source of
+  CVEs in lock-free code.
+- **Go's race detector** (`go test -race`) and **ThreadSanitizer** (Clang/GCC) catch data
+  races at runtime by tracking happens-before — the practical answer to "is this code
+  actually safe?"
+- **False sharing** is a famous JVM/HFT performance bug; the LMAX Disruptor and Java's
+  `@Contended` annotation exist specifically to pad hot fields off shared cache lines.
+- **ARM and POWER CPUs** have *weaker* memory ordering than x86, so concurrency bugs that
+  never reproduce on an x86 laptop surface on ARM servers/phones — a real and growing
+  portability hazard.
+
+## Further reading
+
+- [Jeremy Manson & Brian Goetz — "JSR-133 (Java Memory Model) FAQ"](https://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html) — the clearest plain-language explanation of happens-before and `volatile`.
+- [Preshing — "An Introduction to Lock-Free Programming" & the memory-ordering series](https://preshing.com/20120612/an-introduction-to-lock-free-programming/) — acquire/release, fences, and reordering made concrete.
+- [Hans Boehm — "Threads Cannot Be Implemented as a Library"](https://www.hpl.hp.com/techreports/2004/HPL-2004-209.pdf) — why a memory model must be a *language* guarantee, not bolt-on.

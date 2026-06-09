@@ -87,6 +87,17 @@ export default defineConfig({
             { label: 'API gateways & BFF', slug: 'apis/api-gateways-bff' },
           ],
         },
+        {
+          label: 'Concurrency & Parallelism',
+          items: [
+            { label: 'Overview', slug: 'concurrency' },
+            { label: 'Threads, event loops & async', slug: 'concurrency/threads-async' },
+            { label: 'Synchronization & locking', slug: 'concurrency/synchronization' },
+            { label: 'Memory models & visibility', slug: 'concurrency/memory-models' },
+            { label: 'Concurrency models', slug: 'concurrency/concurrency-models' },
+            { label: 'Parallel patterns', slug: 'concurrency/parallel-patterns' },
+          ],
+        },
       ],
     }),
   ],

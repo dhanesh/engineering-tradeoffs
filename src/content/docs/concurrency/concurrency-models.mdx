@@ -1,0 +1,227 @@
+---
+title: Concurrency Models
+description: Shared-memory versus message-passing concurrency, and a tour of the major models — actors (Erlang/Akka), CSP (Go channels), software transactional memory, async/reactive, fork-join, and structured concurrency — with guidance on when and why to choose each.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Once you accept that shared mutable state is the enemy (see *Synchronization*), the next
+question is architectural: how should concurrent tasks *coordinate* at all? Two
+philosophies split the field. **Shared-memory** concurrency lets tasks read and write the
+same memory and guards it with locks/atomics — fast, but every shared cell is a potential
+race. **Message-passing** concurrency forbids shared mutable state entirely; tasks own
+their data and exchange *copies* via messages, so races are impossible *by construction*.
+On top of these sit named models — actors, CSP, STM, reactive, fork-join, structured
+concurrency — each a different discipline for taming interleavings. Choosing the model is
+a higher-leverage decision than choosing a lock type: it sets the *shape* of every
+concurrency bug you can (and can't) have.
+
+## Mental model
+
+Everything reduces to **how tasks share information**, and there are exactly two answers,
+captured by Hoare's and the Go team's maxim:
+
+> **"Do not communicate by sharing memory; instead, share memory by communicating."**
+
+- **Communicate by sharing memory** (shared-memory): tasks touch common state; you add
+  locks to serialize access. The danger is *implicit* coupling — any two tasks touching
+  the same cell are entangled whether you meant them to be or not.
+- **Share memory by communicating** (message-passing): the *only* way to affect another
+  task is to send it a message; it processes its own state alone. Coupling is *explicit*
+  (it's in the messages), and there's no shared cell to race on.
+
+The named models are points on a second axis — *who owns the coordination*:
+**actors** put a private mailbox on each stateful entity; **CSP** puts the rendezvous in
+named *channels* between anonymous tasks; **STM** keeps shared memory but makes blocks of
+access *transactional* (optimistic, retry on conflict — like a database); **reactive**
+models data as asynchronous *streams* you transform; **fork-join** and **structured
+concurrency** are about *lifetime* — guaranteeing spawned tasks complete (or are
+cancelled) within a known scope, so concurrency nests like ordinary function calls.
+
+## Types / Variants
+
+**Shared-memory + locks.** The baseline. Threads share state, mutexes/atomics enforce
+order. Maximum control and the lowest overhead when contention is low, but the full
+deadlock/visibility/race surface. Everything else here is an attempt to make this safer.
+
+**Actor model (Erlang processes, Akka, Orleans).** The unit is an *actor*: private state,
+a *mailbox*, and a single-threaded message handler. Actors never share memory; they send
+**asynchronous** messages, processed one at a time, so an actor's own state is never raced.
+Location-transparent (an actor may live on another machine), which makes the model scale
+*across* nodes, not just cores. Erlang adds **supervision trees** and "let it crash":
+failures are isolated to an actor and a supervisor restarts it — the basis of
+nine-nines telecom uptime. Cost: no global consistency (everything is async messages),
+mailbox backpressure to manage, harder to express a synchronous request/response.
+
+**CSP (Communicating Sequential Processes — Go channels, Clojure core.async).** Tasks are
+anonymous; coordination happens through **channels**. A channel send/receive is a
+*rendezvous* — an unbuffered channel blocks the sender until a receiver takes the value
+(synchronous handoff); buffered channels decouple them up to the buffer size. `select`
+waits on multiple channels at once. Versus actors: CSP names the *channel*, actors name the
+*recipient*; CSP's unbuffered handoff is synchronous, actor mailboxes are asynchronous.
+Great for pipelines and fan-out/fan-in. Cost: channels can still deadlock (everyone
+blocked on a send no one receives), and you can leak goroutines blocked forever.
+
+**Software Transactional Memory (STM — Clojure refs, Haskell STM).** Keep shared memory,
+but wrap accesses in a *transaction*: the runtime runs the block optimistically against a
+snapshot and *commits atomically*, retrying if another transaction conflicted — exactly
+like database optimistic concurrency. Composable (you can nest transactions, unlike locks
+which don't compose), no deadlocks, no manual lock ordering. Cost: retry overhead under
+high contention, can't transact over irreversible side effects (I/O inside a transaction
+that may retry is a bug), and limited mainstream language support.
+
+**Async / reactive (RxJava, Reactor, ReactiveX, async/await).** Concurrency expressed as
+**streams of events** transformed by operators (map/filter/merge/backpressure), or as
+suspendable async functions. Excellent for event-driven, I/O-bound, UI, and streaming
+pipelines where you compose asynchronous data flows. Reactive Streams standardizes
+**backpressure** (the consumer signals how much it can take). Cost: control flow becomes
+implicit and stack traces fragment ("callback/operator soup"); debugging async pipelines is
+genuinely harder.
+
+**Fork-join (parallelism, not coordination).** Recursively *split* a divisible task into
+subtasks (fork), run them in parallel, *combine* results (join). Backed by **work-stealing**
+schedulers (idle workers steal tasks from busy ones' deques) for load balance. The model
+for CPU-bound divide-and-conquer (parallel sort, sum, map). Java's ForkJoinPool / parallel
+streams, Cilk, Rayon. Cost: only helps *divisible CPU* work; overhead dominates for small
+or non-divisible tasks.
+
+**Structured concurrency (Kotlin coroutines, Java StructuredTaskScope, Trio, Swift).** A
+discipline, not a runtime: spawned tasks must complete *within* a lexical scope, so
+concurrency nests like function calls — no task outlives its parent, cancellation
+propagates to children, and an error in one child cancels the siblings and surfaces to the
+parent. Kills the "leaked background task" and "orphaned goroutine" class of bugs. The
+modern best-practice wrapper *around* the other models (you run actors/async/fork-join
+*inside* a structured scope).
+
+## When to use / When NOT
+
+- **Actors — use when:** entities have identity + lifecycle and must be fault-isolated and
+  distributable (IoT devices, game sessions, chat users, telecom). **Avoid when:** you need
+  strong cross-entity consistency or synchronous request/response — async-only messaging
+  fights you.
+- **CSP / channels — use when:** building pipelines and fan-out/fan-in within one process
+  (Go services, stream processors). **Avoid when:** state has long-lived identity (actors
+  fit better) or you can't reason about who closes/drains each channel (deadlock/leak
+  risk).
+- **STM — use when:** multiple shared variables must update atomically and *composably*,
+  and your language supports it (Clojure, Haskell). **Avoid when:** contention is high
+  (retry storms) or transactions would wrap I/O/side effects.
+- **Reactive / async streams — use when:** composing asynchronous event/data flows with
+  backpressure (UI, streaming, I/O-bound pipelines). **Avoid when:** the logic is simple
+  synchronous request/response — the operator machinery adds complexity for no gain.
+- **Fork-join — use when:** a CPU-bound job splits into independent parallel subtasks.
+  **Avoid when:** the work is I/O-bound or indivisible.
+- **Structured concurrency — use when:** *almost always*, as the wrapper that bounds task
+  lifetimes and propagates cancellation/errors. **Avoid only** if your platform lacks it
+  and retrofitting is impractical.
+- **Shared-memory + locks — use when:** low contention, hot paths needing minimal
+  overhead, or no higher-level model is available. **Avoid when:** the locking discipline
+  is getting complex — a message-passing model removes whole bug classes.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Concurrency models compared"
+  columns={['Shared-mem + locks', 'Actors', 'CSP / channels', 'STM', 'Reactive', 'Fork-join']}
+  rows={[
+    { criterion: 'Shared mutable state', cells: ['Yes (guarded)', 'None (share-nothing)', 'None (via channels)', 'Yes (transactional)', 'None (streams)', 'Yes (results merged)'] },
+    { criterion: 'Coordination via', cells: ['Locks/atomics', 'Async mailbox', 'Channel rendezvous', 'Transactions', 'Event streams', 'Fork/join + steal'] },
+    { criterion: 'Race/deadlock risk', cells: ['High', 'None (data races)', 'Channel deadlock', 'No deadlock (retry)', 'Low', 'Low'] },
+    { criterion: 'Distributable across nodes', cells: ['No', 'Yes (transparent)', 'No (in-process)', 'No', 'Partly', 'No'] },
+    { criterion: 'Fault isolation', cells: ['Poor', 'Excellent (supervision)', 'Fair', 'Fair', 'Fair', 'Poor'] },
+    { criterion: 'Best for', cells: ['Low-level hot paths', 'Stateful distributed entities', 'Pipelines, fan-out', 'Atomic multi-var updates', 'Async/event pipelines', 'CPU divide-and-conquer'] },
+    { criterion: 'Examples', cells: ['pthreads, java.util.concurrent', 'Erlang, Akka, Orleans', 'Go, core.async', 'Clojure, Haskell', 'RxJava, Reactor', 'ForkJoinPool, Rayon'] },
+  ]}
+/>
+
+## Diagram
+
+The two philosophies, side by side. Shared-memory: tasks contend on one guarded cell.
+Message-passing: each task owns its state; coordination flows through messages/channels —
+no shared cell to race on.
+
+<Mermaid code={`graph TB
+  subgraph Shared["Shared-memory + locks"]
+    SA[Task A] -->|lock + write| MEM[(Shared state)]
+    SB[Task B] -->|lock + write| MEM
+    SC[Task C] -->|lock + read| MEM
+  end
+  subgraph Message["Message-passing (actors / CSP)"]
+    MA[Task A<br/>owns state A] -->|message| MB[Task B<br/>owns state B]
+    MB -->|message| MC[Task C<br/>owns state C]
+    MC -->|message| MA
+  end`} />
+
+## Try it
+
+Pick a coordination model by what your tasks actually are — stateful entities, pipeline
+stages, or a divisible compute job.
+
+<DecisionTree
+  client:visible
+  caption="Which concurrency model?"
+  root={{
+    question: 'What is the dominant shape of the work?',
+    branches: [
+      {
+        label: 'Long-lived stateful entities (users, devices, sessions)',
+        next: {
+          question: 'Must they be fault-isolated and/or distributed across machines?',
+          branches: [
+            {
+              label: 'Yes — isolation / distribution matters',
+              next: { leaf: { recommendation: 'Actor model', detail: 'Private state + mailbox + supervision gives fault isolation ("let it crash") and location transparency. Erlang/Akka/Orleans.' } },
+            },
+            {
+              label: 'No — single process is fine',
+              next: { leaf: { recommendation: 'Shared-memory with a monitor, or actors in-process', detail: 'For a single process, a well-encapsulated object behind a lock (monitor) is simplest; reach for in-process actors if entity count is huge.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'A pipeline / fan-out of anonymous tasks passing data',
+        next: { leaf: { recommendation: 'CSP / channels', detail: 'Model stages as goroutines/tasks connected by channels; use select for fan-in and buffering for backpressure. Wrap it in a structured-concurrency scope so nothing leaks.' } },
+      },
+      {
+        label: 'A divisible CPU-bound compute job',
+        next: { leaf: { recommendation: 'Fork-join (work-stealing)', detail: 'Recursively split, run in parallel, merge. ForkJoinPool / parallel streams / Rayon. Only helps if the work genuinely partitions.' } },
+      },
+      {
+        label: 'Asynchronous event/data streams to compose',
+        next: { leaf: { recommendation: 'Reactive / async streams', detail: 'Compose with map/filter/merge and Reactive-Streams backpressure (RxJava, Reactor). Best for I/O-bound, event-driven, and UI flows.' } },
+      },
+      {
+        label: 'Several shared variables that must update atomically together',
+        next: { leaf: { recommendation: 'STM (if your language has it)', detail: 'Transactional, composable, deadlock-free updates over multiple refs (Clojure, Haskell). Avoid wrapping side effects, since blocks may retry.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **WhatsApp** famously served ~2 million concurrent connections per server on **Erlang's
+  actor model** with a tiny team — share-nothing processes + supervision are why.
+- **Go** built channels (CSP) into the language; the standard library's pipelines,
+  `context` cancellation, and `errgroup` are CSP + structured-concurrency in practice.
+- **Akka / Microsoft Orleans** bring actors ("virtual actors"/grains) to the JVM and .NET
+  for distributed stateful services (gaming, IoT, banking).
+- **Netflix and Spring WebFlux** use **Reactor** (reactive streams) for backpressure-aware,
+  non-blocking service-to-service pipelines.
+- **Kotlin coroutines, Swift's task groups, Python Trio, and Java's StructuredTaskScope**
+  have made **structured concurrency** the modern default discipline for bounding task
+  lifetimes and propagating cancellation.
+
+## Further reading
+
+- [Tony Hoare — "Communicating Sequential Processes" (1978)](https://www.cs.cmu.edu/~crary/819-f09/Hoare78.pdf) — the foundational CSP paper behind Go channels and occam.
+- [Carl Hewitt et al. — the Actor model](https://en.wikipedia.org/wiki/Actor_model) / [Joe Armstrong's Erlang thesis](https://erlang.org/download/armstrong_thesis_2003.pdf) — origins of actors, supervision, and "let it crash."
+- [Nathaniel J. Smith — "Notes on structured concurrency, or: Go statement considered harmful"](https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/) — the essay that crystallized structured concurrency.

@@ -1,0 +1,209 @@
+---
+title: Synchronization & Locking
+description: Race conditions and critical sections, mutexes/semaphores/locks, read-write locks, the four Coffman conditions for deadlock versus livelock and starvation, and lock-free synchronization with compare-and-swap and atomics.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+When two threads touch the same memory and at least one writes, you have a **race
+condition**: the result depends on which thread happens to run first, and the scheduler
+decides that nondeterministically. Synchronization primitives — mutexes, semaphores,
+read-write locks, atomics — exist to make those interactions *deterministic* by forcing an
+order. But every lock you add is a new way to create **deadlock** (everyone stuck waiting
+on each other), **livelock** (everyone busy but no one progressing), or **starvation**
+(someone waits forever). The craft is using the *weakest, narrowest* synchronization that
+makes your invariant hold, because over-locking kills the throughput you went concurrent
+to get. This page is the precise version: exactly what each primitive guarantees and
+exactly how each failure mode arises.
+
+## Mental model
+
+A **critical section** is a stretch of code that touches shared state and must run as if
+*atomic* — no other thread may observe it half-done. Synchronization is the discipline of
+ensuring **mutual exclusion**: at most one thread is inside the critical section for a
+given piece of state at a time.
+
+Think of a lock as a *single key to a room*. To touch the shared state you must hold the
+key; while you hold it, no one else enters; you must give it back when you leave. Three
+rules fall out of this and cause most bugs when broken:
+
+1. **Guard *all* access to the state with the *same* lock.** A race needs only one
+   unguarded path. The lock protects *data*, not *code* — every reader and writer of that
+   data must agree on which lock.
+2. **Hold the lock for the *whole* invariant, not just one line.** "Read balance, then
+   write balance−10" is a single critical section; locking each line separately still
+   races (a lost update).
+3. **Hold it as *briefly* as possible.** The critical section is serial (Amdahl's
+   serial fraction); long critical sections destroy parallelism and invite contention.
+
+The tension: rule 2 says "hold long enough for correctness," rule 3 says "hold as short as
+possible for throughput." Lock *granularity* is exactly this dial — one coarse lock
+(simple, low concurrency) versus many fine locks (concurrent, but more deadlock surface).
+
+## Types / Variants
+
+**Mutex (lock).** Binary, *ownership-based* mutual exclusion: one thread acquires, others
+block until it releases, and typically only the owner may release. The default primitive
+for a critical section. Variants: *reentrant/recursive* (same thread can re-acquire,
+avoiding self-deadlock), *spinlock* (busy-waits instead of sleeping — good for very short
+critical sections where a context switch costs more than the spin).
+
+**Semaphore.** A counter, *not* ownership-based. `acquire` decrements (blocks at zero),
+`release` increments. A counting semaphore initialized to *N* admits up to N concurrent
+holders — a *permit pool* for bounded resources (connection pools, rate limiting). A
+binary semaphore (count 1) resembles a mutex but lacks ownership: *any* thread can
+release, which makes it the right tool for *signaling* between threads (producer signals
+consumer) and the wrong tool for plain mutual exclusion.
+
+**Read-write lock (shared/exclusive).** Allows *many concurrent readers* OR *one
+exclusive writer*. A big win for read-heavy shared data (a config map read constantly,
+written rarely). *Watch for:* writer starvation (a stream of readers never lets a writer
+in) — fair RW locks block new readers once a writer is waiting. Higher overhead than a
+plain mutex, so it only pays off when reads genuinely dominate.
+
+**Condition variable.** Lets a thread *wait for a predicate* to become true while
+releasing the lock, and be woken when another thread signals. The basis of
+producer-consumer queues: consumers `wait` while empty, producers `signal` on enqueue.
+Always re-check the predicate in a loop on wake (guards against *spurious wakeups* and
+stale conditions).
+
+**Monitor.** A higher-level construct (Java `synchronized`, C# `lock`) bundling a mutex +
+condition variables so an object's methods are mutually exclusive by default — mutex
+discipline you can't forget to release (auto-unlock on scope exit / exception).
+
+**Atomics & compare-and-swap (CAS).** Hardware-level operations (`compare-and-swap`,
+`fetch-and-add`, `load-link/store-conditional`) that read-modify-write a single word
+*indivisibly*, with no lock. **CAS(addr, expected, new)** atomically sets `addr` to `new`
+*only if* it currently equals `expected`, returning whether it succeeded. The building
+block of **lock-free** algorithms: retry the CAS in a loop until it sticks. No thread can
+block another by holding a lock (no deadlock), but watch the **ABA problem** — a value
+changes A→B→A and a naive CAS sees "unchanged"; fixed with version/tag counters or
+hazard pointers.
+
+**Lock-free vs wait-free.** *Lock-free* guarantees *some* thread always makes progress
+(the system never stalls), though an individual thread may retry indefinitely.
+*Wait-free* (stronger, rarer) guarantees *every* thread finishes in a bounded number of
+steps. Both avoid the deadlock/priority-inversion hazards of locks at the cost of subtle,
+hard-to-verify code.
+
+### The failure modes
+
+**Deadlock** — a set of threads each holding a resource and waiting for one another, so
+none proceed. It requires **all four Coffman conditions** simultaneously; break *any one*
+and deadlock is impossible:
+
+1. **Mutual exclusion** — resources are non-shareable (held exclusively).
+2. **Hold and wait** — a thread holds one resource while waiting for another.
+3. **No preemption** — a resource can't be forcibly taken; only the holder releases it.
+4. **Circular wait** — a cycle of threads each waiting on the next's resource.
+
+The cheapest practical defense attacks #4: **acquire locks in a global total order**
+everywhere (always lock A before B). Others: lock timeouts + back-off (attacks hold-and-
+wait), `tryLock` with rollback (introduces preemption), or a single coarse lock (removes
+the need for multiple).
+
+**Livelock** — threads are *not* blocked; they keep changing state in response to each
+other but make no net progress (two people stepping aside in a corridor, repeatedly, in
+sync). Common with naive deadlock-avoidance that releases and retries in lockstep. Fix
+with randomized back-off so the symmetry breaks.
+
+**Starvation** — a thread waits indefinitely because others are perpetually favored
+(unfair scheduling, a steady stream of readers blocking a writer, low priority never
+scheduled). Fix with fairness/aging (FIFO locks, bounded waiting, priority boosting).
+
+**Priority inversion** — a high-priority thread waits on a lock held by a low-priority
+thread that's been preempted by a medium one. Fixed with *priority inheritance* (the
+holder temporarily inherits the waiter's priority) — the bug that famously hit the Mars
+Pathfinder.
+
+## When to use / When NOT
+
+- **Mutex — use when:** you need plain mutual exclusion over shared state and don't have a
+  read-heavy split. The correct default. **Avoid when:** the critical section is a single
+  word you could do with an atomic, or reads vastly dominate (use RW lock).
+- **Semaphore — use when:** bounding a resource pool (N permits) or signaling between
+  threads. **Avoid when:** you want simple mutual exclusion — use a mutex; semaphores'
+  lack of ownership makes "lock here, unlock there" bugs easy.
+- **Read-write lock — use when:** reads dominate writes by a wide margin on the same
+  state. **Avoid when:** writes are frequent (writers serialize anyway and you've added
+  overhead) or contention causes writer starvation.
+- **Atomics / lock-free — use when:** the operation fits a single word (counters, flags,
+  a stack/queue head) and you need maximum throughput or hard real-time progress
+  guarantees. **Avoid when:** the invariant spans multiple words/objects (a lock is
+  simpler and correct), or the team can't maintain the subtlety — lock-free code is
+  notoriously easy to get *almost* right.
+
+## Tradeoffs
+
+| Primitive | Concurrency allowed | Cost | Deadlock risk | Best for |
+| --------- | ------------------- | ---- | ------------- | -------- |
+| Mutex | 1 holder | Low | Yes (multi-lock) | General mutual exclusion |
+| Spinlock | 1 holder | Very low (busy-wait) | Yes | Ultra-short critical sections |
+| Semaphore (counting) | N holders | Low | Yes | Bounded resource pools |
+| Read-write lock | Many readers / 1 writer | Medium | Yes + writer starvation | Read-dominated state |
+| Condition variable | n/a (signaling) | Low | Yes (with its mutex) | Producer-consumer waiting |
+| Atomics / CAS | Lock-free | Lowest (no blocking) | No (but livelock/ABA) | Single-word counters/structures |
+
+## Diagram
+
+The classic two-lock deadlock: a circular wait. Thread 1 holds A and wants B; Thread 2
+holds B and wants A. All four Coffman conditions hold — break the **lock ordering** and
+the cycle (and the deadlock) is impossible.
+
+<Mermaid code={`graph LR
+  T1[Thread 1] -->|holds| A[(Lock A)]
+  T1 -.->|waits for| B[(Lock B)]
+  T2[Thread 2] -->|holds| B
+  T2 -.->|waits for| A
+  A -.->|circular wait| B
+  B -.->|circular wait| A`} />
+
+## Try it
+
+Locking versus lock-free is the sharpest decision in this space. Here is when to reach for
+CAS/atomics, why they help, and why they so often backfire.
+
+<WhenWhyTabs
+  client:visible
+  caption="Locks vs lock-free (CAS/atomics)"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use locks (mutex/RW lock) as the default whenever a critical section spans more than one memory word or object, or whenever clarity matters more than the last 10% of throughput — which is most application code. Reach for lock-free CAS/atomics when the contended operation collapses to a single word (an incrementing counter, a boolean flag, the head pointer of a stack or queue), when you have measured lock contention as a real bottleneck, or when you need a hard progress guarantee that a lock cannot give (a high-priority/real-time path that must never be blocked by a sleeping lock-holder).',
+    },
+    {
+      label: 'Why',
+      content: 'A lock makes correctness obvious: acquire, mutate the invariant across as many words as you like, release — and the mutual-exclusion contract does the reasoning for you. Lock-free CAS wins on contention and resilience: no thread can block another by holding a lock, so there is no deadlock, no priority inversion, and no convoying when a holder is preempted. fetch-and-add and compare-and-swap let many cores update a shared counter or push onto a stack with no kernel involvement, so throughput scales far better under heavy contention than a mutex that serializes everyone and pays a syscall to sleep/wake.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Locks bring deadlock (all four Coffman conditions), livelock, starvation, and priority inversion, and every critical section is a serial bottleneck (Amdahl) — hold one too long and your parallel program runs serially. Lock-free code trades those for a different, nastier set: it only works for tiny single-word invariants, the retry loops can livelock under extreme contention, the ABA problem silently corrupts naive CAS unless you add version tags or hazard pointers, and correctness depends on the memory model (you need the right fences). Lock-free data structures are research-grade to write and to verify — most teams should use a vetted library, not roll their own.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **The Linux kernel** uses a whole spectrum — spinlocks (short, interrupt context),
+  mutexes (sleepable), RCU (read-copy-update, a lock-free read path for read-mostly data),
+  and per-CPU counters — choosing per-path based on contention and context.
+- **Java** ships `synchronized`/`ReentrantLock` (monitors), `ReadWriteLock`,
+  `Semaphore`, and a rich `java.util.concurrent.atomic` package plus lock-free structures
+  like `ConcurrentLinkedQueue` built on CAS.
+- **Databases** detect deadlocks at runtime (a wait-for graph) and *abort one victim*
+  transaction to break the cycle rather than preventing deadlock up front — see
+  *Transactions & isolation*.
+- **Mars Pathfinder (1997)** suffered repeated resets from **priority inversion** on a
+  shared mutex; the fix uploaded from Earth was to enable **priority inheritance** — the
+  textbook real-world case.
+
+## Further reading
+
+- [Coffman, Elphick, Shoshani — "System Deadlocks" (1971)](https://dl.acm.org/doi/10.1145/356586.356588) — the paper that named the four necessary conditions.
+- [Maurice Herlihy & Nir Shavit — *The Art of Multiprocessor Programming*](https://dl.acm.org/doi/book/10.5555/2385452) — the definitive text on locks, CAS, lock-free/wait-free, and the ABA problem.
+- [Preshing — "Locks Aren't Slow; Lock Contention Is"](https://preshing.com/20111118/locks-arent-slow-lock-contention-is/) — practical intuition for when locking actually costs you.

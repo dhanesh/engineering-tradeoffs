@@ -1,0 +1,186 @@
+---
+title: Parallel Patterns
+description: Data versus task parallelism, and the recurring patterns for structuring parallel work — map-reduce, pipelines, work stealing, SIMD/vectorization, producer-consumer, scatter-gather, and backpressure — with guidance on when each fits.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Once you've decided to run work in parallel, you still have to *structure* it — and a
+small set of patterns covers almost everything. The first fork is **data parallelism**
+(apply the *same* operation across many data elements — sum a billion numbers) versus
+**task parallelism** (run *different* operations concurrently — a pipeline of distinct
+stages). On top of that sit reusable shapes: map-reduce, pipelines, scatter-gather,
+producer-consumer, work stealing, SIMD, and the backpressure that keeps any of them from
+melting down. Picking the right pattern is mostly about matching the *structure of your
+work* (uniform vs heterogeneous, divisible vs streaming) to the *structure of the pattern*
+— and about respecting the limits (Amdahl, coordination cost) from the cluster overview.
+
+## Mental model
+
+Two orthogonal questions decide the pattern:
+
+1. **Is the parallelism in the *data* or in the *code*?**
+   - **Data parallelism**: one operation, many data items, split the *data* across workers
+     (each worker runs the same code on its slice). Scales with data size; the workers are
+     interchangeable. SIMD, map, GPU kernels.
+   - **Task parallelism**: many *different* operations that can run concurrently, split the
+     *work* into distinct tasks (each worker runs different code). Scales with the number
+     of independent stages/tasks. Pipelines, scatter-gather.
+
+2. **Is the work a *batch* (all inputs known up front) or a *stream* (inputs arrive over
+   time)?** Batch favors map-reduce / fork-join; streams favor pipelines / producer-
+   consumer with backpressure.
+
+The unifying caution: **parallel patterns only pay off when the per-item work exceeds the
+coordination cost.** Splitting, dispatching, synchronizing, and merging all cost time;
+below some grain size, the serial version wins. And the slowest stage/worker bounds the
+whole thing — load *imbalance* is the silent killer that work stealing and dynamic
+partitioning exist to fix.
+
+## Types / Variants
+
+**Map-reduce.** *Map* the same function over a dataset in parallel (data parallel), then
+*reduce* (fold/aggregate) the results, often after a *shuffle* that groups by key. The
+canonical big-data pattern: embarrassingly parallel map, associative+commutative reduce.
+Scales horizontally across machines (Hadoop/Spark) or cores. Fits batch aggregation;
+poor for low-latency or iterative/stateful work (Spark added in-memory caching precisely
+to fix iteration).
+
+**Pipeline (task parallel).** Decompose work into ordered *stages*; each stage runs on its
+own worker and items flow stage→stage like an assembly line. Throughput is bounded by the
+*slowest* stage (the bottleneck), and the pipeline only fills/drains efficiently with
+enough in-flight items. Great for streaming/heterogeneous steps (parse → validate →
+transform → write). Balance stages or replicate the slow one.
+
+**Producer-consumer.** Producers put work on a *bounded queue*; consumers take from it.
+Decouples production rate from consumption rate and is the universal glue between pipeline
+stages. The **bounded** queue is the point: it provides **backpressure** — when full,
+producers block/slow, preventing the fast producer from exhausting memory. Built with a
+queue + condition variables (see *Synchronization*).
+
+**Scatter-gather (fork-join's distributed cousin).** *Scatter* a request to N workers in
+parallel (replicas, shards, services), then *gather* and combine their responses. Cuts
+latency of a divisible request (query all shards at once) but the response is bounded by
+the *slowest* responder — the **tail-latency** problem (the 99th-percentile worker drags
+the whole request). Mitigations: hedged/backup requests, timeouts, partial results.
+
+**Work stealing.** A load-balancing scheduler: each worker has its own task deque and runs
+from one end; an *idle* worker *steals* a task from the *other* end of a busy worker's
+deque. Self-balancing without central coordination, low contention (steals are rare and
+hit the opposite end). The engine under fork-join frameworks (Java ForkJoinPool, Cilk,
+Rust Rayon, Go's scheduler). Ideal for irregular/recursive workloads where you can't
+predict task sizes.
+
+**SIMD / vectorization (data parallelism in hardware).** *Single Instruction, Multiple
+Data*: one CPU instruction operates on a vector of values at once (e.g. add 8 floats in
+one op via AVX). Compilers auto-vectorize tight loops; libraries use intrinsics. Huge
+speedups on numeric/array workloads with no thread coordination at all — it's parallelism
+*within* a core. GPUs generalize this to SIMT (thousands of lanes). Fits regular,
+branch-free, contiguous-memory loops; branches and irregular access defeat it.
+
+**Backpressure (a cross-cutting necessity).** Any time a fast producer feeds a slower
+consumer, unbounded buffering leads to memory blowup and latency collapse. Backpressure is
+the feedback that *propagates slowness upstream*: bounded queues that block, credit/demand
+signaling (Reactive Streams `request(n)`), or load shedding (drop/sample) when you can't
+slow the source. Not optional in any streaming system — its absence is the root cause of
+most cascading failures.
+
+## When to use / When NOT
+
+- **Map-reduce — use when:** batch aggregation over a large, partitionable dataset with an
+  associative reduce (counts, sums, group-by). **Avoid when:** you need low latency,
+  iterative/stateful computation per step, or the reduce isn't associative.
+- **Pipeline — use when:** work is a sequence of distinct stages on a stream and stages can
+  overlap. **Avoid when:** stages are wildly imbalanced (one dominates — just run it; the
+  others add overhead) or items have cross-dependencies that break ordering.
+- **Producer-consumer — use when:** decoupling rates between any producer/consumer pair.
+  Use a **bounded** queue. **Avoid** unbounded queues — they trade a visible stall for an
+  invisible memory leak.
+- **Scatter-gather — use when:** a request divides across shards/replicas/services and you
+  want their latency overlapped. **Avoid when:** tail latency is unacceptable and you can't
+  hedge or accept partial results.
+- **Work stealing — use when:** irregular, recursive, or unpredictable task sizes need
+  automatic load balance. **Avoid when:** tasks are tiny and uniform (static partitioning
+  is cheaper) or share lots of state (stealing thrashes caches).
+- **SIMD/vectorization — use when:** hot numeric loops over contiguous arrays with regular,
+  branch-free access. **Avoid when:** the loop is branchy, pointer-chasing, or the data
+  isn't contiguous — auto-vectorization won't fire.
+- **Backpressure — use:** always, anywhere a producer can outrun a consumer. There is no
+  "avoid."
+
+## Tradeoffs
+
+| Pattern | Parallelism type | Scales with | Bounded by | Best for |
+| ------- | ---------------- | ----------- | ---------- | -------- |
+| Map-reduce | Data | Dataset size / nodes | Reduce + shuffle | Batch aggregation |
+| Pipeline | Task | # of stages | Slowest stage | Streaming, staged work |
+| Producer-consumer | Either | Consumer count | Queue / slowest side | Rate decoupling |
+| Scatter-gather | Task/data | # of workers | Slowest responder (tail) | Sharded/parallel requests |
+| Work stealing | Task | # of cores | Steal contention | Irregular/recursive tasks |
+| SIMD | Data (in-core) | Vector width | Branch/memory regularity | Numeric array loops |
+| Backpressure | (control) | — | Slowest consumer | Preventing overload |
+
+## Diagram
+
+A pipeline with producer-consumer queues and backpressure: items flow stage→stage through
+*bounded* queues. The slowest stage (transform) is the bottleneck; its full input queue
+applies backpressure that slows the upstream parse stage, preventing memory blowup.
+
+<Mermaid code={`graph LR
+  SRC[Source] --> Q1[/Bounded queue/]
+  Q1 --> P[Parse stage]
+  P --> Q2[/Bounded queue/]
+  Q2 --> T[Transform stage<br/>SLOWEST = bottleneck]
+  T --> Q3[/Bounded queue/]
+  Q3 --> W[Write stage]
+  Q2 -. full → backpressure .-> P
+  Q1 -. full → backpressure .-> SRC`} />
+
+## Try it
+
+The first decision is almost always data vs task parallelism — it routes you to a whole
+family of patterns.
+
+<WhenWhyTabs
+  client:visible
+  caption="Data parallelism vs task parallelism"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use data parallelism when you apply the SAME operation across many independent data elements — summing or transforming a huge array, scoring a batch of records, a GPU kernel, a SIMD loop, the map phase of map-reduce. The data is the thing you split. Use task parallelism when you have DIFFERENT operations that can run concurrently — the distinct stages of a pipeline (parse / validate / transform / write), or a scatter that fans a request to several different services and gathers their replies. The work, not the data, is what you split. Many real systems combine both: a data-parallel map phase feeding a task-parallel pipeline of post-processing stages.',
+    },
+    {
+      label: 'Why',
+      content: 'Data parallelism scales almost linearly with data size and core/lane count because the workers are interchangeable and need no coordination during the operation — split the array, run identical code on each slice, combine. SIMD takes this into a single core (one instruction over a vector), and GPUs take it to thousands of lanes, which is why both crush numeric workloads. Task parallelism wins when the work is heterogeneous and naturally staged: overlapping distinct stages keeps every worker busy on a stream (throughput = pipeline depth once full), and scatter-gather overlaps the latency of independent sub-requests so total latency approaches the slowest one rather than their sum.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Data parallelism breaks down when the operation has data dependencies (element i needs element i−1), when control flow diverges per element (branches kill SIMD/GPU efficiency — lanes stall), or when the data does not partition evenly (load imbalance leaves cores idle). Task parallelism is bounded by its slowest stage or slowest responder: one heavy pipeline stage or one slow shard (tail latency) caps the whole thing, and imbalanced stages waste the other workers. Both pay coordination costs — split/merge, shuffle, queue synchronization — so below a grain-size threshold the serial version is faster, and Amdahl plus the Universal Scalability Law cap the real-world speedup well below the core count regardless of which you pick.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Hadoop / Spark** are map-reduce at datacenter scale; Spark's RDD/DAG scheduler keeps
+  intermediate results in memory to make iterative jobs (ML, graph) practical.
+- **Google Search** is textbook scatter-gather: a query fans out to thousands of index
+  shards in parallel and gathers/ranks the results, with hedged requests to tame tail
+  latency (the "tail at scale" paper came out of exactly this).
+- **Java ForkJoinPool / parallel streams, Rust Rayon, Cilk, and the Go scheduler** all use
+  **work stealing** to load-balance irregular recursive work across cores.
+- **NumPy, BLAS, video codecs, and database scan operators** lean on **SIMD/vectorization**
+  (AVX/NEON) for order-of-magnitude speedups on numeric loops.
+- **Reactive Streams (RxJava/Reactor), Kafka consumer lag, and TCP flow control** are all
+  **backpressure** mechanisms — the same idea at library, broker, and transport layers.
+
+## Further reading
+
+- [Dean & Ghemawat — "MapReduce: Simplified Data Processing on Large Clusters" (2004)](https://research.google/pubs/pub62/) — the paper that defined the pattern and the industry around it.
+- [Dean & Barroso — "The Tail at Scale" (2013)](https://cacm.acm.org/magazines/2013/2/160173-the-tail-at-scale/fulltext) — why scatter-gather latency is dominated by stragglers, and how to fix it.
+- [Robert Blumofe & Charles Leiserson — "Scheduling Multithreaded Computations by Work Stealing"](https://supertech.csail.mit.edu/papers/steal.pdf) — the foundational work-stealing analysis behind Cilk and ForkJoinPool.

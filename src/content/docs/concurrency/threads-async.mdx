@@ -1,0 +1,219 @@
+---
+title: Threads, Event Loops & Async
+description: OS threads versus the event loop versus async/await, blocking versus non-blocking I/O, thread pools, green threads/coroutines/fibers, the C10K problem, and how to pick a model based on whether your workload is CPU-bound or I/O-bound.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+Every server faces the same question: when one request is *waiting* — on a database, a
+disk, a remote API — how do you use that idle time to serve other requests? The answer
+you pick (a thread per request, a single event loop, async/await coroutines, or green
+threads) determines how many concurrent connections you can hold, how much memory you
+burn, and how easy your code is to read. There is no universally best answer; the right
+one depends almost entirely on whether your work is **I/O-bound** (mostly waiting) or
+**CPU-bound** (mostly computing). Get this match wrong and you either waste cores or
+collapse under a thundering herd of connections.
+
+## Mental model
+
+A request spends its life in one of two states: **running** (using CPU) or **waiting**
+(blocked on I/O). The whole game is *what to do with a thread during the waiting*:
+
+- **Blocking I/O**: the call (`read()`, a DB query) parks the calling thread until data
+  arrives. Simple to write, but that thread is *useless* while parked — to serve N
+  concurrent waiters you need N threads.
+- **Non-blocking / async I/O**: the call returns immediately ("not ready yet"); the
+  runtime *registers interest* and the same thread goes off to do other work, coming back
+  when the OS signals readiness (via `epoll`/`kqueue`/`io_uring`). One thread can shepherd
+  thousands of in-flight operations because it never sits parked.
+
+The models are just different answers to "who waits, and at what cost?":
+
+> **Threads** let the *kernel* wait for you (one parked thread per wait — expensive but
+> simple). **Event loops and async** make *one thread juggle all the waits* (cheap, but a
+> blocking or CPU-heavy step starves everyone). **Green threads** give you the cheap
+> juggling *while still writing blocking-style code* — the runtime does the juggling under
+> a blocking-looking API.
+
+Two failure modes anchor the reasoning: a **blocking call inside an event loop or
+coroutine stalls the entire thread** (every other task freezes), and **CPU-bound work in
+a cooperative model never yields**, so it monopolizes the loop. Both push you toward
+threads/pools for compute and async for waiting.
+
+## Types / Variants
+
+**OS threads (thread-per-request).** The kernel schedules each thread preemptively;
+blocking I/O is fine because only that thread parks. True multicore parallelism.
+*Costs:* ~512 KB–1 MB of stack each, microsecond-scale context switches, and shared-state
+synchronization is your problem. Scales to thousands of threads, not millions. (Apache
+prefork/worker, classic Java servlets.)
+
+**Thread pool.** Don't spawn a thread per task — keep a fixed pool and queue work onto it.
+Bounds memory and context-switching, gives backpressure (the queue) under overload, and
+amortizes thread-creation cost. The default for CPU-bound parallel work and for offloading
+blocking calls *out of* an event loop. *Sizing rule of thumb:* CPU-bound → ~#cores;
+I/O-bound → cores × (1 + wait/compute ratio), i.e. many more than cores because most are
+parked.
+
+**Event loop (single-threaded, callback/reactor).** One thread, non-blocking I/O, a queue
+of ready callbacks (the *reactor pattern*). No locks needed *within* the loop because only
+one callback runs at a time. Handles enormous connection counts on minimal memory.
+*Hazards:* any blocking call or long CPU step freezes all connections; "callback hell"
+without async sugar. (Node.js, Nginx, Redis, libuv.)
+
+**async/await (coroutines / stackless).** Syntactic sugar over the event loop: functions
+suspend at `await` and resume later, so code reads sequentially while still multiplexing
+thousands of tasks onto one (or a few) threads. Yields *only* at `await` points —
+cooperative, so a tight CPU loop with no await still blocks. (Python asyncio, Rust async,
+C# `async`, Kotlin coroutines, JS.)
+
+**Green threads / fibers / virtual threads (stackful, M:N).** A *runtime* scheduler
+multiplexes many lightweight user-space threads onto few OS threads. Each has its own
+(small, growable) stack, so you write ordinary blocking-style code and the runtime
+transparently parks/resumes you on I/O. Best of both: async-level scalability, threaded
+readability. (Goroutines in Go, virtual threads in Java 21 / Loom, Erlang processes.)
+The distinction: coroutines are *stackless and cooperative at await points*; green threads
+are *stackful and can be preempted/parked by the runtime anywhere it inserts safepoints*.
+
+**The C10K problem** is the historical pivot: serving 10,000 concurrent connections with
+thread-per-connection meant 10,000 threads — gigabytes of stacks and crushing
+context-switch overhead. The fix was non-blocking I/O + event loops (`epoll`/`kqueue`),
+which is *why* Nginx and Node exist. The modern sequel is **C10M** (ten million), pushing
+toward `io_uring`, kernel-bypass, and sharded green-thread runtimes.
+
+## When to use / When NOT
+
+- **Event loop / async — use when:** the workload is **I/O-bound** with high concurrency —
+  API gateways, proxies, chat/websocket fan-out, anything mostly waiting on the network or
+  DB. **Avoid when:** the work is CPU-heavy (you'll block the loop) — offload compute to a
+  thread/worker pool, or pick a different model.
+- **Thread-per-request (OS threads) — use when:** moderate concurrency (hundreds–low
+  thousands), you want dead-simple blocking code, and CPU-bound steps are common. **Avoid
+  when:** you need hundreds of thousands of concurrent connections — per-thread memory and
+  context switching kill you (the C10K wall).
+- **Thread pool — use when:** you have CPU-bound parallel work to spread across cores, or
+  you must run unavoidable blocking calls without stalling an event loop. **Avoid when:**
+  the pool is too small for I/O-bound work (everything queues) or unbounded (resource
+  exhaustion) — size it to the workload.
+- **Green / virtual threads — use when:** you want massive concurrency *and* simple
+  sequential code, and your runtime offers them (Go, Java 21+). **Avoid when:** you're on a
+  runtime without them, or you have CPU-bound work that still needs explicit parallelism
+  (green threads help with *waiting*, not *computing*).
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="I/O concurrency models compared"
+  columns={['Thread-per-request', 'Thread pool', 'Event loop', 'async/await', 'Green/virtual threads']}
+  rows={[
+    { criterion: 'Memory per task', cells: ['High (~1MB stack)', 'Bounded (fixed pool)', 'Tiny (callback)', 'Tiny (frame)', 'Low (small stack)'] },
+    { criterion: 'Max concurrency', cells: ['~1000s', 'Pool size (queue beyond)', '100k+', '100k+', 'Millions'] },
+    { criterion: 'Code style', cells: ['Blocking, simple', 'Blocking, simple', 'Callbacks (complex)', 'Sequential (async kw)', 'Blocking, simple'] },
+    { criterion: 'Multicore parallelism', cells: ['Yes', 'Yes', 'No (1 thread)', 'Limited', 'Yes'] },
+    { criterion: 'Blocking-call hazard', cells: ['Safe (parks 1 thread)', 'Safe (parks 1 worker)', 'Fatal (stalls all)', 'Fatal (stalls loop)', 'Safe (runtime parks)'] },
+    { criterion: 'CPU-bound fit', cells: ['Good', 'Best', 'Poor', 'Poor', 'Fair (offload still needed)'] },
+    { criterion: 'I/O-bound fit', cells: ['Fair (memory cap)', 'Fair', 'Excellent', 'Excellent', 'Excellent'] },
+    { criterion: 'Examples', cells: ['Apache, Java servlets', 'Executors, worker pools', 'Nginx, Redis, libuv', 'asyncio, Rust, C#', 'Go, Java Loom, Erlang'] },
+  ]}
+/>
+
+## Diagram
+
+A blocking call inside an event loop is fatal: while one callback waits, *every* queued
+connection is frozen. The same call on a thread parks only that thread.
+
+<Mermaid code={`graph TB
+  subgraph Loop["Event loop (1 thread)"]
+    L0[Ready queue: C1, C2, C3] --> L1[Run C1]
+    L1 -->|non-blocking read: not ready| L2[Register interest, move on]
+    L2 --> L3[Run C2, C3...]
+    L1 -.->|BUT if C1 does a BLOCKING call| L4[Loop frozen:<br/>C2, C3 cannot run]
+  end
+  subgraph Threads["Thread-per-request"]
+    T1[Thread 1: C1 blocks] -->|parks| TW[OS waits]
+    T2[Thread 2: C2 runs] --> T2b[unaffected]
+    T3[Thread 3: C3 runs] --> T3b[unaffected]
+  end`} />
+
+## Try it
+
+Match your workload to a model. The first question is almost always "CPU-bound or
+I/O-bound?" — it dominates everything downstream.
+
+<DecisionTree
+  client:visible
+  caption="Which concurrency model for my workload?"
+  root={{
+    question: 'Is the workload mostly waiting on I/O (network, disk, DB) or mostly computing on the CPU?',
+    branches: [
+      {
+        label: 'Mostly I/O — high concurrency, lots of waiting',
+        next: {
+          question: 'Do you want simple sequential code, and does your runtime offer green/virtual threads (Go, Java 21+)?',
+          branches: [
+            {
+              label: 'Yes — runtime has green/virtual threads',
+              next: { leaf: { recommendation: 'Green / virtual threads', detail: 'Write blocking-style code that scales to millions of concurrent tasks; the runtime parks/resumes on I/O. Goroutines or Java Loom virtual threads.' } },
+            },
+            {
+              label: 'No — stuck with threads + async libraries',
+              next: { leaf: { recommendation: 'Event loop with async/await', detail: 'Multiplex thousands of connections on one thread with non-blocking I/O. Keep every step non-blocking; offload any unavoidable blocking/CPU work to a thread pool.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Mostly CPU — heavy computation',
+        next: {
+          question: 'Is the job divisible into independent parallel chunks?',
+          branches: [
+            {
+              label: 'Yes — splittable (sort, encode, train)',
+              next: { leaf: { recommendation: 'Thread pool sized to ~#cores', detail: 'Spread chunks across cores with a fixed pool (or fork-join). More threads than cores just adds context-switch overhead for CPU-bound work.' } },
+            },
+            {
+              label: 'No — mostly serial compute',
+              next: { leaf: { recommendation: 'Single thread (or thread-per-request)', detail: "Parallelism can't help an indivisible serial job (Amdahl). Use plain threads for moderate concurrency and keep the code simple." } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Mixed — I/O fan-out plus CPU bursts',
+        next: { leaf: { recommendation: 'Event loop/async for I/O + a thread pool for CPU', detail: 'Run the I/O on an event loop or green threads, and dispatch CPU-bound steps to a separate worker pool so they never stall the loop. This hybrid is the standard production shape.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Nginx** uses an event-driven, non-blocking architecture (a handful of worker
+  processes, each an event loop) — the direct answer to C10K, and why it outscales
+  thread-per-connection Apache on high-concurrency static/proxy workloads.
+- **Node.js** is a single-threaded event loop (libuv) with a small background thread pool
+  for unavoidable blocking ops (filesystem, DNS); CPU-bound work must go to worker threads
+  or it stalls the loop — the most common Node performance footgun.
+- **Go** schedules goroutines M:N over OS threads; a blocking syscall transparently parks
+  the goroutine and the scheduler runs others, so you write straight-line blocking code at
+  massive scale.
+- **Java 21 virtual threads (Project Loom)** retrofit green threads onto the JVM, letting
+  millions of "thread-per-request" tasks run cheaply — reviving the simple blocking model
+  without the C10K memory wall.
+- **Python** is the cautionary tale: the GIL serializes CPU-bound threads, so threads help
+  only I/O-bound work; CPU parallelism needs `multiprocessing` or native extensions, and
+  high I/O concurrency needs `asyncio`.
+
+## Further reading
+
+- [Dan Kegel — "The C10K Problem"](http://www.kegel.com/c10k.html) — the foundational
+  write-up that drove the industry from threads to event loops.
+- [Cloudflare — "io_uring and the modern Linux async story"](https://blog.cloudflare.com/missing-manuals-io_uring-worker-pool/) — how async I/O actually works under the loop today.
+- [Project Loom — virtual threads (JEP 444)](https://openjdk.org/jeps/444) — the design and rationale for green threads on the JVM.
