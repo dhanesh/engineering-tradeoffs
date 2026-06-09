@@ -1,0 +1,201 @@
+---
+title: TCP vs UDP
+description: Reliability, ordering, flow and congestion control (slow start, AIMD), the 3-way handshake and teardown, head-of-line blocking, and exactly when UDP (and QUIC) beat TCP.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+TCP and UDP are the two transport protocols nearly all Internet traffic rides on, and
+they sit at opposite ends of one tradeoff: **reliability versus latency**. TCP gives
+you a connection that behaves like an ordered, lossless byte stream — at the cost of
+handshakes, retransmits, and head-of-line blocking. UDP gives you bare datagrams: fast,
+unordered, lossy, and *yours to make reliable however you want*. Picking wrong is a
+common, expensive mistake — running real-time voice over TCP makes a dropped packet
+freeze *everything* behind it, while running a bank transfer over raw UDP means
+silently losing data. This page is the decision: what each guarantees, what each costs,
+and the specific workloads where UDP (and its modern child, QUIC) win.
+
+## Mental model
+
+**TCP is a phone call; UDP is postcards.** A phone call has setup ("hello?... can you
+hear me?"), an ordered conversation where nothing is lost, and a teardown ("bye"). If
+the line garbles, you both pause and re-sync — *in order*. Postcards you just drop in
+the mailbox: no setup, some may arrive out of order, some never arrive, and the post
+office never tells you. If order or completeness matters, you number the postcards and
+ask for re-sends *yourself* — which is exactly what QUIC and game netcode do on top of
+UDP.
+
+The deeper model: **TCP trades head-of-line latency for a stream abstraction.** Because
+it promises *in-order* bytes, a single lost segment stalls delivery of everything
+already received behind it until the gap is retransmitted. UDP makes no such promise,
+so loss of one datagram never blocks the next — which is precisely why loss-tolerant,
+latency-sensitive media prefers it.
+
+## Types / Variants
+
+**TCP (Transmission Control Protocol).** Connection-oriented, reliable, ordered,
+byte-stream. Provides:
+- **Reliability** via sequence numbers + cumulative ACKs + retransmission (on timeout
+  or 3 duplicate ACKs → fast retransmit).
+- **Ordering**: bytes delivered to the app strictly in sequence.
+- **Flow control**: the receiver advertises a *window* (how much buffer it has) so a
+  fast sender can't drown a slow receiver.
+- **Congestion control**: the sender probes the *network's* capacity. **Slow start**
+  grows the congestion window exponentially until a loss/threshold, then
+  **congestion avoidance** grows it linearly. On loss it cuts the window — the classic
+  **AIMD** (Additive Increase, Multiplicative Decrease) sawtooth that makes TCP flows
+  share a link fairly. Modern variants: **CUBIC** (Linux default, loss-based) and
+  **BBR** (Google, models bandwidth+RTT instead of treating loss as congestion).
+
+**UDP (User Datagram Protocol).** Connectionless, unreliable, unordered datagrams.
+Just ports + length + checksum on top of IP. No handshake, no ACKs, no ordering, no
+congestion control — *you* add whatever subset you need. Fits message-oriented,
+loss-tolerant, or latency-critical traffic, and anything that builds its own reliability.
+
+**QUIC.** A transport built *on UDP* that reclaims TCP's reliability and ordering but
+**per-stream**, eliminating cross-stream head-of-line blocking, and folds the TLS 1.3
+handshake into the transport handshake (often **1-RTT, or 0-RTT** on resumption). It
+also survives IP changes via connection IDs (Wi-Fi↔cellular handoff). It's why HTTP/3
+exists. See *HTTP evolution*.
+
+**SCTP / DCCP** — niche transports (multi-streaming, congestion-controlled unreliable);
+mostly telecom/WebRTC-adjacent, rarely a general-purpose choice.
+
+## When to use / When NOT
+
+- **Use TCP when:** correctness and completeness matter and you can tolerate
+  retransmit latency — web pages, APIs, RPC, database wire protocols, file transfer,
+  email, anything where a lost byte is unacceptable. **Avoid TCP when:** stale data is
+  worthless (you'd rather skip a lost packet than wait for it), or per-message latency
+  under loss dominates — head-of-line blocking will hurt you.
+- **Use UDP when:** the data is real-time and loss-tolerant (live voice/video, gaming
+  state), small request/response with your own retry (DNS), multicast/broadcast, or
+  you're building your own reliability/congestion layer (QUIC, QUIC-based protocols).
+  **Avoid raw UDP when:** you need ordered, complete delivery and don't want to
+  reimplement TCP badly — and beware NAT/firewall traversal and lack of built-in
+  congestion control (unfriendly UDP floods can collapse a link).
+- **Use QUIC when:** you want TCP-grade reliability *without* HoL blocking and with
+  faster setup — modern web (HTTP/3), mobile clients that change networks, or any
+  multiplexed stream workload. **Avoid QUIC when:** middleboxes block UDP/443, or
+  you're CPU-bound (QUIC's userspace + crypto is heavier per byte than kernel TCP).
+
+## Tradeoffs
+
+| Concern | TCP | UDP | QUIC (on UDP) |
+| ------- | --- | --- | ------------- |
+| Connection setup | 1-RTT handshake (+TLS = 2) | None | 1-RTT (0-RTT resume), TLS folded in |
+| Reliability | Guaranteed | None (DIY) | Per-stream, guaranteed |
+| Ordering | Strict, global | None | Per-stream |
+| Head-of-line blocking | Yes (one loss stalls stream) | N/A | Eliminated across streams |
+| Flow/congestion control | Built in (CUBIC/BBR) | None (DIY) | Built in, userspace |
+| Overhead | ~20–60B header + ACKs | 8B header | UDP + QUIC frames + crypto |
+| Network-change survival | No (4-tuple bound) | App's problem | Yes (connection IDs) |
+| Best for | Correctness-critical streams | Real-time, DNS, multicast | Modern multiplexed web |
+
+## Diagram
+
+TCP's 3-way handshake (connection setup) and graceful teardown — the round trips UDP
+skips entirely.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant S as Server
+  Note over C,S: Setup (3-way handshake)
+  C->>S: SYN (seq=x)
+  S->>C: SYN-ACK (seq=y, ack=x+1)
+  C->>S: ACK (ack=y+1)
+  Note over C,S: Data transfer (ordered, ACKed)
+  C->>S: data
+  S->>C: ACK
+  Note over C,S: Teardown
+  C->>S: FIN
+  S->>C: ACK
+  S->>C: FIN
+  C->>S: ACK`} />
+
+## Try it
+
+Compare the three transports, then walk the decision tree from your workload.
+
+<CompareMatrix
+  client:visible
+  caption="TCP vs UDP vs QUIC"
+  columns={['TCP', 'UDP', 'QUIC']}
+  rows={[
+    { criterion: 'Connection model', cells: ['Connection-oriented', 'Connectionless', 'Connection-oriented (over UDP)'] },
+    { criterion: 'Reliable delivery', cells: ['Yes', 'No (build your own)', 'Yes, per stream'] },
+    { criterion: 'Ordering', cells: ['Global, strict', 'None', 'Per stream'] },
+    { criterion: 'Head-of-line blocking', cells: ['Yes', 'None', 'None across streams'] },
+    { criterion: 'Congestion control', cells: ['CUBIC / BBR', 'None', 'Pluggable, userspace'] },
+    { criterion: 'Handshake cost', cells: ['1-RTT (+1 for TLS)', '0', '1-RTT / 0-RTT resume'] },
+    { criterion: 'Survives IP change', cells: ['No', 'App-defined', 'Yes (connection IDs)'] },
+    { criterion: 'Typical use', cells: ['Web, APIs, DB, files', 'VoIP, gaming, DNS, multicast', 'HTTP/3, mobile web'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="TCP, UDP, or QUIC for this workload?"
+  root={{
+    question: 'Is every byte mandatory — is losing data unacceptable?',
+    branches: [
+      {
+        label: 'Yes — loss is unacceptable',
+        next: {
+          question: 'Do you need many concurrent streams without one loss stalling the others, and/or fast setup on flaky/mobile networks?',
+          branches: [
+            {
+              label: 'Yes — multiplexed / mobile / latency-sensitive',
+              next: { leaf: { recommendation: 'QUIC (HTTP/3)', detail: 'Per-stream reliability removes cross-stream head-of-line blocking; folded TLS gives 1-RTT (0-RTT resume); connection IDs survive network changes.' } },
+            },
+            {
+              label: 'No — a single ordered stream is fine',
+              next: { leaf: { recommendation: 'TCP', detail: 'The proven default for correctness-critical, ordered byte streams: APIs, RPC, databases, file transfer. Keep connections warm to amortize the handshake.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — stale or missing data can be dropped',
+        next: {
+          question: 'Is it small request/response, or a continuous real-time stream?',
+          branches: [
+            {
+              label: 'Small request/response (lookup-style)',
+              next: { leaf: { recommendation: 'UDP with app-level retry', detail: 'Classic DNS pattern: one packet out, one back, retry on timeout. Cheap and fast; no connection state. Fall back to TCP for oversized responses.' } },
+            },
+            {
+              label: 'Continuous real-time media or game state',
+              next: { leaf: { recommendation: 'UDP (often via WebRTC/RTP/QUIC)', detail: 'Skipping a lost frame beats waiting for it. Add your own sequencing/FEC; never let head-of-line blocking freeze live media.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **DNS** uses UDP for the common small query (fast, stateless, retry on loss) and
+  falls back to **TCP** for responses too large for one datagram (zone transfers,
+  DNSSEC). See *DNS*.
+- **HTTP/3** runs over **QUIC/UDP** specifically to kill TCP's head-of-line blocking;
+  Google, Cloudflare, and Meta serve a large share of web traffic this way.
+- **Online games & WebRTC** use UDP/RTP so a dropped position update or audio frame is
+  simply skipped, never blocking the next one.
+- **Linux** ships **CUBIC** as the default TCP congestion control; **BBR** (Google) is
+  widely deployed on high-bandwidth, high-RTT paths where loss-based control under-uses
+  the link.
+
+## Further reading
+
+- [RFC 9293 — Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293) — the consolidated modern TCP spec (handshake, windows, retransmission).
+- [RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport](https://www.rfc-editor.org/rfc/rfc9000) — the QUIC standard; streams, 0-RTT, connection migration.
+- [BBR: Congestion-Based Congestion Control (Cardwell et al., ACM Queue)](https://queue.acm.org/detail.cfm?id=3022184) — why modeling bandwidth+RTT beats loss-as-signal.

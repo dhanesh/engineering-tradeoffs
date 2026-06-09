@@ -1,0 +1,166 @@
+---
+title: HTTP Evolution (1.1 → 2 → 3)
+description: HTTP/1.1 keep-alive and pipelining limits, HTTP/2 multiplexing/HPACK/server push, HTTP/3 over QUIC with 0-RTT and no TCP head-of-line blocking — plus methods, status codes, caching, and idempotency.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+HTTP is the application protocol of the web, and its three live versions are really
+three answers to one question: **how do you carry many requests over a network without
+them blocking each other?** HTTP/1.1 carries them one-at-a-time per connection (and
+opens a pile of connections to compensate). HTTP/2 multiplexes them over a single TCP
+connection — but inherits TCP's head-of-line blocking. HTTP/3 moves onto QUIC/UDP to
+finally kill that blocking and cut connection setup to 0–1 round trips. The *semantics*
+(methods, status codes, headers, caching, idempotency) are stable across all three;
+only the *transport wire format* changes. Knowing what each version fixed — and what it
+didn't — tells you which to enable and why your tail latency looks the way it does.
+
+## Mental model
+
+**The semantics stayed; the plumbing got rebuilt three times.** A request is still
+"method + URL + headers + optional body," and a response is still "status + headers +
+body" — that contract hasn't changed since the '90s. What changed is how those messages
+are packed onto the wire:
+
+- HTTP/1.1: **one lane** per connection — a car can't pass the one ahead. Open more
+  lanes (connections) to parallelize, but each has its own warm-up.
+- HTTP/2: **many lanes painted on one road** (streams multiplexed over one TCP
+  connection) — but the road itself can flood (one lost TCP segment stalls *all* lanes).
+- HTTP/3: **many independent roads** (QUIC streams over UDP) — a pothole on one road
+  doesn't stop the others.
+
+Hold that picture and every feature below is a consequence of it.
+
+## Types / Variants
+
+**HTTP/1.1.** Text-based, one request/response in flight per connection. **Keep-alive**
+(persistent connections) lets you reuse a TCP connection for many sequential requests,
+saving handshakes. **Pipelining** (sending request 2 before response 1 arrives) was
+specified but is effectively dead: servers/proxies must answer *in order*, so a slow
+first response blocks the rest — **application-level head-of-line blocking**. Browsers
+work around 1.1 by opening ~6 parallel connections per origin and by *domain sharding*
+(spreading assets across hostnames). Verbose, uncompressed headers add up.
+
+**HTTP/2.** Binary framing over a single TCP connection with **multiplexing**: many
+concurrent **streams**, each request/response a stream of frames interleaved on the
+wire — no more 6-connection workaround, no app-level HoL blocking *within HTTP*.
+**HPACK** compresses headers (huge win for repetitive cookies/headers). **Stream
+prioritization** hints at what to send first. **Server push** lets the server send
+resources unrequested — but it proved hard to use well (often pushed already-cached
+assets) and is **deprecated/removed in major browsers**; prefer `103 Early Hints` +
+preload. The catch: HTTP/2 still rides **one TCP connection**, so a single lost segment
+stalls *every* stream behind it — **TCP-level head-of-line blocking** that multiplexing
+can't escape.
+
+**HTTP/3.** HTTP semantics over **QUIC (over UDP)**. Because QUIC gives each stream its
+own reliability/ordering, a loss on one stream no longer blocks the others — TCP HoL
+blocking is **gone**. QUIC folds in TLS 1.3, so setup is **1-RTT**, or **0-RTT** on
+resumption (send the request with the very first packet). Connection IDs survive IP
+changes (Wi-Fi↔cellular). Header compression upgrades to **QPACK** (HPACK adapted for
+out-of-order streams). Cost: UDP can be blocked by middleboxes, and QUIC's userspace
+crypto is more CPU-intensive per byte than kernel TCP.
+
+**Semantics shared by all three (don't change with version):**
+- **Methods**: `GET`/`HEAD` (**safe** — no side effects), `PUT`/`DELETE` (**idempotent**
+  — repeat = same end state), `POST` (neither), `PATCH` (not guaranteed idempotent).
+  Idempotency is what makes a request *safe to retry* — central to resilient clients.
+- **Status codes**: `2xx` success, `3xx` redirect, `4xx` client error (`401`/`403`/`404`/
+  `429`), `5xx` server error (`500`/`502`/`503`/`504`).
+- **Caching headers**: `Cache-Control` (`max-age`, `no-store`, `private`, `immutable`),
+  `ETag`/`If-None-Match` and `Last-Modified`/`If-Modified-Since` for revalidation
+  (`304 Not Modified`). See *CDN & edge caching*.
+
+## When to use / When NOT
+
+- **Enable HTTP/2 when:** you serve many resources per page/origin over TLS — multiplexing
+  + HPACK eliminate the 1.1 connection sprawl and shrink header overhead. Default for
+  modern HTTPS. **Avoid relying on Server Push:** it's deprecated; use `Early Hints`.
+- **Enable HTTP/3 when:** clients are on lossy/mobile networks, you want lower tail
+  latency and faster (0-RTT) reconnects, or HTTP/2's TCP HoL blocking shows up in your
+  p99. Offer it *alongside* H2 via `Alt-Svc` (clients upgrade opportunistically).
+  **Avoid betting solely on H3 when:** corporate/middlebox environments block UDP/443
+  — always keep an H2/TCP fallback. Watch CPU on very high-throughput servers.
+- **Stay on HTTP/1.1 when:** simple internal tools, low request counts, or debugging
+  (it's human-readable on the wire). **Avoid 1.1 for asset-heavy public pages:** the
+  per-request serialization and connection sprawl hurt.
+- **0-RTT caveat:** 0-RTT early data is **replayable**, so only send it for *idempotent*
+  requests — never a non-idempotent `POST` that charges a card twice.
+
+## Tradeoffs
+
+| Concern | HTTP/1.1 | HTTP/2 | HTTP/3 |
+| ------- | -------- | ------ | ------ |
+| Transport | TCP, text | TCP, binary | QUIC / UDP, binary |
+| Concurrency | 1 req/conn (≈6 conns) | Multiplexed streams, 1 conn | Multiplexed streams, 1 conn |
+| Head-of-line blocking | App-level (pipelining) | TCP-level (one conn) | None (per-stream QUIC) |
+| Header compression | None | HPACK | QPACK |
+| Setup round trips | TCP+TLS (2–3) | TCP+TLS (2–3) | 1-RTT / 0-RTT |
+| Survives IP change | No | No | Yes |
+| Server push | No | Yes (deprecated) | Yes (rare) |
+| Main weakness | Connection sprawl, verbose | TCP HoL blocking | UDP blocked by middleboxes, CPU |
+
+## Diagram
+
+How concurrency and head-of-line blocking differ across the three versions.
+
+<Mermaid code={`graph TD
+  subgraph H1[HTTP/1.1 — serialized]
+    A1[Req1] --> A2[Req2] --> A3[Req3]
+    A1 -.app-level HoL.-> A2
+  end
+  subgraph H2[HTTP/2 — multiplexed over 1 TCP]
+    B[(1 TCP conn)] --> S1[Stream1]
+    B --> S2[Stream2]
+    B --> S3[Stream3]
+    B -.TCP loss stalls ALL streams.-> S2
+  end
+  subgraph H3[HTTP/3 — QUIC streams over UDP]
+    C[(1 QUIC conn)] --> Q1[Stream1]
+    C --> Q2[Stream2]
+    C --> Q3[Stream3]
+    Q2 -.loss isolated to its stream.-> Q2
+  end`} />
+
+## Try it
+
+Compare the three versions across the properties that drive the choice.
+
+<CompareMatrix
+  client:visible
+  caption="HTTP/1.1 vs HTTP/2 vs HTTP/3"
+  columns={['HTTP/1.1', 'HTTP/2', 'HTTP/3']}
+  rows={[
+    { criterion: 'Wire format', cells: ['Text', 'Binary frames', 'Binary frames'] },
+    { criterion: 'Transport', cells: ['TCP', 'TCP', 'QUIC over UDP'] },
+    { criterion: 'Multiplexing', cells: ['No (≈6 conns/origin)', 'Yes, one connection', 'Yes, one connection'] },
+    { criterion: 'Head-of-line blocking', cells: ['Application level', 'TCP level (one connection)', 'Eliminated (per-stream)'] },
+    { criterion: 'Header compression', cells: ['None', 'HPACK', 'QPACK'] },
+    { criterion: 'Connection setup', cells: ['TCP + TLS (2–3 RTT)', 'TCP + TLS (2–3 RTT)', '1-RTT, 0-RTT on resume'] },
+    { criterion: 'Connection migration', cells: ['No', 'No', 'Yes (connection IDs)'] },
+    { criterion: 'Server push', cells: ['No', 'Yes (deprecated)', 'Yes (rare)'] },
+    { criterion: 'Best for', cells: ['Simple/internal, debugging', 'Asset-heavy HTTPS sites', 'Mobile/lossy nets, low p99'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Browsers** (Chrome, Firefox, Safari) negotiate H2 via TLS ALPN and upgrade to H3
+  opportunistically when servers advertise it with the `Alt-Svc` header.
+- **Cloudflare, Google, and Meta** serve a large fraction of their traffic over HTTP/3,
+  citing better performance for mobile users on lossy links.
+- **Server Push** was removed from Chrome in 2022 after data showed it rarely helped and
+  often wasted bandwidth pushing already-cached assets; `103 Early Hints` + `preload` is
+  the replacement.
+- **gRPC** is built on HTTP/2 expressly to exploit multiplexed bidirectional streams for
+  high-throughput RPC.
+
+## Further reading
+
+- [RFC 9114 — HTTP/3](https://www.rfc-editor.org/rfc/rfc9114) — HTTP semantics over QUIC, including QPACK and stream mapping.
+- [RFC 9110 — HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110) — the version-independent semantics: methods, status codes, idempotency, caching.
+- [Cloudflare: HTTP/3 vs HTTP/2](https://blog.cloudflare.com/http-3-vs-http-2/) — practical, measured comparison of HoL blocking and setup latency.

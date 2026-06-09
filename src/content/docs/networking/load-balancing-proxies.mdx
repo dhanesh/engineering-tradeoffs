@@ -1,0 +1,222 @@
+---
+title: Load Balancing & Proxies
+description: L4 vs L7 load balancing, reverse vs forward proxies, balancing algorithms (round-robin, least-connections, consistent hashing), health checks, sticky sessions, TLS termination, and API gateways.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A load balancer is the front door to a fleet: it takes incoming connections and spreads
+them across many backends so no single server is overwhelmed, dead servers are skipped,
+and you can add or remove capacity without clients noticing. Proxies are the same
+machinery pointed in different directions — a **reverse** proxy fronts your servers
+(clients don't know how many there are), a **forward** proxy fronts your clients
+(servers don't know who's behind it). The central decision is **how deep to look**: an
+**L4** balancer routes by IP/port without reading the payload (fast, protocol-agnostic),
+while an **L7** balancer parses HTTP and can route by path, header, or cookie (smart, but
+heavier and must terminate TLS). Picking the layer, the algorithm, and the session model
+determines your latency, your failover behavior, and how much intelligence lives at the
+edge.
+
+## Mental model
+
+**A load balancer is a smart receptionist for a building full of identical clerks.**
+Every visitor (request) arrives at one desk; the receptionist decides which clerk gets
+them. The only real questions are: *how much does the receptionist read before deciding*
+(just the envelope = L4, or open it and read the letter = L7), *how do they choose a
+clerk* (next in line, least-busy, or always-the-same-clerk-for-this-visitor), and *how do
+they know a clerk has gone home* (health checks). Everything else — TLS termination,
+sticky sessions, API gateways — is added duties for that same receptionist.
+
+The proxy direction is just *which side the receptionist works for*: a **reverse proxy**
+guards the building's clerks (load balancing, TLS, caching, WAF); a **forward proxy**
+escorts the visitors out (egress control, anonymity, content filtering).
+
+## Types / Variants
+
+**L4 (transport) load balancing.** Routes on the TCP/UDP 4-tuple (src/dst IP+port)
+without inspecting the payload. Fast, low-latency, protocol-agnostic (works for any TCP/UDP
+service), and can do **direct server return**. Can't route by URL or read HTTP, and passes
+TLS straight through (no termination). Examples: AWS NLB, Linux IPVS, Maglev.
+
+**L7 (application) load balancing.** Parses HTTP(S): routes by **path, host, header,
+cookie, or method**, can rewrite, retry, do content-based routing and canary splits, and
+must usually **terminate TLS** to read the request. More CPU and a touch more latency,
+but far smarter. Examples: AWS ALB, NGINX, HAProxy (HTTP mode), Envoy.
+
+**Reverse proxy.** Sits in front of servers; clients hit it, it forwards to backends.
+Centralizes load balancing, TLS termination, caching, compression, request buffering, and
+WAF. Nearly every public service has one. Examples: NGINX, Envoy, HAProxy, Caddy.
+
+**Forward proxy.** Sits in front of clients; intercepts their outbound requests.
+Egress filtering, corporate web access, caching, anonymity, and policy enforcement.
+Examples: Squid, corporate proxies, Tor (conceptually).
+
+**Balancing algorithms.**
+- **Round-robin**: next backend in rotation. Simple, even *if* requests are uniform.
+- **Weighted round-robin**: bias toward bigger/faster nodes.
+- **Least connections**: send to the backend with the fewest active connections — better
+  when request durations vary widely (long-lived connections, streaming).
+- **Least response time / EWMA**: pick the fastest-responding backend; latency-aware.
+- **IP hash**: hash the client IP to a backend — crude stickiness without cookies.
+- **Consistent hashing**: hash the key (client, session, cache key) onto a ring so adding
+  /removing a backend remaps only ~1/N keys. Essential for cache affinity and sharded
+  backends; pairs with bounded-load to avoid hot nodes. See *Distributed caching*.
+
+**Health checks.** Active (the LB probes `/healthz` and drops failing backends) vs passive
+(observe real traffic — eject after N errors). Without them, "load balancing" happily
+sends traffic to dead servers.
+
+**Sticky sessions (session affinity).** Pin a client to one backend (via cookie or IP
+hash) so server-local state (in-memory session) stays reachable. A crutch: it undermines
+even balancing and breaks on backend loss. Prefer **stateless backends + shared session
+store** (see *Distributed caching*), and use stickiness only when you must.
+
+**TLS termination.** The LB/reverse proxy decrypts TLS, inspects/routes the plaintext,
+then either forwards plaintext (faster, internal hop unencrypted) or **re-encrypts**
+(TLS passthrough/re-encryption) to the backend. Centralizes certs; choose plaintext vs
+re-encrypt by threat model. See *TLS & transport security*.
+
+**API gateway.** An L7 reverse proxy specialized for APIs: auth, rate limiting, request
+validation, routing/aggregation, quotas, observability — one policy-enforcing front door
+for many microservices. Examples: Kong, AWS API Gateway, Envoy-based gateways.
+
+## When to use / When NOT
+
+- **Use L4 when:** raw throughput/low latency matters, the protocol isn't HTTP (databases,
+  gRPC-at-transport, game traffic, MQTT), you want end-to-end TLS untouched, or you need
+  millions of connections cheaply. **Avoid L4 when:** you need path/header routing,
+  per-request retries, or content-based canaries — it can't see the request.
+- **Use L7 when:** you need HTTP-aware routing (path/host/header), TLS termination,
+  retries, canary/blue-green by content, WAF, or an API gateway. **Avoid L7 when:**
+  non-HTTP traffic, you can't or won't terminate TLS, or the parsing overhead/latency is
+  unacceptable at extreme scale.
+- **Use reverse proxy:** essentially always for public services — TLS, caching, buffering,
+  security in one place. **Use forward proxy when:** controlling/inspecting *egress*.
+- **Algorithm:** round-robin for uniform short requests; **least-connections** when
+  durations vary; **consistent hashing** for cache/shard affinity; sticky only when
+  backends hold local state you can't externalize.
+- **Avoid sticky sessions when** you can make backends stateless — it's an
+  even-distribution and failover liability.
+
+## Tradeoffs
+
+| Concern | L4 load balancer | L7 load balancer |
+| ------- | ---------------- | ---------------- |
+| Inspects | IP/port (4-tuple) | Full HTTP request |
+| Routing power | By connection only | Path/host/header/cookie |
+| TLS | Passthrough (untouched) | Usually terminates |
+| Latency / CPU | Lowest | Higher (parsing, crypto) |
+| Protocols | Any TCP/UDP | HTTP(S) (and gRPC/WS) |
+| Features | DSR, raw speed | Retries, canary, WAF, rewrite |
+| Best for | Throughput, non-HTTP | Smart HTTP routing, gateways |
+
+| Algorithm | Best when | Watch out for |
+| --------- | --------- | ------------- |
+| Round-robin | Uniform, short requests | Skews if request cost varies |
+| Least connections | Variable durations, long-lived | Needs accurate conn counts |
+| Least response time | Latency-sensitive | Can herd onto one fast node |
+| Consistent hashing | Cache/shard affinity | Hot keys (use bounded-load) |
+| IP hash / sticky | Server-local session state | Uneven load, failover breakage |
+
+## Diagram
+
+A reverse-proxy L7 load balancer terminating TLS, health-checking, and spreading requests
+across a backend fleet.
+
+<Mermaid code={`graph TD
+  C[Clients] -->|HTTPS| LB[L7 reverse proxy / LB<br/>TLS termination]
+  LB -->|route by path/header| B1[Backend 1]
+  LB --> B2[Backend 2]
+  LB --> B3[Backend 3]
+  LB -. health check /healthz .-> B1
+  LB -. health check .-> B2
+  LB -. health check .-> B3
+  B1 --> S[(Shared session store)]
+  B2 --> S
+  B3 --> S`} />
+
+## Try it
+
+Compare L4 vs L7, then walk the decision tree from your traffic.
+
+<CompareMatrix
+  client:visible
+  caption="L4 vs L7 load balancing"
+  columns={['L4 (transport)', 'L7 (application)']}
+  rows={[
+    { criterion: 'Routes on', cells: ['IP + port (4-tuple)', 'URL path, host, header, cookie'] },
+    { criterion: 'Reads payload', cells: ['No', 'Yes (parses HTTP)'] },
+    { criterion: 'TLS handling', cells: ['Passthrough', 'Usually terminates'] },
+    { criterion: 'Latency / overhead', cells: ['Lowest', 'Higher'] },
+    { criterion: 'Protocols', cells: ['Any TCP/UDP', 'HTTP(S), gRPC, WebSocket'] },
+    { criterion: 'Retries / rewrites', cells: ['No', 'Yes'] },
+    { criterion: 'Canary / content routing', cells: ['No', 'Yes'] },
+    { criterion: 'Examples', cells: ['AWS NLB, IPVS, Maglev', 'AWS ALB, NGINX, Envoy, HAProxy'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which load balancer and algorithm?"
+  root={{
+    question: 'Is the traffic HTTP(S) and do you need to route on its content (path, header, cookie) or terminate TLS at the edge?',
+    branches: [
+      {
+        label: 'Yes — HTTP-aware routing / TLS termination',
+        next: {
+          question: 'Do you also need API-specific policy (auth, rate limiting, quotas, aggregation)?',
+          branches: [
+            {
+              label: 'Yes — it is an API front door',
+              next: { leaf: { recommendation: 'L7 + API gateway', detail: 'Use an L7 reverse proxy specialized as an API gateway (Kong, Envoy, AWS API Gateway) for auth, rate limiting, validation, and routing across microservices.' } },
+            },
+            {
+              label: 'No — just smart HTTP load balancing',
+              next: { leaf: { recommendation: 'L7 load balancer', detail: 'NGINX/Envoy/ALB: route by path/host/header, terminate TLS, do retries and canaries. Use least-connections if request durations vary; consistent hashing for cache affinity.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — non-HTTP or pass TLS through',
+        next: {
+          question: 'Do you need raw throughput / millions of connections, or end-to-end TLS untouched?',
+          branches: [
+            {
+              label: 'Yes — speed / TLS passthrough / non-HTTP',
+              next: { leaf: { recommendation: 'L4 load balancer', detail: 'AWS NLB / IPVS / Maglev: route on the 4-tuple at line rate, pass TLS through to the backend. Pick round-robin for uniform flows, least-connections for long-lived ones.' } },
+            },
+            {
+              label: 'Backends hold per-client in-memory state',
+              next: { leaf: { recommendation: 'Externalize state, then L4/L7 stateless; sticky only as last resort', detail: 'Move sessions to a shared store (Redis) so any backend can serve any client. If you truly cannot, use sticky sessions (cookie/IP hash) — at the cost of even balancing and clean failover.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google Maglev** is a software L4 network load balancer using consistent hashing to
+  spread connections across servers while surviving fleet changes — the model many cloud
+  NLBs follow.
+- **Envoy** (the proxy behind Istio and many API gateways) is an L7 powerhouse: dynamic
+  routing, retries, outlier detection (passive health checks), and observability.
+- **NGINX / HAProxy** are the workhorse reverse proxies for TLS termination, L7 routing,
+  and least-connections balancing across app fleets.
+- **AWS** splits the choice explicitly: **NLB** (L4, raw speed, TLS passthrough) vs **ALB**
+  (L7, path/host routing, TLS termination) vs **API Gateway** (managed API front door).
+
+## Further reading
+
+- [Maglev: A Fast and Reliable Software Network Load Balancer (Google, NSDI '16)](https://www.usenix.org/system/files/conference/nsdi16/nsdi16-paper-eisenbud.pdf) — consistent hashing + connection tracking at L4.
+- [NGINX: Load Balancing methods](https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/) — round-robin, least-conn, hash, and sticky in practice.
+- [Envoy load balancing docs](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/load_balancing) — algorithms, outlier detection, and consistent hashing with bounded load.

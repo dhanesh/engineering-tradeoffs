@@ -65,6 +65,17 @@ export default defineConfig({
             { label: 'Search architecture', slug: 'search/search-architecture' },
           ],
         },
+        {
+          label: 'Networking & Protocols',
+          items: [
+            { label: 'Overview', slug: 'networking' },
+            { label: 'TCP vs UDP', slug: 'networking/tcp-udp' },
+            { label: 'HTTP evolution', slug: 'networking/http-evolution' },
+            { label: 'TLS & security', slug: 'networking/tls-security' },
+            { label: 'DNS', slug: 'networking/dns' },
+            { label: 'Load balancing & proxies', slug: 'networking/load-balancing-proxies' },
+          ],
+        },
       ],
     }),
   ],

@@ -1,0 +1,162 @@
+---
+title: Networking & Protocols
+description: The layered network model (link, internet, transport, application), OSI vs TCP/IP, encapsulation, and why layering wins — the foundation every distributed system rides on.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+Every request your system makes — a database query, a cache lookup, an API call,
+a CDN fetch — is bytes pushed through a stack of network layers, each solving one
+problem and hiding it from the layer above. You almost never write raw packets, but
+the *latency, failure modes, and tuning knobs* you actually care about (connection
+setup cost, head-of-line blocking, retransmits, MTU, TLS round trips) are all
+properties of specific layers. Knowing which layer owns which problem is the
+difference between "the network is slow" and "we're paying an extra TCP handshake
+plus a TLS 1.2 round trip on every cold request, so switch to HTTP/3 or keep
+connections warm." This cluster walks the stack from the wire up; this page is the
+map.
+
+## Mental model
+
+Networking is **a stack of envelopes inside envelopes.** Your application data is a
+letter. The transport layer (TCP/UDP) puts it in an envelope addressed to a *port*
+(which program). The internet layer (IP) puts *that* in an envelope addressed to a
+*host* (which machine, anywhere on Earth). The link layer puts *that* in an envelope
+addressed to the *next hop* (the machine one wire away). Each router on the path opens
+only the outermost envelope it needs, rewrites the next-hop address, and forwards.
+The receiver unwraps the envelopes in reverse, each layer handing its payload up to
+the layer that understands it.
+
+The governing rule is **encapsulation**: each layer treats the layer above as opaque
+payload and the layer below as an unreliable pipe. TCP doesn't care that it's carrying
+HTTP; IP doesn't care it's carrying TCP; Ethernet doesn't care it's carrying IP. That
+strict ignorance is exactly what lets the Internet mix technologies — fiber, Wi-Fi,
+4G, satellite — under one addressing scheme, and lets HTTP/3 swap TCP for QUIC without
+rewriting the application.
+
+## Types / Variants
+
+**The two reference models.** *OSI* (7 layers: Physical, Data Link, Network,
+Transport, Session, Presentation, Application) is the academic taxonomy. *TCP/IP*
+(4 layers: Link, Internet, Transport, Application) is what the Internet actually runs.
+OSI's Session/Presentation/Application layers are collapsed into TCP/IP's single
+Application layer — in practice TLS, gzip, and HTTP all live there. Use OSI numbers as
+shorthand ("an L7 load balancer", "an L4 firewall"); build against the TCP/IP model.
+
+**Link layer (L1–L2).** Moves frames between two directly-connected nodes: Ethernet,
+Wi-Fi (802.11), PPP. Owns MAC addresses, the local medium, and the **MTU** (max frame
+size, typically 1500 bytes) that ripples all the way up as the cause of IP
+fragmentation and TCP's MSS.
+
+**Internet layer (L3).** Moves packets *host-to-host across networks* via IP. Owns
+global addressing (IPv4 32-bit / IPv6 128-bit), routing, and TTL. Best-effort and
+**connectionless**: no ordering, no delivery guarantee, packets can drop, dup, or
+reorder. ICMP (ping, traceroute, "fragmentation needed") rides here.
+
+**Transport layer (L4).** Turns the host-to-host pipe into a *process-to-process*
+channel via **ports**. This is where reliability is a *choice*: **TCP** adds
+connections, ordering, retransmission, flow and congestion control; **UDP** adds
+almost nothing (just ports + a checksum), staying fast and lossy. **QUIC** is a newer
+L4-ish transport built *on* UDP that reclaims TCP's reliability without its
+head-of-line blocking.
+
+**Application layer (L7).** The protocols your code speaks: HTTP, DNS, gRPC, SMTP,
+SSH, WebSocket. Defines message formats and semantics. TLS sits *between* transport
+and application — encrypting the application payload — which is why people argue about
+whether it's "L6" or "part of L7"; pragmatically it's a shim you bolt onto TCP/UDP.
+
+## When to use / When NOT
+
+This page is conceptual scaffolding, so "use when" maps to *which layer to reason at*:
+
+- **Reason at the link layer when:** you hit MTU/fragmentation issues, jumbo frames,
+  or are inside one datacenter rack. **Ignore it when:** you're past the first hop —
+  it's abstracted away.
+- **Reason at the internet layer when:** debugging routing, NAT, IP exhaustion,
+  anycast, or cross-region reachability. **Ignore it when:** the host is reachable and
+  you care about a specific connection's behavior — that's L4.
+- **Reason at the transport layer when:** tuning latency/throughput, choosing TCP vs
+  UDP vs QUIC, fighting connection-setup cost or head-of-line blocking. This is where
+  most system-design decisions actually live.
+- **Reason at the application layer when:** designing APIs, caching semantics, retries,
+  idempotency, service discovery (DNS), and security (TLS). Most of *this cluster*.
+- **Avoid layer-hopping prematurely:** don't reach for raw UDP or kernel tuning before
+  you've ruled out an L7 cause (a chatty protocol, no keep-alive, a cold TLS handshake).
+
+## Tradeoffs
+
+Why layering at all, and what it costs:
+
+| Property | With strict layering | Without (monolithic stack) |
+| -------- | -------------------- | -------------------------- |
+| Evolvability | Swap a layer (TCP→QUIC) without touching others | Any change ripples through everything |
+| Interoperability | Mix media/vendors under one model | Tight coupling, fewer combinations |
+| Debuggability | Isolate faults to one layer | Faults smear across concerns |
+| Performance | Header overhead + per-layer copies | Can hand-fuse for raw speed |
+| Latency | Each layer adds setup cost (handshakes) | Fewer round trips if co-designed |
+
+The cost of clean layers is real: per-layer headers (~tens of bytes each), extra
+memory copies, and stacked setup round trips (TCP handshake *then* TLS handshake).
+QUIC exists precisely because the TCP+TLS layer boundary cost too many round trips, so
+it *deliberately* merges transport and crypto setup — a calculated layering violation.
+
+## Diagram
+
+A packet's journey down the sender's stack, across the wire, and up the receiver's —
+each layer wrapping the one above.
+
+<Mermaid code={`graph TD
+  subgraph Sender
+    A1[App: HTTP request] --> T1[Transport: + TCP/UDP header, port]
+    T1 --> I1[Internet: + IP header, host addr]
+    I1 --> L1[Link: + Ethernet frame, next-hop MAC]
+  end
+  L1 -->|bits on the wire| R[Router: opens L3, rewrites next hop]
+  R -->|forwards| L2[Link: receive frame]
+  subgraph Receiver
+    L2 --> I2[Internet: strip IP header]
+    I2 --> T2[Transport: reassemble, strip TCP/UDP]
+    T2 --> A2[App: HTTP request delivered]
+  end`} />
+
+## Try it
+
+Compare what each layer owns, addresses by, and can fail on.
+
+<CompareMatrix
+  client:visible
+  caption="The four TCP/IP layers at a glance"
+  columns={['Link (L2)', 'Internet (L3)', 'Transport (L4)', 'Application (L7)']}
+  rows={[
+    { criterion: 'Moves', cells: ['Frames, next hop', 'Packets, host-to-host', 'Segments, process-to-process', 'Messages'] },
+    { criterion: 'Addresses by', cells: ['MAC address', 'IP address', 'Port number', 'URL / name / topic'] },
+    { criterion: 'Example protocols', cells: ['Ethernet, Wi-Fi, PPP', 'IPv4/IPv6, ICMP', 'TCP, UDP, QUIC', 'HTTP, DNS, TLS, gRPC'] },
+    { criterion: 'Reliability', cells: ['Per-link only', 'Best-effort, none', 'TCP: yes / UDP: no', 'Depends on protocol'] },
+    { criterion: 'Key constraint', cells: ['MTU (~1500B)', 'Routing, TTL, NAT', 'Handshake, congestion, HoL', 'Round trips, caching'] },
+    { criterion: 'You tune it for', cells: ['Jumbo frames, fragmentation', 'Anycast, IP exhaustion', 'Latency vs reliability', 'API & cache design'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **The whole Internet** runs the TCP/IP 4-layer model; OSI's 7 layers survive mostly
+  as vocabulary ("L3 switch", "L7 firewall").
+- **CDNs and cloud load balancers** are sold explicitly as **L4** (fast, opaque,
+  connection-level — AWS NLB) or **L7** (HTTP-aware, can route on path/header — AWS ALB,
+  Cloudflare). Knowing the layer tells you what they can and can't inspect.
+- **QUIC / HTTP/3** (Google, then standardized) is the headline case of *deliberately*
+  collapsing the transport+TLS boundary to cut setup round trips — layering bent for
+  latency.
+- **Kubernetes networking** is a layered tour in miniature: CNI plugins at L2/L3, kube-proxy
+  and Services at L3/L4, and Ingress controllers at L7.
+
+## Further reading
+
+- [Computer Networking: A Top-Down Approach (Kurose & Ross)](https://gaia.cs.umass.edu/kurose_ross/index.php) — the standard text; teaches the stack from the application down.
+- [RFC 1122 — Requirements for Internet Hosts](https://www.rfc-editor.org/rfc/rfc1122) — the canonical description of the TCP/IP layering model.
+- [Cloudflare Learning: the OSI model](https://www.cloudflare.com/learning/ddos/glossary/open-systems-interconnection-model-osi/) — a practical layer-by-layer explainer with attack/defense framing.

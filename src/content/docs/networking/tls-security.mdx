@@ -1,0 +1,184 @@
+---
+title: TLS & Transport Security
+description: The TLS handshake (1.2 vs 1.3), certificates/PKI and the chain of trust, cipher suites, forward secrecy, mTLS, SNI, and session resumption — what each buys and when to reach for it.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+TLS is the layer that turns a plaintext TCP/UDP connection into a private, tamper-proof,
+authenticated channel — the "S" in HTTPS and the substrate under gRPC, modern databases,
+and service meshes. It solves three problems at once: **confidentiality** (eavesdroppers
+see ciphertext), **integrity** (tampering is detected), and **authentication** (you're
+really talking to the host you dialed, proven by a certificate). The cost is a handshake
+— extra round trips and CPU before the first byte of data — which is exactly why TLS 1.3,
+session resumption, and 0-RTT exist. This page covers how the handshake works, how
+certificates chain to a trusted root, and the security knobs (forward secrecy, mTLS, SNI)
+you choose between.
+
+## Mental model
+
+**TLS is a sealed-envelope service with an ID check up front.** Before any data flows,
+the two parties run a handshake that does two jobs: (1) **prove identity** — the server
+presents a certificate, a notarized ID signed by an authority your system already
+trusts, and (2) **agree on a shared secret** nobody watching the wire can derive, used
+to encrypt everything after. Once the handshake completes, both sides hold the same
+symmetric key and every message is sealed in an envelope only the other can open and
+that can't be altered without detection.
+
+The trust hinges on a **chain**: you don't trust the server directly, you trust a small
+set of **root CAs** baked into your OS/browser. The server's cert is signed by an
+intermediate, the intermediate by a root you already trust — follow the signatures up to
+a root and the chain validates. Break any link (expired cert, unknown issuer, hostname
+mismatch) and the handshake fails closed.
+
+## Types / Variants
+
+**TLS 1.2 vs TLS 1.3 (the handshake).**
+- **TLS 1.2**: a **2-RTT** handshake — ClientHello/ServerHello to negotiate the cipher
+  suite, then certificate + key exchange. Flexible but historically full of footguns
+  (RSA key transport without forward secrecy, weak ciphers, downgrade attacks).
+- **TLS 1.3**: stripped down and faster — **1-RTT** handshake (the client guesses the key
+  share and sends it in the first flight), **0-RTT** resumption for repeat visits.
+  Removes all the weak primitives: **forward secrecy is mandatory** (ephemeral
+  Diffie-Hellman only), AEAD ciphers only, no RSA key transport, no renegotiation. Use
+  1.3 everywhere it's available; keep 1.2 only for legacy clients.
+
+**Certificates & PKI (the chain of trust).** An X.509 certificate binds a public key to
+a hostname, signed by a **Certificate Authority**. Validation walks **leaf → intermediate
+→ root CA**, checking signatures, validity dates, hostname match (SAN), and revocation
+(CRL / OCSP / **OCSP stapling**). Roots live in the OS/browser trust store. **Let's
+Encrypt** made DV certs free and automatable (ACME).
+
+**Cipher suites.** The bundle of algorithms a connection uses: key exchange (ECDHE),
+authentication (RSA/ECDSA), bulk cipher (AES-GCM, ChaCha20-Poly1305), and the AEAD
+integrity tag. TLS 1.3 shrank the menu to a handful of strong, AEAD-only suites,
+eliminating most misconfiguration.
+
+**Forward secrecy (PFS).** Using *ephemeral* keys (ECDHE) per session means that even if
+the server's long-term private key is later stolen, *past* recorded sessions stay
+unbreakable — there's no single key that decrypts history. Mandatory in 1.3; should
+always be on in 1.2.
+
+**mTLS (mutual TLS).** Both sides present certificates — the *client* is authenticated
+too, not just the server. The backbone of zero-trust service meshes: services prove their
+identity to each other cryptographically instead of trusting the network.
+
+**SNI (Server Name Indication).** The client sends the target hostname in the
+ClientHello so one IP can host many TLS certs (virtual hosting). Plaintext in 1.2/1.3
+(a privacy leak); **Encrypted Client Hello (ECH)** is the evolving fix.
+
+**Session resumption.** Avoid the full handshake on reconnect via **session tickets**
+(1.2/1.3) or **PSK** (1.3), enabling **0-RTT**. Caveat: 0-RTT data is **replayable**, so
+only send idempotent requests as early data.
+
+## When to use / When NOT
+
+- **Use TLS 1.3 when:** you control or can update the clients — it's faster, simpler, and
+  removes whole vulnerability classes. **Keep 1.2 only when:** you must support legacy
+  clients/devices that can't speak 1.3; disable everything below 1.2.
+- **Use mTLS when:** service-to-service auth inside a mesh/zero-trust network, or you
+  need strong client identity (high-value APIs, partner integrations). **Avoid mTLS for
+  public end-user web:** managing/rotating client certs for browsers is impractical — use
+  it east-west, not north-south.
+- **Use session resumption / 0-RTT when:** you have many short reconnecting sessions and
+  want to cut handshake latency. **Avoid 0-RTT early data for non-idempotent requests:**
+  it can be replayed (double-charge risk).
+- **Always require forward secrecy (ECDHE):** the small CPU cost buys protection against
+  retroactive decryption. There's no good reason to disable it.
+- **Terminate TLS thoughtfully:** offloading at the edge/load balancer simplifies certs
+  but leaves the internal hop plaintext unless you re-encrypt — decide per threat model.
+  See *Load balancing & proxies*.
+
+## Tradeoffs
+
+| Concern | TLS 1.2 | TLS 1.3 |
+| ------- | ------- | ------- |
+| Handshake round trips | 2-RTT | 1-RTT (0-RTT resume) |
+| Forward secrecy | Optional (enable it) | Mandatory (ephemeral only) |
+| Cipher menu | Large, footgun-prone | Small, AEAD-only |
+| Legacy support | Broad | Needs modern clients |
+| Known weak modes | RSA transport, CBC, renegotiation | Removed |
+
+| Concern | One-way TLS (server auth) | mTLS (mutual auth) |
+| ------- | ------------------------- | ------------------ |
+| Who is authenticated | Server only | Both server and client |
+| Typical use | Public web / north-south | Service mesh / east-west |
+| Operational burden | Low (server cert only) | High (client cert lifecycle) |
+| Trust model | Client trusts CA roots | Both sides trust an internal CA |
+
+## Diagram
+
+A TLS 1.3 handshake: one round trip to authenticate the server and agree a forward-secret
+key, then encrypted application data.
+
+<Mermaid code={`sequenceDiagram
+  participant C as Client
+  participant S as Server
+  C->>S: ClientHello (SNI, key share, supported suites)
+  S->>C: ServerHello (key share) + Certificate + Finished (encrypted)
+  Note over C,S: Both derive the same forward-secret session key
+  C->>S: Finished (encrypted)
+  C->>S: Application data (encrypted)
+  S->>C: Application data (encrypted)`} />
+
+## Try it
+
+Compare the protocol versions, then read when each security feature earns its keep.
+
+<CompareMatrix
+  client:visible
+  caption="TLS 1.2 vs TLS 1.3"
+  columns={['TLS 1.2', 'TLS 1.3']}
+  rows={[
+    { criterion: 'Full handshake', cells: ['2-RTT', '1-RTT'] },
+    { criterion: 'Resumption', cells: ['Session IDs / tickets', 'PSK, 0-RTT early data'] },
+    { criterion: 'Forward secrecy', cells: ['Optional (ECDHE)', 'Mandatory (ephemeral only)'] },
+    { criterion: 'Key exchange', cells: ['RSA transport or (EC)DHE', '(EC)DHE only'] },
+    { criterion: 'Cipher suites', cells: ['Many, incl. weak (CBC)', 'Few, AEAD-only'] },
+    { criterion: 'Renegotiation', cells: ['Allowed (attack surface)', 'Removed'] },
+    { criterion: 'SNI privacy', cells: ['Plaintext', 'Plaintext (ECH in progress)'] },
+    { criterion: 'Recommendation', cells: ['Legacy clients only', 'Default everywhere'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Mutual TLS (mTLS)"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Use mTLS for service-to-service authentication inside a zero-trust network or service mesh, and for high-value or partner APIs where you need cryptographic proof of the client identity rather than a bearer token. It is the standard east-west auth mechanism in Istio, Linkerd, and SPIFFE-based meshes.',
+    },
+    {
+      label: 'Why',
+      content: 'It removes implicit network trust: a caller must present a valid certificate, so a foothold inside the network is not enough to call a service. Identity is bound to a cryptographic credential and rotated automatically by the mesh, eliminating long-lived shared secrets and giving you per-service authorization and audit.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'For public, browser-facing traffic mTLS is impractical: provisioning, distributing, and rotating client certificates to end users does not scale, and most browsers handle client certs poorly. Even east-west, it adds a certificate lifecycle (issuance, rotation, revocation) you must automate — usually via a mesh or an internal CA. Use one-way TLS plus token auth for north-south, mTLS for east-west.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Let's Encrypt** issues free, automated DV certificates via the ACME protocol,
+  driving HTTPS adoption past 90% of web page loads.
+- **Istio / Linkerd** service meshes turn on **mTLS** automatically between pods,
+  rotating short-lived certs so service identity replaces network trust.
+- **Cloudflare, Google, and Mozilla** drove TLS 1.3 deployment; modern browsers prefer
+  it and increasingly refuse anything below 1.2.
+- **OCSP stapling** lets servers attach a fresh, CA-signed revocation proof to the
+  handshake, sparing clients a separate (slow, privacy-leaking) OCSP lookup.
+
+## Further reading
+
+- [RFC 8446 — TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) — the protocol spec: 1-RTT handshake, mandatory forward secrecy, 0-RTT.
+- [Cloudflare: A Detailed Look at RFC 8446 (TLS 1.3)](https://blog.cloudflare.com/rfc-8446-aka-tls-1-3/) — readable walkthrough of the handshake changes and why they matter.
+- [SPIFFE/SPIRE](https://spiffe.io/docs/latest/spiffe-about/overview/) — workload identity and automated mTLS for zero-trust service meshes.
