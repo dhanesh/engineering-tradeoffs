@@ -15,7 +15,7 @@
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
   "dry_streak": 0,
-  "round": 2,
+  "round": 3,
   "clusters": [
     {
       "slug": "design-patterns",
@@ -69,8 +69,9 @@
     {
       "slug": "concurrency",
       "title": "Concurrency & Parallelism",
-      "status": "uncovered",
-      "tier": "systems"
+      "status": "covered",
+      "tier": "systems",
+      "pages": 6
     },
     {
       "slug": "distributed-systems",
