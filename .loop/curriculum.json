@@ -15,7 +15,7 @@
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
   "dry_streak": 0,
-  "round": 16,
+  "round": 17,
   "clusters": [
     {
       "slug": "design-patterns",
@@ -167,8 +167,9 @@
     {
       "slug": "ml-systems",
       "title": "ML / AI Systems",
-      "status": "uncovered",
-      "tier": "fullstack"
+      "status": "covered",
+      "tier": "fullstack",
+      "pages": 6
     },
     {
       "slug": "languages",
