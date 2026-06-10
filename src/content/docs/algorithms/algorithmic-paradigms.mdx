@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import DecisionTree from '../../../components/DecisionTree';
 import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
@@ -143,16 +145,14 @@ fires — premature cleverness on a small `n` is wasted effort and a readability
 
 ## Diagram
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   P{What does the problem look like?} -->|Sorted data or monotonic predicate| BS[Binary search]
   P -->|Ordered/contiguous, nested-pair loop| TP[Two-pointer / sliding window]
   P -->|Splits into independent subproblems| DC[Divide & conquer]
   P -->|Optimal substructure + overlapping subproblems| DP[Dynamic programming]
   P -->|Local optimum implies global optimum| G[Greedy]
   P -->|Constrained combinations, prune early| BT[Backtracking]
-  P -->|Small n / need a baseline| BF[Brute force]
-```
+  P -->|Small n / need a baseline| BF[Brute force]`} />
 
 ## Try it
 

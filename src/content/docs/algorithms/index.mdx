@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
 ## Overview
@@ -107,8 +109,7 @@ thing that actually scales with production load.
 
 ## Diagram
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   Start[Feature / requirement] --> Ops[Restate as primitive operations]
   Ops --> N{How big is n? How hot is the path?}
   N -->|Small, bounded, cold| Simple[Array + simple loop: ship it]
@@ -121,8 +122,7 @@ graph TD
   Heap --> Measure
   Tree --> Measure
   Linear --> Measure
-  Simple --> Measure
-```
+  Simple --> Measure`} />
 
 ## Try it
 

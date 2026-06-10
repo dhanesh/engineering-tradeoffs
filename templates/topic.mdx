@@ -4,7 +4,7 @@ description: One-sentence summary of this topic (replace me).
 last_reviewed: "2026-01-01"
 decision_guidance: true
 ---
-{/* TEMPLATE_VERSION: 1.0.0 */}
+{/* TEMPLATE_VERSION: 1.1.0 */}
 {/*
   CANONICAL TOPIC TEMPLATE (U1 / RT-4 — BINDING).
   Authors: copy this file into src/content/docs/<cluster>/<topic>.mdx and fill it in.
@@ -20,16 +20,17 @@ decision_guidance: true
   If you change the section skeleton (add/remove/reorder headings), you MUST bump
   the TEMPLATE_VERSION marker above, because the drift-check keys off it.
 
-  Interactive widgets: uncomment the imports you need and drop the components into
-  the "## Try it" section. Import path depth assumes a page at
+  Mermaid is imported below (the "## Diagram" section uses it). For the "## Try it"
+  widgets, uncomment the imports you need. Import path depth assumes a page at
   src/content/docs/<cluster>/<topic>.mdx (components are three levels up):
 
-  import Mermaid from '../../../components/Mermaid.astro';
   import DecisionTree from '../../../components/DecisionTree';
   import CompareMatrix from '../../../components/CompareMatrix';
   import WhenWhyTabs from '../../../components/WhenWhyTabs';
   import TradeoffSlider from '../../../components/TradeoffSlider';
 */}
+
+import Mermaid from '../../../components/Mermaid.astro';
 
 ## Overview
 
@@ -61,19 +62,17 @@ burden). A table works well here.
 
 ## Diagram
 
-Use a Mermaid diagram to show the architecture or flow. Static-first: the raw
-source is readable without JavaScript and hydrates to an SVG in the browser.
+Use the `<Mermaid>` component to show the architecture or flow. It is static-first:
+the raw source renders as readable text without JavaScript, then hydrates to an SVG.
 
-```mermaid
-graph TD
+IMPORTANT: always use the `<Mermaid>` component for diagrams. Do NOT put the diagram
+in a fenced code block — Starlight's Expressive Code renders a fenced mermaid block
+as syntax-highlighted *code*, not a diagram (a common mistake).
+
+<Mermaid code={`graph TD
   Client[Client] -->|request| Service[Service]
   Service -->|read/write| Store[(Data Store)]
-  Service -->|cache lookup| Cache[(Cache)]
-```
-
-{/* Once the Mermaid import above is uncommented you can also use the component:
-  <Mermaid code={`graph TD; Client-->Service; Service-->Store[(Data Store)];`} />
-*/}
+  Service -->|cache lookup| Cache[(Cache)]`} />
 
 ## Try it
 

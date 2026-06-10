@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import CompareMatrix from '../../../components/CompareMatrix';
 import DecisionTree from '../../../components/DecisionTree';
 
@@ -136,8 +138,7 @@ needs.
 
 ## Diagram
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   Q{Dominant operation?} -->|Lookup by key| H[Hash table / set]
   Q -->|Index by position| A[Dynamic array]
   Q -->|Repeated min / max| HP[Heap / priority queue]
@@ -145,8 +146,7 @@ graph TD
   Q -->|FIFO oldest-first| QU[Queue]
   Q -->|Both ends| D[Deque]
   Q -->|Splice with held pointer| L[Linked list]
-  H -->|need ordering too| T[Tree-based map / set]
-```
+  H -->|need ordering too| T[Tree-based map / set]`} />
 
 ## Try it
 

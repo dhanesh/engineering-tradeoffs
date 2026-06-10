@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
 ## Overview
@@ -141,8 +143,7 @@ in the **Event-Driven Architecture** cluster.
 A stateless app tier: any request can hit any server because all state lives in
 shared stores or in the token the client carries.
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   C[Client + signed token] --> LB[Load balancer: no affinity needed]
   LB --> A1[App server 1 - stateless]
   LB --> A2[App server 2 - stateless]
@@ -153,8 +154,7 @@ graph TD
   A1 --> DB[(Database - system of record)]
   A2 --> DB
   A3 --> DB
-  X[Kill any app server] -.no data lost, retry routes elsewhere.-> LB
-```
+  X[Kill any app server] -.no data lost, retry routes elsewhere.-> LB`} />
 
 ## Try it
 

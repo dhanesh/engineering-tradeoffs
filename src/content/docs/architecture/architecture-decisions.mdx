@@ -57,16 +57,14 @@ Wrapping both: every significant decision gets an **ADR** capturing context,
 the options considered, the decision, and its consequences — so the reasoning
 survives the people.
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   D[A decision arises] --> T{One-way or two-way door?}
   T -->|Two-way / reversible| FAST[Decide fast, keep moving, revisit freely]
   T -->|One-way / irreversible| LRM{Reached last responsible moment?}
   LRM -->|No| DEFER[Defer - keep options open]
   LRM -->|Yes| DELIB[Deliberate: weigh tradeoffs, record ADR]
   FAST --> ADRlite[Light note]
-  DELIB --> ADR[Full ADR]
-```
+  DELIB --> ADR[Full ADR]`} />
 
 ## Types / Variants
 

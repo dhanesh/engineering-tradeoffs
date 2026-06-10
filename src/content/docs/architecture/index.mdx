@@ -63,14 +63,12 @@ architect's job is not to maximize one attribute but to find the point on the
 tradeoff surface that the business actually wants — and to make that point
 explicit so the team isn't silently optimizing for the wrong thing.
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   D[Architectural drivers] --> QA[Prioritized quality attributes]
   QA --> DEC[Significant decisions]
   DEC --> FF[Fitness functions guard them]
   FF -.->|drift detected| DEC
-  DEC --> T[Tradeoffs accepted, recorded in ADRs]
-```
+  DEC --> T[Tradeoffs accepted, recorded in ADRs]`} />
 
 ## Types / Variants
 

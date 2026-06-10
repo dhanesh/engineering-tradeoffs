@@ -62,8 +62,7 @@ The unifying principle behind both, and behind the data rules below, is **own yo
 coupling**. Every synchronous call, every shared table, every central coordinator
 is a coupling you must justify against the independence it costs.
 
-```mermaid
-graph LR
+<Mermaid code={`graph LR
   subgraph Choreography
     A1[Order] -->|event| B1[Payment]
     B1 -->|event| C1[Shipping]
@@ -72,8 +71,7 @@ graph LR
     O[Orchestrator] --> A2[Order]
     O --> B2[Payment]
     O --> C2[Shipping]
-  end
-```
+  end`} />
 
 ## Types / Variants
 

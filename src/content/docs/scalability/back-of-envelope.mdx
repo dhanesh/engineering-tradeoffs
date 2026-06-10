@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import WhenWhyTabs from '../../../components/WhenWhyTabs';
 
 ## Overview
@@ -125,8 +127,7 @@ estimates go wrong.
 
 The estimation pipeline: from product inputs to the resource that binds.
 
-```mermaid
-graph LR
+<Mermaid code={`graph LR
   U[Users / DAU] --> R[Requests per user per day]
   R --> Q[Average QPS = total/day ÷ 10^5]
   Q --> P[Peak QPS = avg × peak factor]
@@ -136,8 +137,7 @@ graph LR
   P --> LIM{Compare to per-machine / per-link limits}
   B --> LIM
   RET --> LIM
-  LIM --> D[Fits one box? or must distribute?]
-```
+  LIM --> D[Fits one box? or must distribute?]`} />
 
 ## Try it
 

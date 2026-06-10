@@ -51,8 +51,7 @@ the model in the code *is* the domain experts' mental model. Where contexts meet
 you translate — and the **anti-corruption layer** is the translator that stops
 one context's model from leaking into and corrupting another's.
 
-```mermaid
-graph LR
+<Mermaid code={`graph LR
   subgraph Sales context
     SC[Customer = lead + pipeline]
   end
@@ -63,8 +62,7 @@ graph LR
     SUP[Customer = ticket history]
   end
   SC -->|ACL translates| BC
-  BC -->|ACL translates| SUP
-```
+  BC -->|ACL translates| SUP`} />
 
 ## Types / Variants
 

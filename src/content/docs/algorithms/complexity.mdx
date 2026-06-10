@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import CompareMatrix from '../../../components/CompareMatrix';
 import TradeoffSlider from '../../../components/TradeoffSlider';
 
@@ -122,15 +124,13 @@ Two concrete reasons constants and cache dominate at realistic sizes:
 
 ## Diagram
 
-```mermaid
-graph LR
+<Mermaid code={`graph LR
   C1["O(1) constant"] --> C2["O(log n)"]
   C2 --> C3["O(n) linear"]
   C3 --> C4["O(n log n)"]
   C4 --> C5["O(n^2) quadratic"]
   C5 --> C6["O(2^n) exponential"]
-  C6 --> C7["O(n!) factorial"]
-```
+  C6 --> C7["O(n!) factorial"]`} />
 
 The further right, the faster the cost curve bends upward — and the smaller the
 `n` at which the algorithm stops being usable.

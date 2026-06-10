@@ -66,6 +66,11 @@ jobs:
       - name: Internal links
         run: npm run verify:links
 
+      # Diagrams use the <Mermaid> component — a fenced mermaid block renders as
+      # code, not a diagram.
+      - name: Mermaid diagrams
+        run: npm run verify:mermaid
+
       - name: Upload static site
         uses: actions/upload-artifact@v4
         with:

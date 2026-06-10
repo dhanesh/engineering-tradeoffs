@@ -5,6 +5,8 @@ last_reviewed: "2026-06-10"
 decision_guidance: true
 ---
 
+import Mermaid from '../../../components/Mermaid.astro';
+
 import CompareMatrix from '../../../components/CompareMatrix';
 import DecisionTree from '../../../components/DecisionTree';
 
@@ -156,8 +158,7 @@ memory** — no comparison sort wins all four, which is why hybrids exist.
 
 ## Diagram
 
-```mermaid
-graph TD
+<Mermaid code={`graph TD
   D{Keys bounded integers, must beat n log n?} -->|Yes| NC[Counting / radix / bucket sort]
   D -->|No, general comparison sort| S{Need stability?}
   S -->|Yes| ST{Data fits in memory?}
@@ -167,8 +168,7 @@ graph TD
   NS -->|Yes, in O 1 space| HS[Heapsort]
   NS -->|No, want speed| QS[Quicksort / introsort]
   ST -.->|just use it| LIB[Standard library sort]
-  QS -.->|just use it| LIB
-```
+  QS -.->|just use it| LIB`} />
 
 ## Try it
 
