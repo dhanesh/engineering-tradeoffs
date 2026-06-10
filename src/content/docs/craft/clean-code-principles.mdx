@@ -1,0 +1,221 @@
+---
+title: Clean Code Principles
+description: Naming, small single-purpose functions, comments that explain why, DRY versus WET versus AHA, KISS, YAGNI, least astonishment, cyclomatic complexity, guard clauses, and the boy-scout rule.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+**Clean code** is code optimized for the reader — easy to understand, change, and
+verify. The principles below are not rules to apply dogmatically; they are
+*heuristics that lower the cost of change* (see the cluster **Overview**), each
+with failure modes when over-applied. The two highest-leverage are **naming** and
+**function design**, because they govern whether a reader can understand a unit
+of code at all. The rest — DRY, KISS, YAGNI, least astonishment, guard clauses,
+the boy-scout rule — are guardrails against specific, recurring ways code becomes
+hard to read. The skill is knowing which heuristic a situation calls for and when
+two of them conflict (DRY versus readability is the classic).
+
+## Mental model
+
+Treat every line as a message to **the next human who reads it**, who has less
+context than you do right now. Clean code minimizes the *work that reader must do*
+to build a correct mental model. Three forces drive that work down:
+
+- **Good names** let the reader understand intent without tracing implementation.
+  A name is the cheapest documentation that never goes stale (it is checked by use).
+- **Small, single-purpose functions** let the reader understand one idea at a time
+  and read at a chosen altitude — the function name tells them *what*, the body
+  tells them *how*, and they read the body only if they need to.
+- **Least astonishment** keeps the code's behavior aligned with the reader's
+  expectations, so they spend no effort on surprises.
+
+Everything else is in service of these. When a principle (DRY, abstraction) starts
+*increasing* the reader's work, it has been over-applied.
+
+## Types / Variants
+
+**Naming.** Names should reveal intent and read at the right level of abstraction.
+`elapsedTimeInDays` beats `d`; `isEligibleForLoan` beats `check`. Avoid encodings
+and noise words (`theData`, `dataInfo`), and avoid mental-mapping (single letters
+outside tiny scopes). Searchability matters: a named constant beats a magic number.
+
+**Functions.** Small, do *one* thing, one level of abstraction per function, few
+arguments (zero–two ideal; more than three suggests a missing object), and *no
+side effects the name doesn't advertise*. A function that is hard to name does too
+much. Command/query separation: a function either does something or answers
+something, not both.
+
+**Comments.** Comments explain **why**, not **what** — the *what* should be in the
+code (rename rather than annotate). Good comments: intent, rationale, warnings,
+the non-obvious "why this weird workaround." Bad comments: restating code,
+commented-out code, changelogs (that's what version control is for). A comment is
+an apology for code that couldn't express itself — sometimes a necessary one.
+
+**DRY vs WET vs AHA.** **DRY** (Don't Repeat Yourself) targets duplicated
+*knowledge*, not duplicated *characters*. **WET** ("Write Everything Twice") and
+the **Rule of Three** say: tolerate duplication until you've seen it three times,
+because premature DRY couples things that only *looked* alike. **AHA** ("Avoid
+Hasty Abstractions") is the synthesis: prefer duplication over the *wrong*
+abstraction, because a wrong abstraction is far more expensive to unwind than
+duplication is to remove later.
+
+**KISS** (Keep It Simple) — prefer the simplest thing that works; complexity must
+earn its place. **YAGNI** (You Aren't Gonna Need It) — don't build for hypothetical
+future requirements; the future rarely arrives as predicted, and the speculative
+code is pure carrying cost. **Principle of least astonishment** — a component
+should behave the way its name and context lead a reader to expect; surprising
+behavior is a defect even when "correct."
+
+**Cyclomatic complexity** — a count of independent paths through a function
+(roughly, branches + 1). High complexity means many paths to test and reason
+about; it is the most actionable "this function is too hard" signal. **Guard
+clauses** — handle edge cases and invalid input with early returns at the top,
+keeping the happy path un-indented and the nesting flat (replaces the
+arrow-shaped `if`-pyramid). **Boy-scout rule** — leave the code a little cleaner
+than you found it; small, opportunistic improvements compound and fight the
+broken-windows decay.
+
+## When to use / When NOT
+
+- **DRY — apply when:** the same *knowledge/decision* lives in multiple places and
+  must change together. **Avoid when:** two pieces of code merely look similar but
+  represent different concepts that will evolve apart — coupling them via a shared
+  abstraction is the costlier mistake (follow the Rule of Three / AHA).
+- **Small functions — apply when:** a function does more than one thing or you
+  can't name it crisply. **Avoid when:** shredding into so many one-line functions
+  that the reader must jump across ten definitions to follow one idea (over-
+  extraction hurts readability as much as a giant function does).
+- **Comments — add when:** explaining *why*, a non-obvious tradeoff, or a warning.
+  **Avoid when:** the comment restates the code (rename instead) or will silently
+  rot out of sync.
+- **YAGNI / KISS — apply when:** you're tempted to build for a future that isn't
+  here. **Avoid the dogma when:** a cheap seam now genuinely prevents an expensive
+  rewrite later *and* the need is concrete, not hypothetical.
+- **Boy-scout rule — apply when:** the cleanup is small, local, and on code you're
+  already touching. **Avoid when:** it balloons into an unrelated refactor that
+  bloats the diff and obscures the actual change (split it into its own commit).
+
+## Tradeoffs
+
+| Principle | Buys you | Failure mode when over-applied |
+| --------- | -------- | ------------------------------ |
+| DRY | One place to change shared knowledge | Wrong abstraction couples unrelated code |
+| Small functions | Read at one altitude; testable units | Fragmentation — logic scattered across many tiny fns |
+| Comments (why) | Captures rationale code can't | Restating code; rotting, misleading comments |
+| KISS | Less to understand & break | Under-engineering; ignoring a real, present need |
+| YAGNI | No speculative carrying cost | Painting into a corner when the need was certain |
+| Guard clauses | Flat happy path, clear edges | Scattered returns if overused in long functions |
+| Boy-scout rule | Compounding cleanup, fights decay | Scope creep; unreviewable mixed diffs |
+
+## Diagram
+
+Guard clauses flatten the arrow anti-pattern: validate and bail early, leaving the
+happy path at the lowest indentation.
+
+<Mermaid code={`graph TD
+  A[Enter function] --> G1{Input valid?}
+  G1 -->|no| R1[Return / throw early]
+  G1 -->|yes| G2{Precondition met?}
+  G2 -->|no| R2[Return early]
+  G2 -->|yes| HP[Happy path - flat, un-nested]
+  HP --> OUT[Return result]`} />
+
+## Try it
+
+Compare the duplication strategies to pick the right one, then walk the tree the
+next time you're unsure whether to abstract, comment, or split.
+
+<CompareMatrix
+  client:visible
+  caption="DRY vs WET vs AHA — choosing a duplication strategy"
+  columns={['DRY (now)', 'WET / Rule of Three', 'AHA']}
+  rows={[
+    {
+      criterion: 'Core rule',
+      cells: ['Never repeat knowledge', 'Tolerate duplication until the 3rd occurrence', 'Prefer duplication over a wrong abstraction'],
+    },
+    {
+      criterion: 'Best when',
+      cells: ['Duplicated knowledge is certain to change together', 'You are unsure the cases are truly the same', 'The abstraction is not yet obvious'],
+    },
+    {
+      criterion: 'Main risk',
+      cells: ['Premature, wrong abstraction', 'Drift if cases really were the same', 'Living with duplication a bit longer'],
+    },
+    {
+      criterion: 'Cost to reverse',
+      cells: ['High — unwinding coupling is hard', 'Low — de-duplicate when pattern is clear', 'Low — abstract once the shape is proven'],
+    },
+    {
+      criterion: 'Verdict',
+      cells: ['Use only for genuine shared knowledge', 'Good default while learning the domain', 'Best general guidance'],
+    },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Should I abstract, comment, or split this?"
+  root={{
+    question: 'What is making this code hard to read?',
+    branches: [
+      {
+        label: 'It repeats logic elsewhere',
+        next: {
+          question: 'Is it the same KNOWLEDGE (changes together) or just similar-looking code?',
+          branches: [
+            { label: 'Same knowledge, seen 3+ times', next: { leaf: { recommendation: 'Apply DRY — extract it', detail: 'Genuine shared knowledge that must change in lockstep. Extract a single source of truth.' } } },
+            { label: 'Just looks similar / seen once or twice', next: { leaf: { recommendation: 'Leave the duplication (AHA / Rule of Three)', detail: 'A wrong abstraction is costlier than duplication. Wait until the real shape is obvious before abstracting.' } } },
+          ],
+        },
+      },
+      {
+        label: 'The function does too much / is deeply nested',
+        next: {
+          question: 'Is the nesting from edge-case handling, or from genuinely distinct steps?',
+          branches: [
+            { label: 'Edge cases / validation', next: { leaf: { recommendation: 'Add guard clauses', detail: 'Return early on invalid input and unmet preconditions; flatten the happy path to the lowest indentation.' } } },
+            { label: 'Several distinct responsibilities', next: { leaf: { recommendation: 'Extract small, well-named functions', detail: 'One thing per function, one level of abstraction. Stop before fragmenting a single idea across many tiny functions.' } } },
+          ],
+        },
+      },
+      {
+        label: 'The intent / a tradeoff is non-obvious',
+        next: {
+          question: 'Can a better name or structure make it self-evident?',
+          branches: [
+            { label: 'Yes', next: { leaf: { recommendation: 'Rename / restructure, no comment', detail: 'Names are documentation that never goes stale. Prefer expressing the what in code over annotating it.' } } },
+            { label: 'No — it is a why, not a what', next: { leaf: { recommendation: 'Write a "why" comment', detail: 'Capture rationale, warnings, or the reason for a non-obvious workaround. Never restate what the code already says.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Sandi Metz — "The Wrong Abstraction"** is the canonical case for AHA: teams
+  repeatedly make things worse by DRY-ing up code that only looked the same, then
+  bolting flags onto the over-shared abstraction.
+- **Linux kernel coding style** mandates guard-clause-style early returns and
+  shallow nesting (`if (err) return err;`) precisely to keep the happy path flat
+  and reviewable.
+- **Static analysis tools** (SonarQube, ESLint `complexity`, `radon` for Python)
+  flag cyclomatic complexity and long functions as a concrete, automatable proxy
+  for "too hard to read" — turning a heuristic into a CI gate.
+- **Refactoring.Guru / Fowler’s catalog** name the smells (Long Method, Large
+  Class, Comments-as-apology) that these principles exist to prevent — see
+  **Refactoring & tech debt**.
+
+## Further reading
+
+- [Sandi Metz — The Wrong Abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction) — why duplication often beats premature DRY (AHA).
+- [Clean Code (Robert C. Martin)](https://www.oreilly.com/library/view/clean-code-a/9780136083238/) — the foundational (if debated) treatment of naming, functions, and comments.
+- [Martin Fowler — Refactoring catalog](https://refactoring.com/catalog/) — the named refactorings these principles steer you toward.

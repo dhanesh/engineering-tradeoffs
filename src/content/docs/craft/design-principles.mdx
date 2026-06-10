@@ -1,0 +1,199 @@
+---
+title: Design Principles
+description: SOLID with the exact smell each principle prevents, composition over inheritance, coupling versus cohesion, the Law of Demeter, separation of concerns, abstraction levels, and when SOLID tips into over-engineering.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+Where **clean code** principles operate at the line and function level, **design
+principles** operate at the module and class level: how to draw boundaries so that
+*change stays local*. The headline set is **SOLID** — five principles, each a
+specific defense against a specific way object-oriented code rots. Around them sit
+the deeper ideas SOLID is really chasing: **high cohesion, low coupling**,
+**composition over inheritance** (see the **Design patterns** cluster), the **Law
+of Demeter**, and **separation of concerns**. None of these are ends in
+themselves — they are means to the one goal that matters: make the system cheap to
+change. Applied without that goal in mind, every one of them becomes
+over-engineering.
+
+## Mental model
+
+The master variable is **coupling** — how much one piece of code must know about
+another. Every design principle here is a tactic for *reducing the wrong kind of
+coupling while increasing cohesion* (keeping things that change together, close
+together). SOLID is best understood not as five rules but as **five named smells
+and their antidotes**: each principle is interesting only because of the specific
+pain it prevents. Memorize the *smell*, not the acronym — when you can name the
+smell you're feeling, the principle tells you the move; when you can't name a
+smell, the principle is probably over-engineering you're about to inflict.
+
+## Types / Variants
+
+**SOLID — each principle and the smell it prevents:**
+
+- **S — Single Responsibility.** A module should have one reason to change.
+  *Smell it prevents:* the **god class / shotgun surgery** — a class that does
+  reporting, persistence, and validation, so unrelated requirement changes all
+  collide in the same file and one edit risks three features.
+- **O — Open/Closed.** Open for extension, closed for modification — add behavior
+  without editing tested code. *Smell it prevents:* the **growing `switch`/`if`
+  ladder** that you must crack open and re-test every time a new variant appears
+  (add a type → edit five `switch` statements).
+- **L — Liskov Substitution.** A subtype must be usable anywhere its base type is,
+  honoring the base's contract. *Smell it prevents:* the **broken inheritance /
+  type-check** — `if (animal instanceof Penguin) skipFly()`, or a `Square extends
+  Rectangle` that breaks callers who set width and height independently.
+- **I — Interface Segregation.** Many small client-specific interfaces beat one
+  fat one. *Smell it prevents:* the **fat interface** that forces implementers to
+  stub methods they don't support (`throw NotImplementedException`) and recompiles
+  every client when an unrelated method changes.
+- **D — Dependency Inversion.** Depend on abstractions, not concretions; high-level
+  policy shouldn't depend on low-level detail. *Smell it prevents:* the **rigid,
+  untestable wiring** where business logic `new`s a concrete `MySqlConnection`,
+  so you can't swap the DB or test without one.
+
+**Composition over inheritance.** Prefer assembling behavior from parts (has-a)
+over inheriting it (is-a). Inheritance is tight, compile-time coupling to a
+parent's *implementation* and creates fragile hierarchies; composition is looser
+and recombinable. Inheritance still earns its place for genuine is-a substitutable
+relationships (and underpins Template Method, Strategy via interfaces — see
+**Design patterns**). Rule of thumb: inherit *interfaces/contracts*, compose
+*behavior*.
+
+**Coupling vs cohesion.** *Coupling* = interdependence between modules (want it
+low and via stable abstractions). *Cohesion* = how related the contents of a
+module are (want it high — one clear purpose). The ideal is high cohesion + low
+coupling; most design smells are a violation of one or the other.
+
+**Law of Demeter** ("don't talk to strangers"). A method should only call methods
+on: itself, its parameters, objects it creates, and its direct fields — not reach
+through chains (`order.getCustomer().getAddress().getCity()`). *Smell it prevents:*
+**train-wreck coupling** to the internal structure of distant objects, so a change
+deep in the graph breaks far-away callers. (Caveat: fluent/builder chains and
+pure data-transfer objects are legitimate exceptions.)
+
+**Separation of concerns & abstraction levels.** Keep distinct concerns (UI,
+business rules, persistence, transport) in distinct places, and keep each layer at
+a single level of abstraction so a reader isn't yanked between "process the loan"
+and "open a socket" in one function. This is layering/hexagonal thinking at the
+small scale (see **Software architecture**).
+
+## When to use / When NOT
+
+- **SRP — apply when:** a class changes for several unrelated reasons. **Avoid
+  when:** you'd shatter one cohesive concept into anemic fragments that always
+  change together anyway (false SRP raises coupling).
+- **OCP — apply when:** a known, recurring axis of variation exists (payment
+  methods, file formats). **Avoid when:** there is *one* implementation and no
+  second in sight — the plug-in seam is speculative indirection (YAGNI).
+- **DIP — apply when:** you must swap implementations or test in isolation, or the
+  dependency crosses an architectural boundary. **Avoid when:** it adds an
+  interface with exactly one implementation that will never have a second, purely
+  to satisfy a rule — the "one interface per class" anti-pattern.
+- **Composition — prefer by default.** Reach for inheritance only for a true,
+  substitutable is-a relationship you control.
+- **Law of Demeter — apply when:** chains couple you to distant internals. **Relax
+  for:** fluent builders, data-only structures, and standard library idioms.
+
+The unifying test: **can you name the change this protects against, and is it real
+and present?** If not, you're adding the indirection without the payoff — the
+exact over-engineering the **Design patterns** cluster warns about.
+
+## Tradeoffs
+
+| Principle | Prevents (the smell) | Cost when over-applied |
+| --------- | -------------------- | ---------------------- |
+| Single Responsibility | God class, shotgun surgery | Anemic fragments; logic scattered |
+| Open/Closed | `switch` ladder you re-edit per variant | Plug-in seams for variation that never comes |
+| Liskov Substitution | Broken subtype, `instanceof` checks | Over-constrained hierarchies; awkward modeling |
+| Interface Segregation | Fat interface, stubbed methods | Interface explosion, ceremony |
+| Dependency Inversion | Rigid wiring, untestable code | One-impl interfaces everywhere; DI overload |
+| Composition over inheritance | Fragile base class, deep hierarchies | Wiring boilerplate for trivial relationships |
+| Law of Demeter | Train-wreck coupling to internals | Wrapper/delegation bloat; broken fluent APIs |
+
+## Diagram
+
+Dependency Inversion: high-level policy and low-level detail both depend on an
+abstraction the policy owns — so the detail is swappable and the policy is testable.
+
+<Mermaid code={`graph TD
+  P[High-level policy: LoanService] --> I[Interface: PaymentGateway]
+  D1[Low-level: StripeGateway] -.implements.-> I
+  D2[Low-level: RazorpayGateway] -.implements.-> I
+  T[Test: FakeGateway] -.implements.-> I
+  P -.no direct dependency on.-> D1`} />
+
+## Try it
+
+Map each SOLID letter to the exact smell it kills, then walk the tabs for the
+"when does this become over-engineering?" judgment.
+
+<CompareMatrix
+  client:visible
+  caption="SOLID — principle, smell it prevents, over-engineering risk"
+  columns={['Single Resp.', 'Open/Closed', 'Liskov', 'Interface Seg.', 'Dependency Inv.']}
+  rows={[
+    {
+      criterion: 'One-line rule',
+      cells: ['One reason to change', 'Extend without editing', 'Subtype honors base contract', 'Small client-specific interfaces', 'Depend on abstractions'],
+    },
+    {
+      criterion: 'Smell it prevents',
+      cells: ['God class / shotgun surgery', 'switch-ladder re-edited per variant', 'Broken subtype, instanceof checks', 'Fat interface, stubbed methods', 'Rigid wiring, untestable code'],
+    },
+    {
+      criterion: 'Telltale in code',
+      cells: ['"...and..." in the class name', 'New variant edits many files', 'Subclass throws / overrides to no-op', 'NotImplementedException stubs', 'new ConcreteDb() in business logic'],
+    },
+    {
+      criterion: 'Over-engineering risk',
+      cells: ['Anemic, scattered fragments', 'Plug-in seam used by nothing', 'Over-constrained hierarchy', 'Interface explosion', 'One-impl interfaces everywhere'],
+    },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="When SOLID helps vs when it is over-engineering"
+  tabs={[
+    {
+      label: 'When it helps',
+      content: 'Apply a principle when you can name a real, present axis of change it isolates: a known set of payment methods (OCP), a dependency you must swap or fake to test (DIP), a class collecting unrelated reasons to change (SRP). The smell is already there or provably imminent — the principle is the proven antidote.',
+    },
+    {
+      label: 'When it hurts',
+      content: 'Applying a principle to a non-existent axis of change adds indirection that buys nothing: an interface with one forever-implementation, a strategy seam for a variant that never comes, SRP that shatters a cohesive idea into anemic pieces. Every layer is a tax paid on every read, forever.',
+    },
+    {
+      label: 'The deciding test',
+      content: 'Name the change this protects against. Is it real and present (two implementations exist, or a concrete near-term requirement for a second)? If yes, apply. If you cannot name it, or it is "we might someday", stop — YAGNI and AHA override the principle. Refactor toward SOLID when the smell appears, not before.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Plug-in architectures** (editor extensions, payment-gateway adapters, codec
+  registries) are Open/Closed + Dependency Inversion in production: add a new
+  gateway by implementing an interface, never by editing the core.
+- **The Square-extends-Rectangle problem** is the textbook Liskov violation —
+  setting width and height independently breaks a `Square` subclass's invariant,
+  proving inheritance modeled the wrong relationship.
+- **Hexagonal / ports-and-adapters architecture** is SOLID at system scale:
+  business logic depends on port interfaces (DIP), adapters implement them, and
+  concerns are cleanly separated (see **Software architecture**).
+- **Anemic over-abstraction in enterprise Java** (an interface, a factory, and a
+  DI binding for every single class) is the canonical SOLID-as-cargo-cult
+  anti-example — the rules applied without naming the change they protect against.
+
+## Further reading
+
+- [Robert C. Martin — The Principles of OOD (SOLID)](https://web.archive.org/web/20150906155800/http://www.objectmentor.com/resources/articles/Principles_and_Patterns.pdf) — the original articulation of each principle.
+- [Martin Fowler — Reducing Coupling](https://martinfowler.com/articles/reduce-coupling.html) — coupling and cohesion as the goal SOLID serves.
+- [Refactoring.Guru — Design Principles](https://refactoring.guru/design-principles) — composition over inheritance and program-to-an-interface, with examples.

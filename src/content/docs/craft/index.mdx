@@ -1,0 +1,193 @@
+---
+title: Code Quality & Craft
+description: What code quality really is — the economics of maintainability, code read far more than written, internal versus external quality, the craft mindset, and when "good enough" is the right call.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+**Code quality** is not an aesthetic preference; it is an economic property. The
+dominant cost of software is not writing it once but *changing it repeatedly* —
+fixing bugs, adding features, adapting to new requirements — over a lifespan
+measured in years. Quality is whatever lowers the **cost of change**. A codebase
+that is cheap to read, reason about, and safely modify is high quality regardless
+of how clever it looks; one that forces every change to ripple unpredictably is
+low quality regardless of how elegant its abstractions seem. This cluster is the
+day-to-day discipline of keeping that cost low: writing for the humans who will
+read the code (see **Clean code principles**), structuring it so change stays
+local (see **Design principles**), paying down the debt that accumulates anyway
+(see **Refactoring & tech debt**), and collaborating so quality survives contact
+with a team (see **Code review** and **Version control**). It complements the
+**Design patterns** and **Testing** clusters — patterns give you reusable
+structure, tests give you the safety net that makes change cheap.
+
+## Mental model
+
+The single most useful frame: **code is read far more often than it is written**.
+A line is typed once and then read dozens or hundreds of times — during review,
+debugging, onboarding, and every future modification. So the audience for source
+code is **not the compiler, it is the next human** (often you, six months from
+now, with no memory of the context). Optimizing for write-time convenience at the
+expense of read-time clarity is a near-universal false economy.
+
+Two more durable framings sit on top:
+
+- **Internal vs external quality.** *External* quality is what the user sees:
+  correctness, performance, no crashes. *Internal* quality is what only developers
+  see: clarity, structure, low coupling, tests. Users pay for external quality,
+  but internal quality is what lets you *keep delivering* external quality cheaply.
+  Neglected internal quality doesn't hurt today's release — it taxes every release
+  after it. The two are coupled through *time*.
+- **Quality is a lever on velocity, not a tax on it.** The intuition that "we'd go
+  faster if we skipped the cleanup" is true only for the very next change and false
+  for almost every change after. Past a surprisingly short horizon (days, not
+  months), high internal quality is the *faster* path. This is the central finding
+  behind the whole craft discipline.
+
+## Types / Variants
+
+Quality is multi-dimensional. The major axes a craftsperson trades against:
+
+**Readability / clarity.** Can a competent reader understand a unit of code
+without excessive effort? The highest-leverage dimension because it gates every
+other activity — you cannot safely change what you cannot understand.
+
+**Changeability / modifiability.** When a requirement shifts, how much code must
+move, and how confident are you the change is correct? Driven by coupling,
+cohesion, and abstraction quality (see **Design principles**).
+
+**Correctness / reliability.** Does it do the right thing, including at the edges?
+Largely owned by the **Testing** cluster, but quality code makes correctness
+*easier to reason about and verify*.
+
+**Robustness.** How gracefully does it handle bad input, failure, and the
+unexpected? Guard clauses, validation at boundaries, explicit error handling.
+
+**Consistency.** Does the code look like the rest of the codebase? A consistent
+mediocre style beats a patchwork of locally-optimal ones, because consistency is
+what lets a reader build accurate expectations.
+
+These are not free to maximize simultaneously — pushing robustness adds code,
+pushing abstraction can hurt readability. The craft is choosing *which dimensions
+matter for this code* given how long it will live and how often it will change.
+
+## When to use / When NOT
+
+The honest position: quality investment is a dial, not a switch. Spend where code
+is long-lived and changes often; spend less where it is genuinely throwaway.
+
+- **Invest heavily when:** the code is core domain logic; it will be read and
+  modified repeatedly; many people touch it; it is hard to test or correct later
+  (e.g. data migrations, money handling, auth); a bug is expensive (financial,
+  safety, legal). For a lending or payments system, the loan-lifecycle and
+  ledger code is the canonical "invest the most" zone.
+- **"Good enough" is the right call when:** the code is a genuine prototype or
+  spike you will throw away (and you *actually* will); a one-off script; a
+  short-lived experiment behind a flag; a deadline where shipping *now* has value
+  that exceeds the future tax — *as a conscious, recorded decision* (see deliberate
+  tech debt in **Refactoring & tech debt**).
+- **Avoid the trap of:** treating "good enough" as license for sloppiness on code
+  that turns out to be permanent — prototypes have a way of going to production.
+  The discipline is to be deliberate about which bucket a piece of code is in, not
+  to default to either extreme.
+
+Over-investing is also real: gold-plating, speculative abstraction, and chasing
+purity on throwaway code all burn time you owed elsewhere. Quality is *fit for the
+expected lifespan and change rate*, not maximal in the absolute.
+
+## Tradeoffs
+
+| Dimension | What you gain by investing | What it costs | When to skimp |
+| --------- | -------------------------- | ------------- | ------------- |
+| Readability | Cheaper every future read & change | Up-front time naming, structuring | Almost never — highest ROI |
+| Test coverage | Confident, cheap change; regression safety | Time, test maintenance | True throwaway code |
+| Abstraction | Change stays local; reuse | Indirection, harder first read | Single use site, no axis of change |
+| Robustness | Survives bad input & failure | More code, more paths | Trusted internal callers only |
+| Consistency | Predictable codebase, faster onboarding | Some local sub-optimality | Rarely worth breaking |
+| Polish / gold-plating | Marginal elegance | Real time, opportunity cost | Whenever lifespan is short |
+
+The meta-tradeoff: **time spent now vs cost-of-change later**. Internal quality
+moves cost from the future (compounding, unpredictable) to the present
+(bounded, visible). For anything that lives, that trade pays off fast.
+
+## Diagram
+
+How write-time effort and read-time cost relate over a codebase's life — the line
+crosses early, which is why "skip the cleanup" rarely wins past the first change.
+
+<Mermaid code={`graph LR
+  W[Write once] --> R1[Read in review]
+  R1 --> R2[Read while debugging]
+  R2 --> R3[Read during onboarding]
+  R3 --> R4[Read before every change]
+  R4 --> C{Cost dominated by?}
+  C -->|low internal quality| H[High cost of change - compounds]
+  C -->|high internal quality| L[Low cost of change - stays flat]`} />
+
+## Try it
+
+Walk the tabs for the core framings, then slide from "ship it raw" to "polish to a
+mirror shine" to see where the sweet spot sits for different kinds of code.
+
+<WhenWhyTabs
+  client:visible
+  caption="The craft mindset, in three framings"
+  tabs={[
+    {
+      label: 'Read > write',
+      content: 'A line is written once and read dozens of times — in review, debugging, onboarding, and every future change. The audience for source code is the next human, not the compiler. Optimizing write-time convenience over read-time clarity is a false economy on any code that lives.',
+    },
+    {
+      label: 'Internal vs external',
+      content: 'External quality (correctness, performance) is what users pay for. Internal quality (clarity, low coupling, tests) is what only developers see — but it is what lets you keep delivering external quality cheaply. Neglecting it does not hurt today’s release; it taxes every release after it.',
+    },
+    {
+      label: 'Quality = velocity',
+      content: '"We’d go faster if we skipped the cleanup" is true for the very next change and false for almost every change after. Past a short horizon, high internal quality is the faster path, not a tax on speed. Quality and velocity are allies, not opposites.',
+    },
+    {
+      label: 'When good enough wins',
+      content: 'For genuine throwaway code — spikes you will actually delete, one-off scripts, short experiments — "good enough" is correct, and polishing it is its own waste. The discipline is being deliberate about which bucket a piece of code is in, and recording it when you take on debt on purpose.',
+    },
+  ]}
+/>
+
+<TradeoffSlider
+  client:visible
+  caption="How much polish does THIS code deserve?"
+  leftAxis="Ship it raw"
+  rightAxis="Polish to a mirror shine"
+  stops={[
+    { label: 'Throwaway spike', description: 'Prototype you will genuinely delete. Make it work, learn, discard. Polishing it is waste — but be honest that you will actually throw it away.' },
+    { label: 'One-off script', description: 'Runs once or rarely, low blast radius. Readable enough to debug if it fails today. Minimal tests, minimal abstraction.' },
+    { label: 'Feature code', description: 'Lives and changes. Clear names, small functions, tests on the logic, consistent style. The default zone for most code you write.' },
+    { label: 'Core domain logic', description: 'Touched often by many people; bugs are expensive. Invest in structure, thorough tests, careful boundaries. The loan ledger, the auth path, the pricing engine.' },
+    { label: 'Gold-plated', description: 'Speculative abstraction and polish beyond the expected lifespan and change rate. Over-investment — burns time you owed elsewhere. Avoid.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google’s engineering practices** ("readability" certification, mandatory
+  code review, a documented style guide per language) institutionalize the
+  read-over-write principle at scale — clarity is a gating concern, not optional.
+- **The "broken windows" effect** in codebases: once one corner is allowed to rot,
+  the social norm shifts and decay accelerates — the rationale behind the
+  boy-scout rule (see **Clean code principles**).
+- **Martin Fowler’s "Is High Quality Software Worth the Cost?"** argues the
+  trade between internal quality and speed is a near-myth past a short horizon —
+  the canonical statement of "quality is velocity."
+- **Fintech ledgers and loan engines** are textbook "invest the most" zones:
+  long-lived, frequently amended (regulatory and product change), and catastrophic
+  to get wrong — so they justify the highest internal-quality bar in the system.
+
+## Further reading
+
+- [Martin Fowler — Is High Quality Software Worth the Cost?](https://martinfowler.com/articles/is-quality-worth-cost.html) — the economics of internal quality versus speed.
+- [Google Engineering Practices — Code Review Developer Guide](https://google.github.io/eng-practices/) — how a large org operationalizes quality and readability.
+- [The Pragmatic Programmer (Hunt & Thomas)](https://pragprog.com/titles/tpp20/the-pragmatic-programmer-20th-anniversary-edition/) — broken windows, good-enough software, and the craft mindset.

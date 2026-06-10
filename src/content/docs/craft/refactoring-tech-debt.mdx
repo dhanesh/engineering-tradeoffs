@@ -1,0 +1,205 @@
+---
+title: Refactoring & Tech Debt
+description: Refactoring as behavior-preserving change, code smells, common refactorings, the refactor-then-add discipline, the tech-debt quadrant (deliberate vs inadvertent), refactor versus rewrite, and the strangler approach.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import DecisionTree from '../../../components/DecisionTree';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+**Refactoring** is the disciplined practice of improving the *internal* structure
+of code **without changing its external behavior**. That "without changing
+behavior" clause is the whole point and the most-violated part of the word:
+rewriting a function so it also does something new is *not* refactoring, it's
+editing. Refactoring is how you pay down **technical debt** — the accumulated gap
+between the code you have and the code the current requirements deserve. Both rest
+on the same engine as the rest of this cluster: lowering the **cost of change**.
+And both are only safe with a strong test suite (see the **Testing** cluster) —
+tests are what let you assert "behavior didn't change," which is the entire
+guarantee refactoring offers.
+
+## Mental model
+
+Two framings carry most of the practical weight:
+
+- **Refactoring is behavior-preserving by definition.** You change structure in
+  *small, verified steps*, running tests after each, so the system is working at
+  every point — never a big-bang "rewrite then pray." If you can't show behavior
+  is unchanged (no tests), you're not refactoring, you're gambling.
+- **Tech debt is a financial metaphor, and the metaphor is load-bearing.** Like
+  monetary debt, it carries *interest*: every future change pays a premium because
+  of the shortcut. Some debt is a smart leverage play (ship now, clean up Tuesday);
+  some is just rot. The **debt quadrant** (below) tells them apart. The danger
+  isn't debt — it's *unacknowledged* debt that compounds silently until the
+  interest payments (slow delivery, frequent bugs) eat the team's velocity.
+
+The governing discipline that links them: **separate refactoring from feature
+work**. Fowler's "two hats" — when adding a feature, you're either wearing the
+*refactoring* hat (improving structure, behavior fixed) or the *feature* hat
+(adding behavior, structure fixed), never both at once. Mixed diffs are
+unreviewable and unsafe.
+
+## Types / Variants
+
+**Code smells** — surface symptoms that hint at deeper structural problems
+(Fowler/Beck's catalog). Common ones: **Long Method**, **Large Class** / God
+object, **Duplicated Code**, **Long Parameter List**, **Feature Envy** (a method
+more interested in another class's data), **Shotgun Surgery** (one change forces
+edits across many classes), **Divergent Change** (one class changed for many
+unrelated reasons — the SRP smell), **Primitive Obsession**, **Data Clumps**, and
+**Comments-as-apology**. A smell is a *prompt to investigate*, not a guaranteed
+defect.
+
+**Common refactorings** — the named, behavior-preserving moves: **Extract
+Function / Variable / Class**, **Inline** (the inverse), **Rename**, **Move
+Method/Field**, **Replace Conditional with Polymorphism**, **Introduce Parameter
+Object** (for data clumps), **Replace Magic Number with Constant**, **Decompose
+Conditional**, **Pull Up / Push Down** in a hierarchy. Each maps to specific
+smells.
+
+**Tech debt taxonomy — the quadrant** (Fowler). Two axes: *deliberate vs
+inadvertent*, and *prudent vs reckless*.
+
+- **Deliberate + prudent:** "We must ship now and will deal with the consequences"
+  — debt taken on knowingly, with a payback plan. The *good* debt.
+- **Deliberate + reckless:** "We don't have time for design" — knowingly cutting
+  corners with no plan. Usually a mistake.
+- **Inadvertent + prudent:** "Now we know how we *should* have done it" — debt you
+  only understand in hindsight as the design teaches you. Unavoidable and healthy.
+- **Inadvertent + reckless:** "What's layering?" — debt from not knowing better.
+  Addressed by learning and review, not by process.
+
+**Refactor vs rewrite.** *Refactor* = evolve in place, incrementally, behavior
+preserved, system always working. *Rewrite* = replace wholesale. Rewrites are
+seductive and usually a trap (the "second-system effect," loss of accumulated
+bug-fixes and tacit knowledge, a long window with two systems and no new value).
+Prefer refactoring; reserve rewrite for when the platform/language is genuinely
+dead or the architecture cannot bend to the requirements.
+
+**The Strangler Fig approach** (see **Software architecture**). The middle path
+between refactor and rewrite for large legacy systems: route traffic through a
+facade, build new functionality alongside the old, incrementally redirect slices
+to the new implementation, and "strangle" the legacy until nothing routes to it,
+then delete it. Incremental, reversible, value-delivering throughout — the safe
+way to replace something too big to refactor in place.
+
+## When to use / When NOT
+
+- **Refactor when:** you're about to change code that's hard to change — refactor
+  *first* to make the change easy, then make the easy change ("make the change
+  easy, then make the easy change" — Beck). Also: when a smell is actively slowing
+  the team, or opportunistically under the boy-scout rule on code you're touching.
+- **Don't refactor when:** the code is stable, rarely touched, and not blocking
+  anything — refactoring for its own sake on dormant code is risk and effort with
+  no payoff. Also avoid right before a hard deadline on a fragile, untested area.
+- **Rewrite only when:** the foundation is genuinely unworkable (dead platform,
+  unfixable architecture) *and* you've honestly priced in the rewrite's risk,
+  duration, and the features you'll re-break. Default answer is "no."
+- **Strangler when:** the system is too large/risky to refactor in place but a
+  big-bang rewrite is unacceptable — you need to migrate incrementally while
+  keeping the lights on. The default strategy for serious legacy migration.
+
+## Tradeoffs
+
+| Approach | Risk | Time-to-value | Best for |
+| -------- | ---- | ------------- | -------- |
+| Refactor in place | Low (small verified steps) | Continuous | Code you actively change; localized debt |
+| Big-bang rewrite | High (second-system effect, lost fixes) | Far off, all-or-nothing | Rare: dead platform, unfixable architecture |
+| Strangler fig | Low–medium (incremental, reversible) | Continuous during migration | Large legacy systems too big to refactor at once |
+| Leave it (accept debt) | Depends on blast radius | N/A | Stable, rarely-touched, non-blocking code |
+
+## Diagram
+
+The tech-debt quadrant — the only one that's reliably *fine* is deliberate +
+prudent (with a payback plan) and the inadvertent + prudent you learn into.
+
+<Mermaid code={`graph TD
+  Q[Tech debt] --> DP[Deliberate + Prudent: ship now, plan to repay - GOOD]
+  Q --> DR[Deliberate + Reckless: no time for design - BAD]
+  Q --> IP[Inadvertent + Prudent: now we know better - HEALTHY]
+  Q --> IR[Inadvertent + Reckless: did not know better - LEARN/REVIEW]`} />
+
+## Try it
+
+Walk the tree to choose refactor / rewrite / strangler / leave-it, then read the
+tabs for how to take on debt without it compounding silently.
+
+<DecisionTree
+  client:visible
+  caption="Refactor, rewrite, strangle, or leave it?"
+  root={{
+    question: 'Is this code actively blocking change or causing bugs right now?',
+    branches: [
+      {
+        label: 'No — stable and rarely touched',
+        next: { leaf: { recommendation: 'Leave it (record the debt)', detail: 'Dormant code that blocks nothing is not worth the risk of refactoring. Note the debt so it is acknowledged, not silent, and revisit if it starts costing you.' } },
+      },
+      {
+        label: 'Yes — it slows us down or breaks',
+        next: {
+          question: 'Can the existing structure be evolved incrementally toward what you need?',
+          branches: [
+            {
+              label: 'Yes, with small steps',
+              next: { leaf: { recommendation: 'Refactor in place (refactor-then-add)', detail: 'Make the change easy, then make the easy change. Small behavior-preserving steps, tests green after each. The default and safest path.' } },
+            },
+            {
+              label: 'No — the foundation is too large/legacy to evolve directly',
+              next: {
+                question: 'Is the platform genuinely dead, or just large and crufty?',
+                branches: [
+                  { label: 'Large/crufty but workable', next: { leaf: { recommendation: 'Strangler fig migration', detail: 'Route through a facade, build new alongside old, redirect slices incrementally until the legacy is strangled. Keeps the system live and value flowing throughout.' } } },
+                  { label: 'Platform/language genuinely dead, architecture unfixable', next: { leaf: { recommendation: 'Rewrite — but price the risk honestly', detail: 'The rare justified rewrite. Budget for the second-system effect, lost bug-fixes, and the long dual-running window before you commit.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Taking on tech debt without it compounding"
+  tabs={[
+    {
+      label: 'Make it deliberate',
+      content: 'The dangerous debt is unacknowledged debt. When you take a shortcut to hit a date, say so out loud and write it down (a ticket, a TODO with a link, an ADR). Deliberate + prudent debt with a payback plan is a legitimate leverage play; the same shortcut taken silently is reckless debt that compounds in the dark.',
+    },
+    {
+      label: 'Refactor then add',
+      content: 'When a change is hard because of existing structure, do not bolt the feature onto the mess. First refactor (behavior preserved, tests green) until the change becomes easy, then add the feature in a separate commit. Two hats, never worn at once — it keeps every diff reviewable and every step safe.',
+    },
+    {
+      label: 'Pay interest down',
+      content: 'Debt charges interest as a velocity tax: slower changes, more bugs in the same files, fear of touching certain modules. Track those signals. Pay debt down opportunistically (boy-scout rule) on code you already touch, and budget explicit cleanup when the interest starts dominating delivery.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Martin Fowler’s "Refactoring"** (and the refactoring.com catalog) is the
+  definitive source for the named moves and the behavior-preserving discipline,
+  with each refactoring tied to the smells it cures.
+- **The Strangler Fig pattern** named by Fowler has driven countless real
+  monolith-to-services migrations (e.g. teams incrementally peeling endpoints off
+  a legacy monolith behind an API gateway — see **Software architecture**).
+- **Netscape’s rewrite of Navigator** is the canonical rewrite cautionary tale
+  (Joel Spolsky’s "Things You Should Never Do"): years rebuilding from scratch
+  while competitors shipped, discarding accumulated bug-fixes.
+- **IDE refactoring tooling** (IntelliJ, VS Code, language servers) automates
+  Rename / Extract / Inline safely across a codebase — making the small-step
+  discipline cheap enough to do constantly.
+
+## Further reading
+
+- [Martin Fowler — Refactoring (catalog & definition)](https://refactoring.com/) — what refactoring is and the named, behavior-preserving moves.
+- [Martin Fowler — TechnicalDebtQuadrant](https://martinfowler.com/bliki/TechnicalDebtQuadrant.html) — deliberate/inadvertent × prudent/reckless.
+- [Joel Spolsky — Things You Should Never Do, Part I](https://www.joelonsoftware.com/2000/04/06/things-you-should-never-do-part-i/) — the case against the big-bang rewrite.

@@ -263,6 +263,17 @@ export default defineConfig({
             { label: 'Choosing a language', slug: 'languages/choosing-a-language' },
           ],
         },
+        {
+          label: 'Code Quality & Craft',
+          items: [
+            { label: 'Overview', slug: 'craft' },
+            { label: 'Clean code principles', slug: 'craft/clean-code-principles' },
+            { label: 'Design principles', slug: 'craft/design-principles' },
+            { label: 'Refactoring & tech debt', slug: 'craft/refactoring-tech-debt' },
+            { label: 'Code review & collaboration', slug: 'craft/code-review-collaboration' },
+            { label: 'Version control & Git', slug: 'craft/version-control-git' },
+          ],
+        },
       ],
     }),
   ],

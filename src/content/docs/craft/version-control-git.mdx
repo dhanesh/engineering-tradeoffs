@@ -1,0 +1,224 @@
+---
+title: Version Control & Git
+description: Git's mental model as a DAG of commits, branching strategies (trunk-based vs gitflow vs GitHub flow), commit hygiene, merge versus rebase, conflict resolution, hooks, monorepo versus polyrepo, and the reflog safety net.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+**Version control** records the history of a codebase so changes are reversible,
+attributable, and collaborative. **Git** is the near-universal tool, and most pain
+with it comes from treating it as a sequence of magic incantations rather than
+understanding its small, consistent **mental model**: a Git repository is a
+**directed acyclic graph (DAG) of immutable commit snapshots**, and branches are
+just *movable pointers* into that graph. Once that clicks, merge, rebase, reset,
+and the reflog stop being scary — they're all just operations on pointers and the
+graph. This page covers that model and the day-to-day decisions built on it:
+how to branch, how to keep commits clean, the **merge-versus-rebase** choice (the
+one most worth getting right), and the safety nets that mean you can almost never
+truly lose work.
+
+## Mental model
+
+Three facts explain almost everything in Git:
+
+1. **A commit is an immutable snapshot** of the whole tree, plus metadata and a
+   pointer to its **parent** commit(s). Commits are identified by a hash of their
+   content, so they're effectively immutable — "changing" a commit actually
+   creates a *new* commit with a new hash.
+2. **History is a DAG.** Each commit points to its parent(s); a merge commit has
+   two parents. Following parent links backward traces history. Nothing points
+   forward, and there are no cycles.
+3. **A branch is just a movable pointer** to a commit; `HEAD` points to your
+   current branch. "Committing" creates a new commit and *moves the branch pointer*
+   to it. Almost every Git command is "move a pointer" or "build new commits."
+
+From this, the operations are demystified: **merge** joins two lines of history
+with a new commit that has both as parents (history preserved, non-destructive).
+**Rebase** *replays* your commits onto a new base, creating *new* commits with new
+hashes (history rewritten, linear). **Reset** moves a branch pointer (optionally
+touching the index/working tree). And because Git rarely deletes commit objects
+immediately, the **reflog** remembers where `HEAD` and branches *used to* point —
+your undo for almost any "I destroyed my branch" moment.
+
+## Types / Variants
+
+**Branching strategies:**
+
+- **Trunk-based development.** Everyone commits to (or merges tiny, short-lived
+  branches into) a single `main`/trunk, ideally multiple times a day. Incomplete
+  work hides behind **feature flags**. Minimizes merge pain and divergence; pairs
+  naturally with continuous integration and continuous delivery (see **Delivery &
+  operations**). The modern default for teams that deploy often.
+- **GitHub Flow.** One long-lived `main` (always deployable) plus short-lived
+  feature branches merged via pull request, deploy from `main`. Simple, PR-centric,
+  great for web apps and continuous deployment. A lightweight cousin of
+  trunk-based.
+- **Gitflow.** Long-lived `main` and `develop`, plus `feature/`, `release/`, and
+  `hotfix/` branches with prescribed merge rules. Heavyweight, built for *scheduled
+  releases* and multiple supported versions. Powerful but ceremony-heavy; its own
+  author now recommends simpler flows for teams doing continuous delivery.
+
+**Commit hygiene.** Prefer **atomic commits** — each commit is one logical,
+self-contained change that builds and passes tests on its own (makes review,
+revert, and `bisect` work). Write **good messages**: a concise imperative subject
+(~50 chars, "Add retry to payment webhook"), a blank line, then a body explaining
+*why* (the diff already shows *what*). Conventional Commits (`feat:`, `fix:`) add
+machine-readable structure if you want automated changelogs/versioning.
+
+**Hooks.** Scripts Git runs at lifecycle points — **pre-commit** (lint, format,
+secret-scan), **commit-msg** (enforce message format), **pre-push** (run tests),
+and **server-side** hooks (enforce policy centrally). Client hooks are convenience;
+*server-side or CI checks are the real enforcement* (client hooks can be skipped).
+Tools like `pre-commit` and Husky manage them. In fintech, a **secret-scanning**
+pre-commit/CI hook is table stakes.
+
+**Monorepo vs polyrepo.** *Monorepo* — many projects in one repository: atomic
+cross-project changes, unified tooling and versioning, easy refactoring across
+boundaries; costs scale tooling (large-repo performance, selective builds, CODEOWNERS).
+*Polyrepo* — one repo per service/library: strong isolation, independent
+versioning and access control; costs cross-cutting changes that now span many
+repos and dependency-version drift.
+
+## When to use / When NOT
+
+**Merge vs rebase** — the decision that matters most:
+
+- **Merge when:** integrating a *shared* branch, or any branch others have based
+  work on. Merge is **non-destructive** — it never rewrites existing commits, so
+  it's always safe for published history. The cost is a "noisier", non-linear graph
+  with merge commits.
+- **Rebase when:** cleaning up your *own local, unpushed* branch — squashing WIP
+  commits, reordering, or replaying onto the latest `main` to keep history linear
+  and bisect-friendly *before* you share it. Also `git pull --rebase` to avoid
+  trivial merge commits when updating a private branch.
+- **The Golden Rule of Rebasing: never rebase a branch others have pulled.**
+  Rebase rewrites commit hashes; if someone else built on the old commits, you've
+  forked history under them and created a painful recovery. Rewrite only history
+  that lives solely on your machine.
+
+Other choices:
+
+- **Trunk-based / GitHub Flow when:** you deploy frequently and value short-lived
+  branches and fast integration. **Gitflow when:** you ship *scheduled, versioned
+  releases* and must support multiple versions in the field — and accept the
+  overhead. **Avoid Gitflow** for continuous-delivery web apps; it's friction with
+  no payoff.
+- **Monorepo when:** tightly-coupled projects change together and you can invest in
+  scale tooling. **Polyrepo when:** services are independently owned, versioned,
+  and access-controlled.
+
+## Tradeoffs
+
+| Strategy | History shape | Best for | Main cost |
+| -------- | ------------- | -------- | --------- |
+| Trunk-based | Linear, tiny branches | Continuous delivery, high deploy frequency | Needs feature flags + strong CI |
+| GitHub Flow | Mostly linear, PR merges | Web apps, continuous deployment | Less structure for versioned releases |
+| Gitflow | Many long-lived branches | Scheduled releases, multiple supported versions | Heavy ceremony; slow integration |
+| Merge | Non-linear, merge commits | Shared/published branches (always safe) | Noisier graph |
+| Rebase | Linear, rewritten commits | Local cleanup before sharing | Dangerous on shared history (Golden Rule) |
+
+## Diagram
+
+A commit DAG: feature branched off `main`, `main` advanced, then merge (new commit,
+two parents) versus rebase (commits replayed as new hashes onto the latest `main`).
+
+<Mermaid code={`gitGraph
+  commit id: "A"
+  commit id: "B"
+  branch feature
+  checkout feature
+  commit id: "C"
+  commit id: "D"
+  checkout main
+  commit id: "E"
+  merge feature id: "M"
+  commit id: "F"`} />
+
+## Try it
+
+Compare the branching strategies, then walk the tree the next time you're unsure
+whether to merge or rebase.
+
+<CompareMatrix
+  client:visible
+  caption="Branching strategies compared"
+  columns={['Trunk-based', 'GitHub Flow', 'Gitflow']}
+  rows={[
+    {
+      criterion: 'Long-lived branches',
+      cells: ['Just trunk', 'Just main', 'main + develop (+ release/hotfix)'],
+    },
+    {
+      criterion: 'Branch lifetime',
+      cells: ['Hours to a day', 'Days', 'Days to weeks'],
+    },
+    {
+      criterion: 'Release model',
+      cells: ['Continuous, flag-gated', 'Continuous deployment', 'Scheduled, versioned'],
+    },
+    {
+      criterion: 'Integration pain',
+      cells: ['Lowest — merge constantly', 'Low', 'Highest — branches diverge'],
+    },
+    {
+      criterion: 'Requires',
+      cells: ['Feature flags + strong CI', 'CI + PR discipline', 'Process discipline'],
+    },
+    {
+      criterion: 'Best fit',
+      cells: ['High-frequency deploy teams', 'Web apps, SaaS', 'Multi-version products, on-prem releases'],
+    },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Merge or rebase?"
+  root={{
+    question: 'Have the commits you want to integrate been pushed/shared where others may have based work on them?',
+    branches: [
+      {
+        label: 'Yes — they are shared/published',
+        next: { leaf: { recommendation: 'Merge (never rebase)', detail: 'The Golden Rule of Rebasing: never rewrite history others have pulled. Merge is non-destructive and safe for shared branches — accept the merge commit.' } },
+      },
+      {
+        label: 'No — purely local and unpushed',
+        next: {
+          question: 'What are you trying to achieve?',
+          branches: [
+            { label: 'Clean up WIP / linear history before sharing', next: { leaf: { recommendation: 'Rebase (interactive)', detail: 'Squash, reorder, and reword your local commits, or replay onto the latest main, to produce clean, atomic, bisect-friendly history before you push.' } } },
+            { label: 'Just update my private branch with latest main', next: { leaf: { recommendation: 'git pull --rebase', detail: 'Replays your local commits on top of the updated main, avoiding a noisy merge commit. Safe because the rewritten commits are still only yours.' } } },
+            { label: 'Combine two real lines of development', next: { leaf: { recommendation: 'Merge', detail: 'When you genuinely want to record that two branches of work came together, a merge commit captures that truthfully. Rebase would erase the real topology.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google and Meta** run enormous **monorepos** (Google’s is among the largest
+  codebases on earth) with custom scale tooling (Bazel-style builds, virtual file
+  systems) — atomic cross-project change at the cost of heavy infrastructure.
+- **Trunk-based development** underpins continuous-delivery shops (the practice
+  documented by the DORA/Accelerate research as correlated with elite delivery
+  performance) — short-lived branches and feature flags over long-lived ones.
+- **The `git reflog` rescue** is a daily reality: a "lost" branch after a bad
+  `reset --hard` or rebase is recovered by reading the reflog and resetting back to
+  the prior `HEAD` — proof that Git rarely loses committed work.
+- **Vincent Driessen’s Gitflow** post (and his later note recommending simpler
+  flows for continuous delivery) is the canonical reference for when the
+  heavyweight model does and doesn’t earn its ceremony.
+
+## Further reading
+
+- [Pro Git — Git Branching & Rebasing](https://git-scm.com/book/en/v2/Git-Branching-Rebasing) — the DAG model, merge vs rebase, and the Golden Rule, from the official book.
+- [Atlassian — Merging vs Rebasing](https://www.atlassian.com/git/tutorials/merging-vs-rebasing) — a clear, diagram-driven walkthrough of the tradeoff.
+- [trunkbaseddevelopment.com](https://trunkbaseddevelopment.com/) — trunk-based development, feature flags, and why short-lived branches win for CD.

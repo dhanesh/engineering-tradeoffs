@@ -1,0 +1,195 @@
+---
+title: Code Review & Collaboration
+description: Code review as correctness plus knowledge-sharing rather than gatekeeping — what to look for, giving and receiving feedback, PR size, review SLAs, pair and mob programming, conventional comments, and async versus sync.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import Mermaid from '../../../components/Mermaid.astro';
+
+## Overview
+
+**Code review** is the practice of a second engineer examining a change before it
+merges. Its purpose is widely misunderstood as *gatekeeping* — a quality checkpoint
+that catches bad code. That's a fraction of the value. Review's larger payoff is
+**knowledge sharing**: spreading context so no module has a single owner,
+onboarding by osmosis, and propagating norms across the team. Treating review as
+an adversarial gate produces slow, defensive, low-trust teams; treating it as
+collaborative authorship produces fast, resilient ones. This page is the *human*
+discipline of the cluster — the others make code good; this one makes a *team*
+keep code good. It pairs with **Version control** (review happens on pull
+requests) and **Testing** (review trusts, but verifies, that tests exist).
+
+## Mental model
+
+A review is a **conversation about a change, not a verdict on a person**. The
+author and reviewer are co-authors with a shared goal: merge a good change quickly.
+Three principles fall out:
+
+- **Review the code, not the coder.** Feedback attaches to lines, not to people.
+  "This function could be hard to test" not "you wrote untestable code."
+- **The author owns the change; the reviewer advises.** Most comments are
+  suggestions; few are blockers. Distinguishing them (see conventional comments)
+  is what keeps review from becoming a power struggle over taste.
+- **Latency is a first-class cost.** A perfect review that lands two days later
+  has blocked the author, fragmented their focus, and slowed the whole team. Speed
+  and thoroughness trade off, and most teams under-weight speed.
+
+The north star: maximize *defects caught + knowledge spread* per *hour of author-
+plus-reviewer time and wall-clock delay*. Small PRs and fast turnarounds dominate
+that equation.
+
+## Types / Variants
+
+**Asynchronous review (pull request).** The default: author opens a PR, reviewers
+comment when they can. Scales across time zones, leaves a written record, lets
+reviewers think. Weakness: latency, and nuance lost in text.
+
+**Synchronous review (over-the-shoulder / live).** Author and reviewer walk the
+change together. High-bandwidth, instant resolution, great for complex or
+sensitive changes — but interrupts both people and leaves no durable record.
+
+**Pair programming.** Two engineers, one keyboard, continuous real-time review.
+The change is reviewed *as it's written*, so no separate review step is needed.
+Strong for hard problems, knowledge transfer, and onboarding; costs two people's
+time on one task.
+
+**Mob programming.** The whole team on one problem, one screen. Maximum knowledge
+sharing and alignment; expensive — reserved for architecturally critical work,
+thorny bugs, or deliberate team learning.
+
+**What a reviewer actually looks for** (in rough priority): **correctness** (does
+it do the right thing, including edges and failure?), **security** (injection,
+authz, secrets, untrusted input — non-negotiable in fintech), **tests** (do they
+exist and actually exercise the change?), **design fit** (does it match the
+codebase's structure and the principles in this cluster?), **readability/naming**,
+**performance** where it matters, and finally **style** (which should be automated
+away by linters/formatters — a human arguing about formatting is wasted review).
+
+## When to use / When NOT
+
+- **Async PR review — default for:** most changes, distributed teams, anything
+  where a written record matters (compliance, audit trails — relevant for
+  regulated fintech). **Avoid as sole channel when:** the change is large,
+  exploratory, or contentious — text round-trips will be slower than a 15-minute
+  call.
+- **Sync review — use when:** a change is complex, security-sensitive, or the async
+  thread is going in circles (more than ~2 round-trips → switch to a call).
+  **Avoid when:** a written record is required or reviewers are across time zones.
+- **Pair programming — use when:** the problem is hard, the stakes are high, or
+  you're onboarding/transferring critical knowledge. **Avoid as a blanket policy
+  when:** the work is routine — pairing on trivial changes wastes a person.
+- **Mob — use when:** architectural decisions, gnarly production bugs, or aligning
+  the whole team. **Avoid for:** everyday feature work — too expensive.
+- **Keep PRs small.** Under ~200–400 lines changed is the sweet spot; review
+  effectiveness (defects found per line) drops sharply on large PRs because
+  attention fades. Split big changes; stack PRs if needed.
+
+## Tradeoffs
+
+| Mode | Latency | Knowledge transfer | Cost (person-hours) | Written record |
+| ---- | ------- | ------------------ | ------------------- | -------------- |
+| Async PR | Higher | Medium | Low | Yes |
+| Sync / live | Low | High | Medium | No |
+| Pair programming | None (continuous) | Very high | High (2 people) | No |
+| Mob programming | None (continuous) | Maximum | Very high (team) | No |
+
+The cross-cutting tradeoff: **thoroughness vs latency**. Add **PR size** as the
+lever that improves both — small PRs are reviewed faster *and* more thoroughly,
+which is why "keep PRs small" is the single highest-leverage review practice.
+
+## Diagram
+
+A healthy PR flow with an explicit SLA so review latency doesn't silently balloon.
+
+<Mermaid code={`graph LR
+  A[Author: small PR + context] --> R{Reviewer within SLA}
+  R -->|approve| M[Merge]
+  R -->|suggest: non-blocking| A2[Author decides]
+  R -->|request changes: blocking| A3[Author revises]
+  A2 --> M
+  A3 --> R
+  R -->|thread looping 2+ times| S[Switch to a 15-min call]
+  S --> M`} />
+
+## Try it
+
+Compare review modes to pick the right channel, then read the tabs on giving and
+receiving feedback like a collaborator rather than a gatekeeper.
+
+<CompareMatrix
+  client:visible
+  caption="Choosing a review / collaboration mode"
+  columns={['Async PR', 'Sync live', 'Pair', 'Mob']}
+  rows={[
+    {
+      criterion: 'Best for',
+      cells: ['Most changes; distributed teams', 'Complex or sensitive changes', 'Hard problems; onboarding', 'Architecture; gnarly bugs; alignment'],
+    },
+    {
+      criterion: 'Latency to merge',
+      cells: ['Higher (round-trips)', 'Low', 'None — reviewed as written', 'None — reviewed as written'],
+    },
+    {
+      criterion: 'Knowledge spread',
+      cells: ['Medium', 'High', 'Very high (1:1)', 'Maximum (whole team)'],
+    },
+    {
+      criterion: 'Cost',
+      cells: ['Low', 'Medium', 'High (2 people)', 'Very high (team)'],
+    },
+    {
+      criterion: 'Leaves a record',
+      cells: ['Yes — good for audit/compliance', 'No', 'No', 'No'],
+    },
+    {
+      criterion: 'Watch out for',
+      cells: ['Latency; nuance lost in text', 'Interrupts both; no record', 'Overuse on trivial work', 'Expensive; reserve for high-value work'],
+    },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="The human side of review"
+  tabs={[
+    {
+      label: 'Goal: not gatekeeping',
+      content: 'Review exists to catch defects AND spread knowledge — to remove single points of failure and propagate norms, not to guard a gate. An adversarial gate produces slow, defensive, low-trust teams. Frame it as co-authorship toward a shared goal: merge a good change quickly.',
+    },
+    {
+      label: 'Giving feedback',
+      content: 'Comment on the code, not the coder. Be specific and actionable. Distinguish blockers from suggestions from nitpicks explicitly (conventional comments: praise / nit / suggestion / issue / question). Ask questions rather than issue decrees — "what happens if input is null here?" invites thought; "this is wrong" invites defense. Praise good work, not just problems. Automate style so humans never argue about formatting.',
+    },
+    {
+      label: 'Receiving feedback',
+      content: 'Assume good intent; the comment is about the code. You own the change, so you can push back with reasoning — but verify the point first rather than reflexively defending or reflexively complying. Reply to every thread (even "good catch, fixed"). Treat persistent confusion as a signal the code is unclear, not that the reviewer is slow.',
+    },
+    {
+      label: 'Keep it fast',
+      content: 'Latency is a real cost — a blocked author is an idle author. Set a review SLA (e.g. respond within one business day) and keep PRs small (200–400 lines) so reviews are both faster and more thorough. When a thread loops more than twice, switch to a synchronous call; text is the wrong medium for contention.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google’s Code Review Developer Guide** codifies review-as-collaboration: the
+  reviewer should approve once the change *improves overall code health*, not hold
+  out for perfection — explicitly to keep latency low and trust high.
+- **Conventional Comments** (a small spec) standardizes labeling feedback
+  (`nit:`, `suggestion:`, `issue:`, `question:`) so authors instantly know what's
+  blocking versus optional — defusing the taste-war failure mode.
+- **Stacked diffs / PRs** (Phabricator, Graphite, Gerrit) exist precisely to keep
+  individual reviews small while shipping large bodies of work.
+- **Extreme Programming teams** use pair programming as continuous review,
+  eliminating the separate review step entirely for the code they pair on — high
+  cost, very high knowledge transfer.
+
+## Further reading
+
+- [Google — Code Review Developer Guide](https://google.github.io/eng-practices/review/) — what to look for, how fast to review, and the "improve health, not perfection" bar.
+- [Conventional Comments](https://conventionalcomments.org/) — a tiny convention for labeling feedback as blocking vs optional.
+- [SmartBear / Cisco code review study](https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/) — empirical evidence that small reviews catch more defects per line.
