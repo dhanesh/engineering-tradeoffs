@@ -14,8 +14,8 @@
     "dry_streak_to_done": 2,
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
-  "dry_streak": 0,
-  "round": 19,
+  "dry_streak": 2,
+  "round": 21,
   "clusters": [
     {
       "slug": "design-patterns",
@@ -185,5 +185,8 @@
       "tier": "fullstack",
       "pages": 6
     }
-  ]
+  ],
+  "status": "DONE",
+  "completed": "2026-06-10",
+  "termination": "primary stop condition (24/24 covered + 2 dry completeness-critic rounds) — NOT backstop"
 }
