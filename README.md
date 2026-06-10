@@ -1,7 +1,9 @@
-# System Design Primer
+# Engineering Tradeoffs
 
-An interactive, decision-oriented system design documentation site built with
-[Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/).
+An interactive, decision-oriented **software engineering handbook** — 24 topic
+clusters (~140 pages) covering software engineering end to end, each page framed
+around *when to use it and why*. Built with
+[Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/):
 MDX-authored, statically rendered, with React component islands for
 interactivity and a static-first Mermaid diagram renderer.
 

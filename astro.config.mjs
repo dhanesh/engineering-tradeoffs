@@ -3,15 +3,17 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
 
-// System Design Primer — Astro + Starlight static docs site (T1, T4).
+// Engineering Tradeoffs — Astro + Starlight static docs site (T1, T4).
 // React integration enables interactive islands later (U3 / RT-3).
 export default defineConfig({
+  // Dedicated GitHub Pages user/org site: serves at the domain root (base '/').
+  site: 'https://engineering-tradeoffs.github.io',
   integrations: [
     react(),
     starlight({
-      title: 'System Design Primer',
+      title: 'Engineering Tradeoffs',
       description:
-        'Interactive, decision-oriented system design documentation.',
+        'An interactive, decision-oriented software engineering handbook.',
       // Bring the active topic into focus in the sidebar on load: scroll the
       // sidebar's own scroll-pane (never the window) so the current page —
       // inside its auto-expanded, collapsed group — is centred and visible.
