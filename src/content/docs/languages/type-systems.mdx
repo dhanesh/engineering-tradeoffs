@@ -1,0 +1,260 @@
+---
+title: Type Systems
+description: Static vs dynamic, strong vs weak, nominal vs structural typing, type inference, generics and parametric polymorphism, subtyping and variance, algebraic data types (sum and product), null safety, gradual typing, and what types actually buy you.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **type system** is a set of rules that assigns a *type* to every value and
+expression in a program, and a discipline for checking that operations are only
+applied to compatible types. Its job is to **rule out a class of meaningless
+programs before they run** — adding a number to a function, calling a method that
+doesn't exist, indexing a value that isn't a collection. Type systems are the
+single most consequential design axis a language picks, because they shape how
+errors surface (compile time versus a 3am page), how confidently you can refactor,
+how much the compiler can optimize, and how much friction you feel writing code.
+This page maps the design space of type systems: *when* checking happens, *how
+strict* it is, *how types are compared*, and the powerful features (inference,
+generics, ADTs, null safety) that distinguish a chore of a type system from a tool
+that does real work for you. Type notation leans on angle brackets heavily, so
+generics here are written in inline code like `List<T>` and `Map<K, V>`.
+
+## Mental model
+
+**A type is a proof, checked by the compiler, about what a value can be and what
+you can do with it.** The richer and more honest those proofs, the more bugs the
+compiler catches for free — and the more the *types themselves become
+documentation and design*. Two orthogonal questions define a type system's
+character, and people constantly confuse them:
+
+- **WHEN are types checked?** — *static* (before running, at compile time) versus
+  *dynamic* (while running, at the point of use). This is the static/dynamic axis.
+- **HOW strict are the rules?** — does the language *refuse* to mix incompatible
+  types, or does it *silently coerce* them? This is the strong/weak axis.
+
+These are independent. Python is **dynamic but strong** (`"1" + 1` raises at run
+time rather than guessing). C is **static but weak** (it will reinterpret bits via
+casts). The richest insight: **a good static type system is not bureaucracy, it's a
+design tool** — you "make illegal states unrepresentable" so that whole categories
+of bug literally cannot be written. The rest of this page is the machinery that
+makes that possible.
+
+## Types / Variants
+
+### Static vs dynamic (when checking happens)
+
+**Static typing** (Rust, Go, Java, Haskell, TypeScript, C++) checks types at
+compile time; a type error is a build failure, not a runtime crash. You get
+earlier error detection, safe large-scale refactoring (rename a field, the
+compiler finds every use), better tooling (precise autocomplete), and optimization
+opportunities. **Dynamic typing** (Python, Ruby, JavaScript, Clojure) checks at
+run time when an operation is attempted; types travel *with values*, not with
+variables. You get terser code, faster prototyping, and effortless duck typing —
+at the cost of type errors that only surface when that line executes (often in
+production).
+
+### Strong vs weak (how much implicit coercion)
+
+A spectrum, not a binary. **Strong** typing refuses nonsensical operations:
+mixing incompatible types is an error, not a silent guess. **Weak** typing
+performs implicit coercions that can mask bugs — JavaScript's `[] + {}`, C's
+pointer-to-integer casts. "Strong/weak" describes *how aggressively the language
+coerces*, independent of when it checks. Strong + static (Rust, Haskell) catches
+the most; weak + dynamic (old PHP, JS quirks) catches the least.
+
+### Nominal vs structural (how types are compared)
+
+- **Nominal** (Java, C#, Rust, C++): two types are the same only if they share a
+  *name*/declaration. A `UserId` and an `OrderId` that are both `int` underneath
+  are *distinct* and incompatible — great for safety (you can't pass one where the
+  other is expected).
+- **Structural** (TypeScript, Go interfaces, OCaml objects): two types are
+  compatible if they have the same *shape* (same fields/methods), regardless of
+  name. "If it has the methods, it qualifies." Flexible, enables duck typing
+  statically — Go's interfaces are the canonical example: a type satisfies an
+  interface just by having its methods, with no `implements` declaration.
+
+### Type inference
+
+The compiler *deduces* types you didn't write. **Local inference** (Java `var`,
+C++ `auto`, C# `var`) infers within an expression. **Whole-program / Hindley–
+Milner inference** (Haskell, OCaml, ML, Rust's local inference) can deduce types
+across a function with almost no annotations while staying fully static. Inference
+gives you the safety of static typing with much of the brevity of dynamic — the
+"best of both" that modern statically typed languages aim for.
+
+### Generics / parametric polymorphism
+
+Writing code **once that works for many types**, with the type as a parameter. A
+`List<T>` works for any element type `T`; a `Map<K, V>` for any key/value pair;
+`fn max<T: Ord>(a: T, b: T) -> T` works for anything orderable. Parametric
+polymorphism is *type-safe code reuse*: no casts, no duplication, the compiler
+verifies every instantiation. **Bounded generics** (`T: Ord`, `T extends
+Comparable`) constrain `T` to types supporting required operations. Without
+generics you either copy-paste per type or fall back to an untyped `Object`/`any`
+and lose safety.
+
+### Subtyping and variance (the subtle part)
+
+**Subtyping** (`a <: b` means "`a` is a subtype of `b`", an `a` can be used
+wherever a `b` is expected — Liskov substitution). The hard part is how subtyping
+interacts with generics — **variance**:
+
+- **Covariance**: if `Cat <: Animal`, then `List<Cat> <: List<Animal>`. Safe for
+  *read-only* (producer) positions — a list you only read `Animal`s out of can be
+  a `List<Cat>`.
+- **Contravariance**: if `Cat <: Animal`, then `Handler<Animal> <: Handler<Cat>`.
+  Safe for *write-only* (consumer) positions — something that consumes any
+  `Animal` can stand in where a `Cat`-consumer is needed.
+- **Invariance**: `List<Cat>` and `List<Animal>` are unrelated. Required for
+  *mutable* containers — allowing covariant mutation is exactly the classic Java
+  `ArrayStoreException` hole (you could store a `Dog` into an `Animal[]` that's
+  really a `Cat[]`).
+
+Mnemonic: **producers covary, consumers contravary, mutable invariant** (PECS in
+Java: "Producer `extends`, Consumer `super`"). Getting variance right is what lets
+generic APIs be both safe and flexible.
+
+### Algebraic data types (sum and product)
+
+The two ways to *combine* types — the foundation of modern typed modeling:
+
+- **Product types**: "A *and* B." A struct/record/tuple holds a value of *each*
+  field type simultaneously. `(String, Int)` is a product; its size is the
+  *product* of its parts' possibilities.
+- **Sum types** (tagged unions, variants, `enum` in Rust/Swift): "A *or* B." A
+  value is *one of* several variants, each possibly carrying data. `enum Shape {
+  Circle(f64), Rect(f64, f64) }` is a sum. Its size is the *sum* of its variants.
+
+Sum types are the underrated superpower: combined with **exhaustive pattern
+matching**, the compiler *forces* you to handle every case — add a variant, every
+`match` that's now incomplete fails to compile. This is how you "make illegal
+states unrepresentable." Languages without real sum types fake them with class
+hierarchies, nullable fields, or status enums plus convention — all weaker.
+
+### Null safety (Option / Maybe)
+
+Tony Hoare called the null reference his "billion-dollar mistake." A type like
+`String` that can *secretly* also be `null` means every dereference is a potential
+crash. The fix is a **sum type that makes absence explicit in the type**:
+`Option<T>` / `Maybe<T>` / `T?`. A `User` is *always* a user; an `Option<User>`
+*might* be absent and **the compiler forces you to handle the `None` case** before
+you can touch the value. Rust (`Option`), Swift (optionals), Kotlin (`T?`),
+Haskell (`Maybe`), and modern TypeScript (`strictNullChecks`) all eliminate the
+null-dereference bug class this way. Languages with unguarded null (older Java, Go's
+nil) leave it to discipline.
+
+### Gradual typing
+
+A **bridge between dynamic and static**: add optional type annotations to a
+dynamically typed language, checked statically where present and falling back to
+dynamic at the boundary. TypeScript (over JavaScript), Python type hints +
+`mypy`/`pyright`, PHP, and Sorbet (Ruby) are the big examples. You get incremental
+adoption — type the critical core, leave the rest dynamic — but the guarantees are
+only as strong as your coverage, and the dynamic/static boundary (`any`) is where
+safety leaks.
+
+### What types actually buy you
+
+Earlier and cheaper bug detection; refactoring you can trust; precise tooling
+(autocomplete, go-to-definition, inline docs); compiler optimizations; and —
+most subtly — **types as design and documentation**, where a well-typed signature
+tells you (and enforces) what a function can and cannot do.
+
+## When to use / When NOT
+
+<WhenWhyTabs
+  client:visible
+  caption="Static vs dynamic: choosing the typing discipline"
+  tabs={[
+    { label: 'When static', content: 'Reach for a strong static type system (Rust, Kotlin, TypeScript-strict, Haskell, Go) when: the codebase is large or long-lived; many people touch it; refactoring safety and reliable tooling matter; the domain has rich invariants worth encoding (financial amounts, state machines, units); or bugs are expensive (payments, infra, libraries others depend on). The richer the type system (ADTs, null safety, generics), the more bugs become compile errors instead of incidents.' },
+    { label: 'When dynamic', content: 'Reach for a dynamic language (Python, Ruby, JS, Clojure) when: you are prototyping or exploring and requirements churn hourly; the program is small or short-lived (scripts, notebooks, glue); you need maximum terseness and duck typing; or the ecosystem you need (data science, scripting, web tooling) is dynamic-first. Dynamic shines where the cost of a runtime type error is low and iteration speed is everything.' },
+    { label: 'When gradual', content: 'Reach for gradual typing (TypeScript, Python + mypy, Sorbet) when: you have a large existing dynamic codebase you cannot rewrite but want to harden; you want static guarantees on the critical core while leaving experimental edges dynamic; or a team is migrating incrementally. The catch: guarantees are only as strong as coverage, and every `any`/untyped boundary is a hole. Treat reducing `any` as ongoing debt paydown.' },
+    { label: 'Why it matters', content: 'The typing axis dominates how a language feels and how its failures surface. Static + strong + ADTs + null safety pushes the maximum number of bugs to compile time and turns types into a design tool ("make illegal states unrepresentable"). Dynamic trades that for iteration speed and concision. Neither is universally right — it is a function of codebase size, lifetime, team, and the cost of a runtime failure.' },
+  ]}
+/>
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Type-system dimensions and what each position trades"
+  columns={['Static', 'Dynamic', 'Nominal', 'Structural', 'Rich ADTs + null safety']}
+  rows={[
+    { criterion: 'When errors caught', cells: ['Compile time', 'Run time (at use)', 'Compile time', 'Compile time', 'Compile time'] },
+    { criterion: 'Code verbosity', cells: ['Higher (less with inference)', 'Lowest', 'Higher (named types)', 'Lower (shape-based)', 'Moderate (pays for itself)'] },
+    { criterion: 'Refactor safety', cells: ['High (compiler finds uses)', 'Low (tests only)', 'High', 'High', 'Very high (exhaustiveness)'] },
+    { criterion: 'Accidental-mismatch safety', cells: ['Good', 'Weak', 'Strongest (UserId != OrderId)', 'Weaker (same shape = same)', 'Strongest'] },
+    { criterion: 'Tooling quality', cells: ['Excellent', 'Limited (heuristic)', 'Excellent', 'Excellent', 'Excellent'] },
+    { criterion: 'Prototyping speed', cells: ['Slower upfront', 'Fastest', 'Slower', 'Fast', 'Slower upfront, safer later'] },
+    { criterion: 'Examples', cells: ['Rust, Go, Java', 'Python, Ruby, JS', 'Java, Rust, C#', 'Go ifaces, TypeScript', 'Rust, Swift, Haskell, OCaml'] },
+  ]}
+/>
+
+The master tradeoff is **upfront friction versus downstream safety**. Static, rich
+type systems cost keystrokes and a learning curve now and repay it in bugs that
+never ship and refactors that can't break silently. Dynamic typing front-loads
+speed and pays later in runtime surprises. Inference, gradual typing, and good ADTs
+are all attempts to bend that curve — keeping the safety while cutting the cost.
+
+## Diagram
+
+The two independent axes everyone conflates — *when* checking happens versus *how
+strictly* — with real languages placed in each quadrant.
+
+<Mermaid code={`graph TD
+  Q[Two independent type axes] --> W[WHEN: static vs dynamic]
+  Q --> H[HOW STRICT: strong vs weak]
+  W --> SS[Static + Strong: Rust, Haskell, Kotlin - most bugs caught]
+  W --> SW[Static + Weak: C, C++ casts - checked early but coercible]
+  H --> DS[Dynamic + Strong: Python, Ruby - no silent coercion, caught at runtime]
+  H --> DW[Dynamic + Weak: JS quirks, old PHP - fewest guarantees]
+  SS --> R[Add inference, ADTs, null safety to keep safety while cutting verbosity]`} />
+
+## Try it
+
+The tabs above let you reason through static / dynamic / gradual for your context.
+A worked example of the payoff: model a payment as a sum type rather than a
+nullable struct.
+
+A `Payment` modeled as `enum { Pending, Authorized { amount: Money }, Settled {
+amount: Money, at: Instant }, Failed { reason: String } }` makes it *impossible*
+to read a settlement timestamp off a `Pending` payment — the field doesn't exist
+in that variant, and a `match` that forgets the `Failed` case won't compile. The
+same domain modeled as a `status: String` plus nullable `amount` and `settled_at`
+fields permits dozens of illegal states (settled with null amount, pending with a
+timestamp) that you must then guard with runtime checks and pray you covered them
+all. That difference — *illegal states unrepresentable* versus *illegal states
+defended against by convention* — is what a rich type system buys.
+
+## Real-world examples
+
+- **Rust** combines static + strong + nominal typing, Hindley–Milner-style local
+  inference, trait-bounded generics, sum types (`enum`) with exhaustive `match`,
+  and `Option<T>` for null safety — the modern reference for "make illegal states
+  unrepresentable" at systems-level performance.
+- **TypeScript** brought *structural*, gradual static typing to JavaScript and is
+  now near-universal in large web codebases precisely because changing only the
+  typing axis fixed JS's biggest pain (refactoring safety, tooling) without
+  touching runtime semantics.
+- **Go's interfaces** are the canonical *structural* typing in a mainstream
+  language: a type satisfies an interface by having its methods, with no
+  `implements` keyword — duck typing, checked statically.
+- **Haskell / OCaml** demonstrate whole-program Hindley–Milner inference and rich
+  ADTs: heavily typed code that reads almost annotation-free, with the compiler
+  enforcing exhaustiveness everywhere.
+- **Kotlin and Swift** mainstreamed null safety (`T?` / optionals) precisely to
+  kill the null-pointer-exception class that plagued Java and Objective-C.
+
+## Further reading
+
+- [*Types and Programming Languages* (Benjamin Pierce)](https://www.cis.upenn.edu/~bcpierce/tapl/) — the definitive rigorous treatment of type systems, subtyping, and parametric polymorphism.
+- [Rust Book — "Enums and Pattern Matching"](https://doc.rust-lang.org/book/ch06-00-enums.html) — sum types, `Option`, and exhaustive matching in a mainstream language.
+- ["Parse, don't validate" (Alexis King)](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/) — the practical art of using types to make illegal states unrepresentable.
+- [TypeScript Handbook — "Type Compatibility"](https://www.typescriptlang.org/docs/handbook/type-compatibility.html) — structural typing and variance explained with real examples.

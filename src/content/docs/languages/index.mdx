@@ -1,0 +1,204 @@
+---
+title: Programming Language Concepts
+description: Why language fluency transcends syntax — the dimensions languages vary on (typing, paradigm, memory, execution), how to learn any new language fast, and how to choose the right language for a job.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A programming language is not its syntax. Curly braces versus indentation, `def`
+versus `function`, semicolons or none — these are the most visible and least
+important differences. What actually separates Rust from Python from Haskell from
+Go are a handful of deep **design decisions**: how the language treats *types*,
+which *paradigms* it makes natural, how it manages *memory*, and how it *executes*.
+An engineer who understands these dimensions can pick up a new language in days
+rather than months, because every language is a particular set of points along the
+same few axes. This cluster is about those axes — the cross-cutting concepts that
+make you fluent in *any* language and able to choose well when starting something
+new. For the runtime internals beneath these choices (compilation, JIT, garbage
+collection mechanics), see *Runtime & memory management*; here we stay at the level
+of language design.
+
+## Mental model
+
+**A language is a point in a design space, not a bag of features.** Almost every
+meaningful difference between languages reduces to where they sit on four axes:
+
+- **Typing** — *when* and *how strictly* types are checked. Static (at compile
+  time) versus dynamic (at run time); strong versus weak; how much inference,
+  how rich the type system. This is the single biggest predictor of how a
+  language *feels* to write and how its errors surface.
+- **Paradigm** — what *shape* of program the language rewards. Imperative
+  step-by-step mutation, object-oriented message-passing, functional
+  transformation of immutable data, declarative "what not how." Most modern
+  languages are multi-paradigm; the question is which paradigm is the *path of
+  least resistance*.
+- **Memory** — *who* reclaims memory and *how much control* you have. Manual
+  (`malloc`/`free`), garbage-collected, ownership/borrowing (Rust), reference
+  counting. This trades safety and productivity against control and predictable
+  latency.
+- **Execution** — *how* source becomes running code: ahead-of-time compiled,
+  interpreted, or JIT-compiled. (Covered in depth in *Runtime & memory*.)
+
+Learn where a language sits on these four axes and you understand 80% of it before
+writing a line. The remaining 20% — the *mechanics* (scoping, closures, error
+handling, concurrency model, metaprogramming) — is a second layer that this cluster
+also maps. **The trick to learning fast is to ask "what are this language's answers
+to the four axes?" first, and only then learn its syntax** to express those answers.
+
+## Types / Variants
+
+The four axes, each a full page in this cluster:
+
+**Type systems** (`type-systems`). Static versus dynamic, strong versus weak,
+nominal versus structural, inference, generics and parametric polymorphism,
+subtyping and variance, algebraic data types (sum and product), null safety
+(`Option`/`Maybe`), gradual typing. The richest and most consequential axis.
+
+**Paradigms** (`paradigms`). Imperative, object-oriented (encapsulation,
+inheritance, polymorphism, composition over inheritance), functional (purity,
+immutability, higher-order functions, monadic patterns), declarative, logic, and
+the multi-paradigm reality of real languages.
+
+**Memory models** (`memory-models`). Manual management, garbage collection,
+ownership/borrowing, automatic reference counting (ARC), value versus reference
+semantics, stack versus heap allocation — the safety-versus-control spectrum.
+
+**Language mechanics** (`language-mechanics`). Scoping (lexical/dynamic),
+closures, evaluation order (eager/lazy), parameter passing (value/reference/
+sharing), error handling (exceptions/results/panics), in-language concurrency
+models, and metaprogramming/macros.
+
+**Choosing a language** (`choosing-a-language`). The applied synthesis:
+fit-for-purpose, ecosystem and tooling, performance versus productivity, team and
+hiring, interop/FFI, polyglot architectures, and language longevity.
+
+## When to use / When NOT
+
+This is an *index*; the question here is which page to read for which decision.
+
+- **Starting a new service or product and choosing the language** — go straight to
+  `choosing-a-language`; pull in `memory-models` if latency/control is a hard
+  constraint.
+- **Onboarding to an unfamiliar codebase fast** — read `type-systems` and
+  `paradigms` for *that* language's position; most confusion is a paradigm or
+  type-system mismatch with your prior language.
+- **Designing an API or library** that others consume — `type-systems` (what the
+  types guarantee callers) and `language-mechanics` (error-handling contract)
+  matter most.
+- **Avoid** treating any one language as the universal yardstick. "Weird"
+  usually just means "a different point on an axis you haven't internalized."
+
+## Tradeoffs
+
+The fundamental tension across every axis is **safety/expressiveness versus
+control/simplicity**, and no language wins on all of them — each picks a coherent
+bundle of positions.
+
+<CompareMatrix
+  client:visible
+  caption="Languages as points in the design space (the four axes plus a verdict)"
+  columns={['Python', 'Go', 'Rust', 'TypeScript', 'Haskell', 'C']}
+  rows={[
+    { criterion: 'Typing', cells: ['Dynamic, strong, gradual', 'Static, strong, simple', 'Static, strong, rich', 'Static (gradual over JS)', 'Static, very rich, inferred', 'Static, weak'] },
+    { criterion: 'Dominant paradigm', cells: ['Multi (OOP + procedural)', 'Imperative + light OOP', 'Multi (FP-influenced)', 'Multi (OOP + FP)', 'Pure functional', 'Procedural'] },
+    { criterion: 'Memory model', cells: ['GC (refcount + cycles)', 'GC (concurrent)', 'Ownership/borrowing', 'GC (via JS engine)', 'GC (lazy)', 'Manual'] },
+    { criterion: 'Execution', cells: ['Interpreted (CPython)', 'AOT compiled', 'AOT compiled', 'Transpiled, JIT (V8)', 'AOT compiled (GHC)', 'AOT compiled'] },
+    { criterion: 'Best at', cells: ['Scripting, data, ML glue', 'Network services, CLIs', 'Systems, perf + safety', 'Web apps at scale', 'Correctness-critical logic', 'Kernels, embedded'] },
+    { criterion: 'Main cost', cells: ['Speed, runtime errors', 'Expressiveness, generics history', 'Learning curve, build time', 'Runtime is still JS', 'Steep curve, niche hiring', 'Memory-safety footguns'] },
+  ]}
+/>
+
+## Diagram
+
+The four axes every language is defined by — learn a language by locating it on
+each, then learn its syntax as the encoding of those positions.
+
+<Mermaid code={`graph TD
+  L[A programming language] --> T[Typing axis: when/how strictly types are checked]
+  L --> P[Paradigm axis: imperative / OOP / functional / declarative]
+  L --> M[Memory axis: manual / GC / ownership / refcount]
+  L --> E[Execution axis: AOT / interpreted / JIT]
+  T --> F[Its 'feel', error surface, and refactor safety]
+  P --> F
+  M --> F
+  E --> F
+  F --> S[Syntax is just how these positions are written down]`} />
+
+## Try it
+
+Walk the tree to decide where to start, then map a language you know onto the four
+axes to internalize the model.
+
+<DecisionTree
+  client:visible
+  caption="Where should I start in this cluster?"
+  root={{
+    question: 'What are you trying to do right now?',
+    branches: [
+      {
+        label: 'Pick a language for a new project',
+        next: {
+          question: 'Is low-latency / tight-control (no GC pauses, small footprint) a hard requirement?',
+          branches: [
+            {
+              label: 'Yes — control matters',
+              next: { leaf: { recommendation: 'memory-models, then choosing-a-language', detail: 'The memory model is the gating constraint: manual, ownership, or GC. Decide that first, then narrow on ecosystem and team in choosing-a-language.' } },
+            },
+            {
+              label: 'No — productivity matters more',
+              next: { leaf: { recommendation: 'choosing-a-language', detail: 'Fit-for-purpose, ecosystem, tooling, and team/hiring dominate. The "boring, right tool" balance is the core of that page.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Learn / onboard to an unfamiliar language',
+        next: {
+          question: 'What feels most alien about it?',
+          branches: [
+            {
+              label: 'Its type annotations / generics / errors',
+              next: { leaf: { recommendation: 'type-systems', detail: 'Most onboarding friction is a type-system mismatch with your prior language: static vs dynamic, nominal vs structural, ADTs, null safety.' } },
+            },
+            {
+              label: 'How programs are *structured*',
+              next: { leaf: { recommendation: 'paradigms', detail: 'The shape of idiomatic code — OOP class hierarchies vs functional pipelines vs procedural steps — is a paradigm question.' } },
+            },
+            {
+              label: 'Closures, error handling, concurrency idioms',
+              next: { leaf: { recommendation: 'language-mechanics', detail: 'Scoping, closures, eager/lazy eval, exceptions vs results vs panics, and the concurrency model are the second layer of fluency.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Rust's rise** is a pure four-axes story: it kept C's *execution* (AOT, native
+  speed) and rough *memory* control, but replaced manual `free` with
+  ownership/borrowing and added a rich *type system* (ADTs, traits) — a new point
+  in the space that didn't exist before, which is exactly why it won "most loved."
+- **TypeScript** is JavaScript with *only the typing axis changed* (dynamic →
+  gradual static, structural) — proving how much a single axis dominates the
+  developer experience while runtime semantics stay identical.
+- **Go** deliberately picked *simple* positions on every axis (static-but-plain
+  types, light OOP, concurrent GC, AOT) to optimize for fast onboarding and large
+  teams — a design philosophy, not an accident.
+- **Polyglot shops** (e.g. Python for ML, Go for services, TypeScript for web,
+  Rust for hot paths) explicitly assign languages by where their axis bundle fits
+  the job — the applied conclusion of this whole cluster.
+
+## Further reading
+
+- [*Concepts, Techniques, and Models of Computer Programming* (Van Roy & Haridi)](https://www.info.ucl.ac.be/~pvr/book.html) — the canonical "languages as points in a design space" textbook, organized by computation model rather than by language.
+- [*Programming Language Pragmatics* (Michael Scott)](https://www.cs.rochester.edu/~scott/pragmatics/) — a rigorous, language-agnostic tour of typing, scoping, memory, and execution as cross-cutting concepts.
+- [*Seven Languages in Seven Weeks* (Bruce Tate)](https://pragprog.com/titles/btlang/seven-languages-in-seven-weeks/) — a practical demonstration of learning languages fast by focusing on their distinctive axis positions.

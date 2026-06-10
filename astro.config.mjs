@@ -252,6 +252,17 @@ export default defineConfig({
             { label: 'LLMs in production', slug: 'ml-systems/llm-production' },
           ],
         },
+        {
+          label: 'Programming Language Concepts',
+          items: [
+            { label: 'Overview', slug: 'languages' },
+            { label: 'Type systems', slug: 'languages/type-systems' },
+            { label: 'Programming paradigms', slug: 'languages/paradigms' },
+            { label: 'Memory models', slug: 'languages/memory-models' },
+            { label: 'Language mechanics', slug: 'languages/language-mechanics' },
+            { label: 'Choosing a language', slug: 'languages/choosing-a-language' },
+          ],
+        },
       ],
     }),
   ],

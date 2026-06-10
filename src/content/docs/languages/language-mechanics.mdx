@@ -1,0 +1,251 @@
+---
+title: Language Mechanics
+description: Scoping (lexical vs dynamic), closures, evaluation order (eager vs lazy), parameter passing (by value/reference/sharing), error handling (exceptions vs results vs panics), in-language concurrency models, and metaprogramming/macros.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Beyond a language's big axes (typing, paradigm, memory) lies a second layer of
+**mechanics** — the operational rules that govern *how code actually executes*:
+where names resolve (scoping), how functions capture their environment (closures),
+*when* expressions are evaluated (eager vs lazy), what arguments *are* when passed
+(value vs reference vs sharing), how failures propagate (exceptions vs results vs
+panics), how concurrency is expressed, and how programs can write or transform
+programs (metaprogramming). These are the details that trip up an engineer moving
+between languages — "why didn't this loop capture the variable I expected?", "why
+did mutating the argument change the caller's data?", "do I `try/catch` or check a
+return value?". Getting them right is the second half of language fluency, after
+you've located the language on its big axes. This page maps each mechanic, the
+variants, and how to reason about them in any language.
+
+## Mental model
+
+**Mechanics are the answers to a fixed set of operational questions every language
+must answer — and the answers are where languages quietly differ.** Ask, for any
+new language:
+
+- **Where do names mean what?** Lexical scope (resolve by *where code is written*)
+  is the modern near-universal default; dynamic scope (resolve by *call stack at run
+  time*) is rare and surprising.
+- **What does a function close over?** A **closure** captures its surrounding
+  variables, carrying its environment with it — the mechanism behind callbacks,
+  iterators, and most functional idioms.
+- **When is work done?** Eager (evaluate now) vs lazy (evaluate only when the value
+  is actually needed) changes performance, enables infinite structures, and changes
+  how you reason about side effects.
+- **What did I just pass?** A copy, a shared reference, or a reference to the
+  variable itself? This single answer explains most "why did the caller's data
+  change?" surprises.
+- **How do failures travel?** Exceptions (throw and unwind), results (errors as
+  return values), or panics (unrecoverable crash) — a contract that shapes your
+  whole error-handling style.
+- **How do concurrent things run?** Threads, async/await, actors, CSP channels,
+  goroutines — covered deeply in the *Concurrency & parallelism* cluster; here we
+  map the *language-level* model each picks.
+- **Can the program manipulate itself?** Macros, reflection, and metaprogramming
+  trade power and DSL-building for complexity and debuggability.
+
+Master these and you can predict the behavior of code in a language you've never
+written.
+
+## Types / Variants
+
+### Scoping: lexical vs dynamic
+
+- **Lexical (static) scope**: a name resolves to the binding *visible where the
+  code is written*, determined at compile time by nesting. Predictable, the basis of
+  closures, and the default in essentially every modern language (C, Python, JS,
+  Rust, Java, Go…). You can read a function and know what each name refers to.
+- **Dynamic scope**: a name resolves to the most recent binding *on the call stack
+  at run time*. Flexible but error-prone — the same function behaves differently
+  depending on who called it. Largely historical (early Lisp, Bash variables, Emacs
+  Lisp by default); worth recognizing precisely because it's so surprising.
+
+### Closures
+
+A **closure** is a function bundled with the lexical environment it was defined in,
+so it can reference outer variables even after that scope has returned. Closures
+power callbacks, event handlers, iterators, partial application, and most
+higher-order/functional code. The classic cross-language footgun: **capturing a loop
+variable by reference** — closures created in a loop may all see the *final* value
+of the variable rather than the value at creation time (the historic JavaScript
+`var`-in-a-loop bug, fixed by `let`'s per-iteration binding; Go had the analogous
+loop-variable capture issue addressed in Go 1.22). Knowing whether a language
+captures **by reference or by value** is essential to predicting closure behavior.
+
+### Evaluation order: eager vs lazy
+
+- **Eager (strict) evaluation**: arguments and expressions are evaluated *as soon as
+  they're bound* — the default in most languages. Predictable timing of side
+  effects; you pay for work whether or not the result is used.
+- **Lazy evaluation**: an expression is evaluated *only when its value is actually
+  demanded*, and often memoized after. Enables **infinite data structures** (lazy
+  streams), avoids unnecessary work, and supports elegant compositional code — but
+  makes *when* side effects happen and *how much memory* is retained (space leaks)
+  hard to reason about. Haskell is lazy by default; most languages are eager but
+  offer lazy *opt-ins* (generators/iterators, `lazy` values, short-circuit `&&`/`||`,
+  streams).
+
+### Parameter passing: value, reference, sharing
+
+The source of endless cross-language confusion:
+
+- **Pass by value**: the function gets a *copy* of the argument; mutating the
+  parameter never affects the caller. (C scalars, Go, Rust moves/copies, value
+  types.)
+- **Pass by reference**: the function gets an alias to the *caller's variable
+  itself*; reassigning the parameter changes the caller's variable. (C++ `&`, C#
+  `ref`, Pascal `var`.)
+- **Pass by sharing (call by object reference)**: the function gets a *copy of the
+  reference* to a shared object — *mutating* the object is visible to the caller, but
+  *reassigning* the parameter is not. This is what Python, Java, JavaScript, and Ruby
+  actually do, and the constant source of "I passed a list, mutated it, and the
+  caller saw the change — but reassigning it did nothing." Tied directly to value vs
+  reference semantics from *Memory models*.
+
+### Error handling: exceptions vs results vs panics
+
+How failures propagate is a defining stylistic contract:
+
+- **Exceptions** (Java, C#, Python, JS, C++): `throw` an error that unwinds the
+  stack until a `catch` handles it. Separates the happy path from error handling and
+  carries rich context — but control flow becomes *invisible* (any call might throw),
+  and checked-vs-unchecked exception debates are eternal.
+- **Results / values** (Rust `Result<T, E>`, Go `(value, err)`, Haskell `Either`,
+  Swift `throws` typed): errors are *ordinary return values* the caller must handle.
+  Explicit, visible in the type signature, no hidden control flow — at the cost of
+  verbosity (mitigated by Rust's `?` operator, Go's `if err != nil`). The functional
+  world treats this monadically (chain over `Result`/`Option`).
+- **Panics / fatal errors** (Rust `panic!`, Go `panic`): for *unrecoverable*
+  programmer-error conditions (broken invariants, out-of-bounds) — they crash the
+  thread/program rather than being routinely handled. The discipline: **results for
+  expected failures, panics for bugs.**
+
+The trend in modern languages (Rust, Go, Swift) is toward **errors-as-values** for
+expected failures because the type system then *forces* you to handle them.
+
+### Concurrency models in languages
+
+Each language picks a *primary* model for expressing concurrency (the mechanics and
+tradeoffs are detailed in *Concurrency & parallelism*):
+
+- **OS threads + shared memory + locks** (Java, C++, C#): powerful, but manual
+  synchronization is error-prone.
+- **Async/await over an event loop** (JavaScript, Python `asyncio`, Rust, C#):
+  cooperative, great for I/O-bound work, single-threaded-friendly.
+- **Goroutines + channels (CSP)** (Go): lightweight green threads communicating over
+  channels — "don't communicate by sharing memory; share memory by communicating."
+- **Actors** (Erlang/Elixir, Akka): isolated processes with no shared state,
+  communicating only by messages — the basis of extreme fault tolerance.
+
+The language-level choice shapes how you *think* about concurrent code far more than
+the underlying OS primitives.
+
+### Metaprogramming and macros
+
+Code that **generates or transforms code**, reducing boilerplate and enabling DSLs:
+
+- **Macros** — *syntactic*: expand at compile time before/after parsing. **Hygienic
+  macros** (Rust `macro_rules!`/procedural macros, Lisp/Scheme, Elixir) operate on
+  the AST and avoid accidental name capture — powerful and relatively safe. **Textual
+  macros** (C preprocessor) are crude string substitution and notoriously
+  bug-prone.
+- **Reflection / runtime metaprogramming** (Java, Python, Ruby, C#): inspect and
+  modify types, methods, and objects at run time. Enables ORMs, serializers, and DI
+  frameworks — at the cost of performance and lost compile-time safety.
+- **Compile-time / generics-driven** (Rust, Zig `comptime`, C++ templates/`constexpr`):
+  run code at compile time to generate specialized, zero-overhead code.
+
+Metaprogramming is power-with-a-price: it can eliminate boilerplate and build
+elegant DSLs, or produce magic that's impossible to debug and read. Use sparingly
+and prefer hygienic, statically-checked forms.
+
+## When to use / When NOT
+
+<WhenWhyTabs
+  client:visible
+  caption="Error-handling strategy: exceptions vs results vs panics"
+  tabs={[
+    { label: 'Results (errors as values)', content: 'Prefer Result/Either/(value, err) when failures are expected and part of the normal flow (parsing, I/O, validation, network calls), and you want the type system to FORCE handling so no error path is silently ignored. Best in Rust, Go, Swift, and functional code. Cost: verbosity — mitigated by Rust\'s ? operator, Go\'s idiomatic if err != nil, and monadic chaining. This is the modern default for libraries and correctness-critical code because the contract is visible in every signature.' },
+    { label: 'Exceptions', content: 'Prefer exceptions when you want to keep the happy path clean and let errors propagate far up to a central handler (web request boundaries, application top-level), and the language is exception-first (Java, C#, Python, JS). They carry rich context and stack traces. Cost: control flow becomes invisible — any call might throw — so reason carefully about what can fail and where it is caught. Avoid using exceptions for ordinary, expected control flow (e.g. "not found").' },
+    { label: 'Panics (fatal)', content: 'Reserve panics/fatal errors for UNRECOVERABLE conditions that indicate a bug or broken invariant — out-of-bounds, failed assertions, impossible states. They crash the thread or process deliberately rather than being routinely caught. Discipline: results for expected failures, panics for bugs. Do NOT use panics for control flow or recoverable errors; do isolate them at task/request boundaries so one bad request does not take down the server.' },
+    { label: 'Why it matters', content: 'The error model is a pervasive stylistic contract that shapes every function you write and every API you consume. Errors-as-values make failure explicit and compiler-enforced (fewer ignored errors, more verbose); exceptions keep code terse but hide control flow; panics draw a hard line between "handle this" and "this should never happen." Modern languages trend toward errors-as-values for expected failures precisely because the type system can then guarantee they are handled.' },
+  ]}
+/>
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Language mechanics: variants and what each trades"
+  columns={['Lexical scope', 'Dynamic scope', 'Eager eval', 'Lazy eval', 'Exceptions', 'Results']}
+  rows={[
+    { criterion: 'Resolution / timing', cells: ['By code structure (compile time)', 'By call stack (run time)', 'Evaluate now', 'Evaluate on demand', 'Throw + unwind', 'Return + check'] },
+    { criterion: 'Predictability', cells: ['High', 'Low (caller-dependent)', 'High', 'Low (when/where unclear)', 'Hidden control flow', 'Fully explicit'] },
+    { criterion: 'Key benefit', cells: ['Closures, readable', 'Implicit context (rare)', 'Simple to reason about', 'Infinite structures, no wasted work', 'Clean happy path', 'Compiler-forced handling'] },
+    { criterion: 'Key cost', cells: ['None (the default)', 'Surprising, error-prone', 'May compute unused work', 'Space leaks, timing of effects', 'Any call may throw', 'Verbosity'] },
+    { criterion: 'Where seen', cells: ['Nearly all modern langs', 'Bash, early/Emacs Lisp', 'Most languages', 'Haskell; opt-in elsewhere', 'Java, Python, C#, JS', 'Rust, Go, Swift, Haskell'] },
+  ]}
+/>
+
+## Diagram
+
+The fixed set of operational questions every language answers — read a new language
+by answering each, and you can predict its behavior.
+
+<Mermaid code={`graph TD
+  M[Language mechanics: questions every language answers] --> S[Scoping: where do names resolve? lexical default]
+  M --> C[Closures: capture environment by ref or by value?]
+  M --> E[Evaluation: eager now vs lazy on demand]
+  M --> P[Param passing: value vs reference vs sharing]
+  M --> ERR[Errors: exceptions vs results vs panics]
+  M --> CON[Concurrency: threads / async / channels / actors]
+  M --> META[Metaprogramming: macros / reflection / comptime]
+  ERR --> PRED[Answer all seven and you can predict any language's behavior]`} />
+
+## Try it
+
+The tabs above let you reason through error-handling strategy. A worked
+cross-language example of the param-passing footgun:
+
+In Python, `def f(xs): xs.append(9)` *will* change the caller's list (the object is
+shared — pass by sharing), but `def g(xs): xs = [9]` will *not* (reassigning the
+local copy of the reference doesn't touch the caller's variable). The same code in
+C++ depends entirely on whether the parameter is declared `vector<int>` (a copy —
+pass by value), `vector<int>&` (an alias — pass by reference, both mutation *and*
+reassignment visible), or `const vector<int>&` (read-only alias). Predicting which
+behavior you get is purely a matter of knowing the language's parameter-passing rule
+— there is no universal default, and assuming one from your previous language is the
+bug.
+
+## Real-world examples
+
+- **JavaScript's `let` vs `var`** is the canonical closure-capture lesson: `var` in
+  a `for` loop captures one shared binding (all closures see the final value), while
+  `let` creates a fresh binding per iteration — a bug that confused a generation of
+  developers and shaped the language's evolution.
+- **Rust's `?` operator** made errors-as-values ergonomic, propagating `Result`
+  errors up with a single character — the design that proved explicit error handling
+  need not be verbose, and influenced Swift and others.
+- **Go's `(value, err)` convention plus `panic`/`recover`** draws the
+  results-for-expected, panics-for-bugs line explicitly, and its goroutine+channel
+  CSP model reshaped how a generation writes concurrent code.
+- **Haskell's laziness** enables idioms impossible elsewhere — defining infinite
+  lists (`[1..]`), `take 10 primes`, and separating generation from consumption — at
+  the famous cost of reasoning about space leaks.
+- **Rust's `macro_rules!` and procedural macros** power `serde`, `tokio`'s
+  `#[tokio::main]`, and derive macros — hygienic, AST-level metaprogramming that
+  eliminates boilerplate without the C preprocessor's footguns.
+
+## Further reading
+
+- [*Programming Language Pragmatics* (Michael Scott)](https://www.cs.rochester.edu/~scott/pragmatics/) — rigorous coverage of scoping, closures, parameter passing, and evaluation order across languages.
+- ["Error Handling in Rust" (Rust Book, ch. 9)](https://doc.rust-lang.org/book/ch09-00-error-handling.html) — recoverable (`Result`) vs unrecoverable (`panic!`) errors and when to use each.
+- [SICP — "Streams" (lazy evaluation)](https://mitpress.mit.edu/sites/default/files/sicp/full-text/book/book-Z-H-24.html) — delayed evaluation, memoized streams, and infinite structures explained from first principles.
+- See also *Concurrency & parallelism* for the depth on threads, async, channels, and actors that this page references.

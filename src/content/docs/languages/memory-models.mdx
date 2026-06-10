@@ -1,0 +1,246 @@
+---
+title: Memory Models
+description: How languages manage memory — manual (C/C++), garbage collection, ownership and borrowing (Rust), automatic reference counting (ARC), value vs reference semantics, stack vs heap allocation, and the safety-versus-control spectrum.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Every value your program creates lives *somewhere* in memory, and someone has to
+decide *when that memory is reclaimed*. The **memory model** is the language's
+answer — and it's one of the most defining choices a language makes, because it
+sets the trade between **control and safety, paid in latency predictability**.
+Manual management (C/C++) gives you total control and the sharpest footguns;
+garbage collection (Java, Go, Python, JS) gives you safety and productivity at the
+cost of pauses; ownership/borrowing (Rust) is the modern attempt to get both;
+reference counting (Swift ARC, Python) sits in between. This page is about the
+*language-level* memory model — how the language *presents* memory to you and what
+guarantees it makes. For the *runtime mechanics* of how garbage collectors actually
+work (tracing vs refcount internals, generational, stop-the-world vs concurrent,
+allocators), see *Runtime & memory management*; we reference rather than repeat it.
+
+## Mental model
+
+**Memory management is a spectrum from "you do everything" to "the runtime does
+everything," and every point trades control for safety.** The defining questions:
+
+- **Who frees memory, and when?** You explicitly (manual), the compiler
+  deterministically at scope end (ownership), a counter hitting zero (refcounting),
+  or a collector that periodically finds garbage (tracing GC)?
+- **How predictable is the timing?** Manual and ownership free at *exactly*
+  knowable points (no pauses); refcounting frees promptly but with per-operation
+  overhead; tracing GC frees *whenever it decides to run*, which is the source of
+  pause spikes.
+- **What's the failure mode?** Manual risks use-after-free, double-free, and leaks
+  (memory-safety CVEs); GC risks pauses and reachable-but-unused leaks; ownership
+  risks a steep learning curve fighting the borrow checker.
+
+The cross-cutting idea every language also makes you confront: **value vs reference
+semantics** — when you assign or pass a variable, do you get a *copy of the data*
+(value) or a *shared pointer to the same data* (reference)? This single distinction
+explains most surprising aliasing bugs ("why did mutating `b` change `a`?") and is
+deeply tied to **stack vs heap** allocation. The whole page is the spectrum from
+maximum control to maximum safety, and the clever schemes that try to cheat the
+trade.
+
+## Types / Variants
+
+### Manual memory management (C, C++)
+
+You explicitly allocate (`malloc`/`new`) and free (`free`/`delete`). **Maximum
+control, tightest footprint, zero runtime overhead, fully predictable timing** —
+and the classic failure modes: **memory leak** (forget to free), **use-after-free**
+and **double-free** (free too early or twice → corruption, a huge share of security
+CVEs), and **dangling pointers**. Modern C++ mitigates with **RAII** (tie a
+resource's lifetime to a stack object's scope) and smart pointers (`unique_ptr`,
+`shared_ptr`), which is really ownership/refcounting bolted on by convention. The
+right choice for kernels, embedded, HFT, and engines where every byte and every
+microsecond is accounted for — and where the bug surface is accepted as the price.
+
+### Garbage collection (Java, Go, C#, Python, JavaScript)
+
+The runtime automatically reclaims unreachable objects, so you never `free`.
+**Memory-safe by construction** (no use-after-free/double-free), enormously
+productive, and the right default for the vast majority of server and application
+software. The cost is **pauses** (a collector may stop or slow the program to do
+its work — the reason a P99 latency spikes), CPU overhead, and a larger memory
+footprint (headroom for the collector). You can still *leak* by keeping objects
+reachable you no longer need (unbounded caches, un-removed listeners). The internals
+— tracing vs reference counting, generational collection, stop-the-world vs
+concurrent low-pause collectors (ZGC, Shenandoah, Go's collector) — are covered in
+*Runtime & memory management*.
+
+### Ownership and borrowing (Rust)
+
+The modern third way: **memory safety without a garbage collector**, enforced
+entirely at *compile time*. The rules: every value has exactly one **owner**; when
+the owner goes out of scope, the value is freed *deterministically* (no GC, no
+pauses); you may **borrow** references to a value (`&T` shared/immutable, `&mut T`
+exclusive/mutable) but the **borrow checker** enforces that you can have *either*
+many readers *or* one writer, never both, and never a reference outliving its
+referent. This eliminates use-after-free, double-free, data races, and most leaks
+*at compile time*, with **C-level performance and no runtime cost**. The price is a
+real learning curve — "fighting the borrow checker" — and some patterns (graphs,
+cyclic structures) that require escape hatches (`Rc`/`RefCell`, `unsafe`). The
+biggest idea in mainstream language design in a decade.
+
+### Automatic reference counting (ARC — Swift, Objective-C)
+
+Each object tracks how many references point to it; when the count hits zero it's
+freed **immediately and deterministically**. The compiler inserts the
+increment/decrement calls (hence "automatic"). **Prompt cleanup, no big pauses, low
+footprint** — but per-operation counter overhead and, critically, it **cannot
+reclaim reference cycles** (A → B → A keeps both alive forever) without programmer
+help: you break cycles with `weak`/`unowned` references. Excellent for UI and
+resource-tight clients (the reason Apple uses it); the cycle problem is its defining
+gotcha. (Python uses refcounting *plus* a backup cycle collector to paper over this.)
+
+### Value vs reference semantics
+
+Orthogonal to *who frees*, but just as important to how a language *feels*:
+
+- **Value semantics**: assignment/passing **copies the data**. Mutating the copy
+  never affects the original — no aliasing surprises. Primitives are value types
+  everywhere; Rust, C++, Go, Swift, and C# `struct`s default many types to value
+  semantics. Safe and local to reason about, but copying can cost.
+- **Reference semantics**: assignment/passing **shares a pointer** to the same
+  object; mutating through one name is visible through all. Objects in Java,
+  Python, JavaScript, and C# (classes) are reference types. Efficient (no copy) but
+  the source of "spooky action at a distance" aliasing bugs.
+
+Knowing which semantics a type has is the difference between predicting and being
+surprised by your program's behavior. Many bugs are just "I expected a copy and got
+a shared reference, or vice versa."
+
+### Stack vs heap allocation in languages
+
+- **Stack**: small, fixed-size, call-scoped data; allocated/freed by just moving the
+  stack pointer when a function is entered/returned. Extremely fast, cache-friendly,
+  no management needed — but limited in size and lifetime (can't outlive the call).
+- **Heap**: dynamically-sized, longer-lived data; allocation finds a free block
+  (slower, fragments) and *freeing* is the hard part that all the above schemes
+  address.
+
+Languages differ in how much they hide this. C/C++/Rust let you choose explicitly
+(`Box<T>` heap-allocates in Rust); Go uses **escape analysis** to stack-allocate
+when it safely can (cutting GC pressure); Java historically heap-allocates most
+objects (with escape-analysis optimizations); Python/JS abstract it away entirely.
+The stack needs none of the reclamation machinery above — it's the heap's problem.
+
+### The safety-vs-control spectrum
+
+Lay them on one axis: **Manual (C/C++)** at the maximum-control end → **ARC /
+refcounting** → **ownership/borrowing (Rust)** as the clever middle that buys safety
+*and* control at the cost of a learning curve → **tracing GC** at the
+maximum-safety/productivity end. There is no free lunch; each scheme is a different
+bet about which costs you can absorb.
+
+## When to use / When NOT
+
+- **Manual (C/C++) — use when:** kernels, embedded, real-time, HFT, game engines,
+  or interop where you need every byte and microsecond and accept the bug surface.
+  **Avoid when:** safety and dev speed matter more — reach for Rust to get the
+  performance without the footguns.
+- **Garbage collection — use when:** developer productivity and memory safety
+  dominate and you can tolerate or tune away pauses — most server and app software.
+  **Avoid when:** hard real-time or sub-millisecond tail latency on large heaps is
+  non-negotiable.
+- **Ownership/borrowing (Rust) — use when:** you need memory safety *and* no GC
+  pauses *and* maximum performance, and can invest in the learning curve (new
+  systems code, performance-critical services, WASM, security-sensitive code).
+  **Avoid when:** the team can't absorb the curve or the workload happily tolerates
+  GC and a higher-level language ships faster.
+- **ARC/refcounting — use when:** prompt deterministic cleanup matters (UI,
+  resource-constrained clients — Swift/iOS). **Watch for:** reference cycles; break
+  them with weak references.
+- **Value semantics — prefer** for small, copyable, immutable-ish data to avoid
+  aliasing bugs; **reference semantics** for large or identity-bearing objects where
+  copying is wasteful.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Language memory models across the safety-vs-control spectrum"
+  columns={['Manual (C/C++)', 'Ownership (Rust)', 'ARC / refcount', 'Tracing GC']}
+  rows={[
+    { criterion: 'Who frees, when', cells: ['You, explicitly', 'Compiler, at scope end (deterministic)', 'Runtime, at count 0 (deterministic)', 'Collector, periodically'] },
+    { criterion: 'Pause behavior', cells: ['None', 'None', 'None (incremental)', 'Pauses (sub-ms with concurrent GC)'] },
+    { criterion: 'Memory safety', cells: ['Manual (footguns)', 'Compile-time guaranteed', 'Safe (except cycles)', 'Safe'] },
+    { criterion: 'Runtime overhead', cells: ['Lowest', 'Lowest (no runtime)', 'Per-pointer counter ops', 'Periodic CPU + pauses'] },
+    { criterion: 'Footprint', cells: ['Tightest', 'Tightest', 'Low', 'Higher (headroom)'] },
+    { criterion: 'Main failure mode', cells: ['Use-after-free / double-free / leak', 'Borrow-checker learning curve', 'Leaked reference cycles', 'Pause spikes; reachable-but-unused leaks'] },
+    { criterion: 'Typical use', cells: ['Kernels, embedded, HFT, engines', 'Safe systems, perf services, WASM', 'iOS/macOS UI, smart pointers', 'JVM/Go/.NET/Node app servers'] },
+  ]}
+/>
+
+The master tradeoff is **control versus safety, paid in pause-predictability**.
+Manual memory is tightest and most predictable but hands you the sharpest footguns;
+tracing GC is safest and most productive but takes control of *when* reclamation
+happens — and that "when" is the pause that wrecks tail latency. Ownership is the
+clever escape: deterministic, pause-free, *and* safe — for the price of a learning
+curve.
+
+## Diagram
+
+The same object, reclaimed four different ways — the spectrum from "you free it" to
+"the collector finds it."
+
+<Mermaid code={`graph TD
+  OBJ[A heap object you no longer need] --> Q{How is it reclaimed?}
+  Q -->|You call free/delete| MAN[Manual: total control, risk use-after-free/leak]
+  Q -->|Owner goes out of scope| OWN[Ownership Rust: deterministic, pause-free, compile-time safe]
+  Q -->|Refcount hits zero| ARC[ARC/refcount: prompt, but cannot reclaim cycles]
+  Q -->|Collector traces roots| GC[Tracing GC: safe and productive, but pauses]
+  MAN --> SPEC[Spectrum: control --> safety, paid in latency predictability]
+  OWN --> SPEC
+  ARC --> SPEC
+  GC --> SPEC`} />
+
+## Try it
+
+Slide from maximum control to maximum safety to see where each model sits, then map
+your latency and team constraints onto it.
+
+<TradeoffSlider
+  client:visible
+  caption="Maximum control ↔ Maximum safety/productivity"
+  leftAxis="Total control (manual)"
+  rightAxis="Total safety (GC)"
+  stops={[
+    { label: 'Manual (C/C++)', description: 'You free everything. Tightest footprint, zero overhead, fully predictable timing — and the full bug surface of use-after-free, double-free, and leaks. For kernels, embedded, HFT, engines.' },
+    { label: 'Ownership/borrowing (Rust)', description: 'Compile-time-enforced single ownership frees deterministically with no GC and no pauses, eliminating use-after-free and data races. The cost is a real learning curve. The modern best-of-both point.' },
+    { label: 'ARC / reference counting', description: 'A counter frees promptly at zero — deterministic, low-pause, low-footprint — but cannot reclaim reference cycles without weak references. Swift/iOS, smart pointers, CPython (with a backup cycle collector).' },
+    { label: 'Tracing GC', description: 'A collector periodically reclaims unreachable objects — memory-safe and highly productive, the default for server software. You pay in pauses (tunable down with concurrent collectors) and footprint.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Rust** delivers C-level performance with *compile-time* memory safety via
+  ownership/borrowing — no GC, no pauses — which is why it's displacing C/C++ for new
+  systems code and powering Linux kernel modules, browser engines, and WASM.
+- **Go** ships a concurrent low-pause tracing GC *plus* escape analysis that
+  stack-allocates where it safely can, deliberately trading a little throughput for
+  server-friendly tail latency without asking the programmer to manage memory.
+- **Swift's ARC** gives iOS deterministic, pause-free cleanup ideal for
+  resource-constrained devices and smooth UI — with retain cycles (and `weak`/
+  `unowned` to break them) as the defining gotcha every iOS developer learns.
+- **C++ RAII + smart pointers** (`unique_ptr` for ownership, `shared_ptr` for
+  refcounting) brought ownership and refcounting into a manual-memory language by
+  convention — the direct ancestor of Rust's compiler-enforced model.
+- **Value vs reference bugs** are a daily reality: Java/Python developers surprised
+  that passing a list mutates the caller's list (reference semantics), versus
+  Go/Rust/Swift `struct` copies that don't (value semantics).
+
+## Further reading
+
+- [Rust Book — "Understanding Ownership"](https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html) — the definitive introduction to ownership, borrowing, and how they replace both `free` and the garbage collector.
+- [*Effective Modern C++* (Scott Meyers)](https://www.oreilly.com/library/view/effective-modern-c/9781491908419/) — RAII and smart pointers (`unique_ptr`/`shared_ptr`/`weak_ptr`) as disciplined manual memory management.
+- [Apple — "Automatic Reference Counting"](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/automaticreferencecounting/) — how ARC works and how to break retain cycles with weak/unowned references.
+- See also *Runtime & memory management* in OS & Computer Architecture for GC internals, tracing vs refcount, generational and concurrent collectors, and allocators.

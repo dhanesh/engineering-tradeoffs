@@ -1,0 +1,270 @@
+---
+title: Programming Paradigms
+description: Imperative, object-oriented (encapsulation, inheritance, polymorphism, composition over inheritance), functional (purity, immutability, higher-order functions, monadic patterns), declarative, and logic programming — and the multi-paradigm reality of real languages.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A **paradigm** is a fundamental *style* of structuring programs — a mental model
+for what a program *is*. Imperative code is a sequence of *commands* that mutate
+state ("do this, then this"). Object-oriented code is a society of *objects* that
+bundle state with behavior and pass messages. Functional code is the *composition
+of pure functions* transforming immutable data ("this is defined as that").
+Declarative code states *what* you want and lets the system figure out *how*.
+These are not languages — they are styles, and most real languages support
+several. But each language makes one or two paradigms the **path of least
+resistance**, and writing against that grain produces awkward, unidiomatic code.
+Understanding paradigms is what lets you read idiomatic code in any language and
+know *why* it's shaped the way it is — and lets you pick the right tool: a parser
+wants algebraic functional style, a UI wants objects or declarative components, a
+data pipeline wants functional transformation.
+
+## Mental model
+
+**Each paradigm is an answer to "where does the complexity of state and control
+live?"**
+
+- **Imperative**: complexity lives in *explicit sequencing and mutation*. You are
+  the one stepping the machine through states. Maximum control, closest to the
+  hardware, but the programmer holds the whole state in their head.
+- **Object-oriented**: complexity is *encapsulated* inside objects. State is
+  hidden behind methods; you reason locally about one object at a time. Tames large
+  mutable systems by drawing boundaries.
+- **Functional**: complexity is *pushed to the edges*. The core is pure functions
+  with no side effects and immutable data, so any expression equals its value
+  (referential transparency). You reason like algebra, not like a step-debugger.
+- **Declarative**: complexity is *handed to the engine*. You describe the desired
+  result (SQL query, HTML layout, Prolog facts); a solver/runtime decides the
+  steps.
+
+The deepest practical lesson is **purity and immutability versus shared mutable
+state**. Shared mutable state is the root of most concurrency bugs and
+hard-to-trace defects; functional discipline (immutability, pure functions)
+eliminates whole bug classes at the cost of some performance and a different way of
+thinking. Modern engineering has converged on *"objects for boundaries and
+identity, functions for transformations"* — which is why nearly every popular
+language today is **multi-paradigm**.
+
+## Types / Variants
+
+### Imperative (and procedural)
+
+The original paradigm: explicit statements that change program state in sequence,
+with loops, conditionals, and assignment. **Procedural** organizes those statements
+into reusable procedures/functions (C, early Pascal). Maps directly to how the CPU
+works, gives fine control, and is intuitive for step-by-step algorithms — but
+mutable shared state scales poorly and is the enemy of safe concurrency. Every
+language has an imperative core; it's a question of how much you lean on it.
+
+### Object-oriented (OOP)
+
+Bundles **state and behavior into objects**. Four pillars:
+
+- **Encapsulation**: hide internal state behind a public interface; the object
+  enforces its own invariants. The single most valuable OOP idea — it lets you
+  reason about and change internals locally.
+- **Inheritance**: a subclass reuses and extends a superclass. Powerful but
+  *overused* — deep hierarchies are rigid and brittle (the "fragile base class"
+  and "diamond" problems).
+- **Polymorphism**: one interface, many implementations. A `Shape.area()` call
+  dispatches to the right concrete type at run time (subtype polymorphism) — the
+  mechanism behind most OOP extensibility.
+- **Abstraction**: model the domain in terms of types and interfaces, hiding
+  detail.
+
+**Composition over inheritance** is the hard-won modern guidance: prefer *has-a*
+(an object holds collaborators) over *is-a* (a deep class tree). Composition is
+more flexible, testable, and avoids inheritance's coupling — "favor object
+composition over class inheritance" is straight from the GoF. OOP shines for large
+systems with rich domain models, stateful entities with identity, and team
+boundaries; it can drift into ceremony and over-abstraction.
+
+### Functional (FP)
+
+Programs as the **composition of pure functions over immutable data**. Core ideas:
+
+- **Purity**: a pure function's output depends only on its inputs and it has *no
+  side effects* — same input, same output, always. This gives **referential
+  transparency**: an expression can be replaced by its value, making code easy to
+  test, cache, parallelize, and reason about.
+- **Immutability**: data is never mutated in place; transformations produce new
+  values. Eliminates whole classes of aliasing and concurrency bugs.
+- **Higher-order functions**: functions that take or return functions — `map`,
+  `filter`, `reduce`, function composition. The workhorse of FP: express
+  *transformations* declaratively instead of writing loops.
+- **Monadic patterns ("monads-lite")**: a disciplined way to thread *effects*
+  (optionality, errors, async, state) through pure code. You don't need category
+  theory — `Option`/`Maybe` chaining, `Result`/`Either` for errors, and promise
+  `.then` are all the same shape: "a context you can `map` and `flatMap` over"
+  that sequences computations while keeping the effect explicit.
+
+FP excels at data transformation, parsers/compilers, correctness-critical logic,
+and concurrency (no shared mutable state). Costs: a learning curve, occasional
+performance overhead from copying, and awkwardness for inherently stateful,
+side-effecting work (which is why pure-FP languages quarantine effects).
+
+### Declarative
+
+State *what* you want, not *how* to compute it; a runtime supplies the *how*. SQL
+(describe the result set), HTML/CSS (describe the layout), regular expressions,
+Terraform/Kubernetes manifests (describe desired infra state), React's "UI as a
+function of state." Declarative code is concise and lets the engine optimize, but
+you cede control over execution and debugging means understanding the engine.
+Functional and logic programming are both *kinds* of declarative.
+
+### Logic programming
+
+Express the program as **facts and rules**; a built-in inference engine answers
+queries by search and unification. Prolog, Datalog, and CLP are the examples. You
+declare relationships ("X is a grandparent of Z if X is a parent of Y and Y is a
+parent of Z") and ask questions; the engine deduces answers. Brilliant for
+constraint solving, theorem proving, knowledge representation, and certain
+AI/expert-system problems — niche but uniquely powerful where it fits.
+
+### The multi-paradigm reality
+
+Almost no production language is single-paradigm. Python, JavaScript, Scala,
+Kotlin, Swift, Rust, and C++ all blend imperative, OOP, and functional freely.
+Idiomatic modern code mixes them deliberately: **objects/structs for identity and
+boundaries, pure functions for transformations, declarative DSLs for config and
+queries**. "Which paradigm" is rarely all-or-nothing; it's "which paradigm for
+*this* part of the system."
+
+## When to use / When NOT
+
+- **Imperative/procedural — use when:** low-level control, performance-critical
+  inner loops, simple scripts, or step-by-step algorithms where explicit sequencing
+  *is* the clearest expression. **Avoid as the organizing principle** of large,
+  concurrent, or long-lived systems — shared mutable state doesn't scale.
+- **OOP — use when:** large domain models with stateful entities that have
+  identity and invariants; clear team/module boundaries; plugin/extension points
+  via polymorphism. **Avoid:** deep inheritance hierarchies (prefer composition),
+  and OOP ceremony for what is really a simple data transformation.
+- **Functional — use when:** data transformation pipelines, parsers/compilers,
+  correctness-critical or concurrent code, anything where immutability kills bugs.
+  **Avoid (or quarantine):** heavily stateful, side-effect-driven, or
+  performance-bound-by-copying code without care.
+- **Declarative — use when:** the *what* is clear and a capable engine exists (SQL
+  for data, IaC for infra, React for UI). **Avoid when:** you need fine control over
+  execution or the engine's behavior is opaque and hard to debug.
+- **Logic — use when:** constraint satisfaction, rules engines, knowledge
+  inference. **Avoid** as a general-purpose default; it's a specialist tool.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Paradigms compared across what they optimize and cost"
+  columns={['Imperative', 'Object-oriented', 'Functional', 'Declarative', 'Logic']}
+  rows={[
+    { criterion: 'Core unit', cells: ['Statements + mutation', 'Objects (state + behavior)', 'Pure functions + data', 'Declarations of intent', 'Facts + rules'] },
+    { criterion: 'State handling', cells: ['Explicit mutable', 'Encapsulated mutable', 'Immutable / effects at edges', "Engine's concern", 'Logical / no mutation'] },
+    { criterion: 'Best for', cells: ['Hot loops, low-level, scripts', 'Large stateful domains', 'Transforms, correctness, concurrency', 'Queries, config, UI, infra', 'Constraints, inference'] },
+    { criterion: 'Concurrency story', cells: ['Hard (shared mutable state)', 'Hard unless careful', 'Excellent (no shared mutation)', 'Engine-dependent', 'Engine-dependent'] },
+    { criterion: 'Main weakness', cells: ['Scales poorly, bug-prone', 'Inheritance abuse, ceremony', 'Curve, copy overhead', 'Opaque execution/debugging', 'Niche, performance'] },
+    { criterion: 'Reasoning style', cells: ['Step the machine', 'Local per object', 'Algebraic substitution', 'Describe the goal', 'Deductive search'] },
+  ]}
+/>
+
+## Diagram
+
+The two big families — telling the machine *how* versus telling it *what* — and
+where each paradigm falls, converging on the multi-paradigm middle.
+
+<Mermaid code={`graph TD
+  P[Programming paradigms] --> IMP[Imperative family: HOW, step by step]
+  P --> DEC[Declarative family: WHAT, engine decides HOW]
+  IMP --> PROC[Procedural: organize steps into procedures]
+  IMP --> OOP[Object-oriented: encapsulate state in objects]
+  DEC --> FUN[Functional: compose pure functions]
+  DEC --> LOG[Logic: facts and rules, inference engine]
+  DEC --> DSL[Declarative DSLs: SQL, HTML, IaC]
+  PROC --> MP[Multi-paradigm reality: objects for boundaries, functions for transforms]
+  OOP --> MP
+  FUN --> MP`} />
+
+## Try it
+
+Walk the tree to pick a primary paradigm for a component — remembering most real
+systems mix several.
+
+<DecisionTree
+  client:visible
+  caption="Which paradigm fits this component?"
+  root={{
+    question: 'What is this component fundamentally doing?',
+    branches: [
+      {
+        label: 'Modeling stateful entities with identity & invariants',
+        next: {
+          question: 'Do you need a deep type hierarchy, or just bundled state + behavior?',
+          branches: [
+            {
+              label: 'Bundled state + behavior, flexible',
+              next: { leaf: { recommendation: 'OOP with composition over inheritance', detail: 'Encapsulate invariants behind methods; compose collaborators (has-a) rather than building deep is-a trees. The default for large stateful domains.' } },
+            },
+            {
+              label: 'Polymorphic extension points',
+              next: { leaf: { recommendation: 'OOP / interface polymorphism', detail: 'One interface, many implementations resolved at runtime — the right tool for plugins and open-ended extension.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Transforming data through stages',
+        next: { leaf: { recommendation: 'Functional', detail: 'Pure functions + immutable data + higher-order map/filter/reduce. Easy to test, parallelize, and reason about; thread effects with Option/Result. Ideal for pipelines, parsers, correctness-critical logic.' } },
+      },
+      {
+        label: 'Describing a desired result or state',
+        next: {
+          question: 'Is there a capable engine for this domain?',
+          branches: [
+            {
+              label: 'Yes — SQL / IaC / UI framework',
+              next: { leaf: { recommendation: 'Declarative', detail: 'State the what (query, infra, UI-as-function-of-state) and let the engine optimize the how. Concise and powerful where the engine fits.' } },
+            },
+            {
+              label: 'It is constraint/rule inference',
+              next: { leaf: { recommendation: 'Logic programming', detail: 'Facts + rules + an inference engine for constraint satisfaction and deduction. Niche but uniquely strong for that class of problem.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'A hot inner loop or low-level routine',
+        next: { leaf: { recommendation: 'Imperative / procedural', detail: 'Explicit sequencing and mutation map closest to the hardware and are clearest for tight performance-critical loops. Keep the surface area small.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **React** popularized *declarative* UI ("UI as a pure function of state") layered
+  on a *functional* core (hooks, immutability) — a deliberate move away from
+  imperative DOM manipulation, and proof of how paradigm choice reshapes a whole
+  ecosystem.
+- **Scala and Kotlin** are explicitly multi-paradigm, letting teams use OOP for
+  structure and FP for logic in the same file — the mainstream embodiment of
+  "objects for boundaries, functions for transformations."
+- **SQL** is the most widely used *declarative* language on earth: you describe the
+  result set and the query planner decides the execution strategy.
+- **Erlang/Elixir** lean *functional* with immutable data and message-passing
+  precisely because eliminating shared mutable state is what makes their
+  fault-tolerant concurrency tractable.
+- **The GoF "favor composition over inheritance"** maxim is now baked into modern
+  OOP practice across Go (no inheritance at all, composition + interfaces), Rust
+  (traits, no class inheritance), and Effective Java's guidance.
+
+## Further reading
+
+- [*Structure and Interpretation of Computer Programs* (Abelson & Sussman)](https://mitpress.mit.edu/sites/default/files/sicp/full-text/book/book.html) — the foundational text on procedural, functional, and data-directed paradigms.
+- [*Design Patterns* (Gamma, Helm, Johnson, Vlissides)](https://en.wikipedia.org/wiki/Design_Patterns) — the source of "favor object composition over class inheritance" and the canonical OOP design vocabulary.
+- ["Why Functional Programming Matters" (John Hughes)](https://www.cs.kent.ac.uk/people/staff/dat/miranda/whyfp90.pdf) — the classic argument for purity, higher-order functions, and composability.
+- [*Out of the Tar Pit* (Moseley & Marks)](https://curtclifton.net/papers/MoseleyMarks06a.pdf) — a rigorous case that complexity comes from state and control, motivating functional/declarative styles.
