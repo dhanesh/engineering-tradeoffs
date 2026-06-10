@@ -1,0 +1,239 @@
+---
+title: SLOs, SLIs & Error Budgets
+description: The SRE measurement discipline — SLIs, SLOs, and SLAs, how to choose good SLIs, error budgets and the policy that gives them teeth, multi-window burn-rate alerting, the reliability-vs-velocity tradeoff, and toil.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+You cannot manage reliability you don't measure, and "is the site up?" is far too crude a
+measure. The SRE discipline replaces gut feeling with three precise instruments: an **SLI**
+(a metric of how well the service is doing — e.g. the fraction of requests served fast and
+correctly), an **SLO** (the *target* for that SLI — e.g. "99.9% of requests succeed under
+300ms"), and the **error budget** (the allowed shortfall — the `100% − SLO` of failures you
+are *permitted*, and can spend deliberately). The **SLA** is the externally-promised,
+contract-with-penalties version, usually looser than the internal SLO.
+
+This page is about wielding those instruments as a *decision tool*, not a dashboard. The
+error budget is the key move: it converts reliability from an absolute ("never go down")
+into a *quantity you spend* — on releases, experiments, and risk. That reframing resolves
+the oldest fight in operations: **developers want to ship fast, operators want to stay
+stable.** The error budget makes the tradeoff explicit and self-policing — ship freely while
+budget remains, slow down when it's exhausted. We cover choosing SLIs that actually reflect
+user happiness, the **error-budget policy** that gives the number teeth, **multi-window
+burn-rate alerting** (alert on *budget consumption rate*, not raw error rate), and **toil**
+— the manual operational drag that erodes the time to do any of this.
+
+## Mental model
+
+**Reliability is a feature with a target, not a maximize-forever goal — and 100% is the
+wrong target.** Two reasons it's wrong: (1) the marginal cost of each nine explodes, and (2)
+your users can't even perceive reliability above the floor set by everything *between* you
+and them (their wifi, their ISP, their phone). Chasing 100% spends unbounded money on
+reliability the user will never notice — money better spent on features. So you pick a
+*deliberately-imperfect* target (the SLO) that's just reliable enough, and the gap below 100%
+is the **error budget** — a resource you get to *spend*.
+
+That reframing is the whole point: **the error budget is a currency that aligns dev and
+ops.** Every risky thing — a deploy, a migration, a new feature, a chaos experiment — spends
+budget if it causes errors. While budget remains, the team ships at full speed; nobody can
+block a release "to be safe." When the budget is **exhausted**, an agreed **policy**
+automatically kicks in — freeze feature launches, redirect effort to reliability — until the
+budget recovers. The number, not a person, makes the call. This dissolves the dev-vs-ops
+political fight into an objective, pre-agreed rule.
+
+Third model: **alert on the *rate you're burning the budget*, not on raw errors.** A static
+"alert if error rate > 1%" is doomed — too sensitive and it pages on every blip (alert
+fatigue), too lax and it misses a slow bleed that quietly drains the month's budget. The
+**burn rate** — how fast you're consuming the error budget relative to "spend it evenly over
+the window" — is the right signal. Burn rate `1` means you'll exactly exhaust the budget by
+period end; burn rate `14.4` means you'll exhaust a 30-day budget in ~2 hours. **Multi-window,
+multi-burn-rate** alerts page urgently on fast burns and ticket gently on slow burns —
+high precision *and* high recall.
+
+Fourth: **good SLIs measure the *user's* experience, not your server's internals.** CPU at
+90% is not an SLI — users don't feel CPU. "99th-percentile request latency from the load
+balancer" *is* — it's what users feel. Measure as close to the user as practical, and pick a
+**threshold** (good/bad), not an average (averages hide the tail where the pain lives).
+
+## Types / Variants
+
+### The three instruments
+
+- **SLI (Service Level Indicator).** A *measured* quantity of service quality, almost always
+  a ratio of `good events / valid events` (e.g. `successful requests / total requests`,
+  `requests under 300ms / total`). Common SLI classes: **availability** (success rate),
+  **latency** (fraction under threshold), **throughput**, **correctness/quality**,
+  **freshness** (for data pipelines), **durability**.
+- **SLO (Service Level Objective).** The *target* for an SLI over a window — "99.9% of HTTP
+  requests succeed over a rolling 30 days." Internal, aspirational-but-binding. Usually
+  stricter than the SLA so you have margin.
+- **SLA (Service Level Agreement).** The *contractual* promise to customers, with penalties
+  (refunds/credits) for breach. Deliberately looser than the SLO — you want to react to the
+  SLO *before* you breach the SLA.
+- **Error budget.** `100% − SLO`, expressed as allowed bad events over the window. A 99.9%
+  SLO over 30 days = a budget of ~43 minutes of "down" (or 0.1% of requests failing). The
+  amount of unreliability you're *allowed to spend*.
+
+### Choosing good SLIs
+
+- **User-centric** — measure what a user experiences (request success, page load), not
+  internal resource use.
+- **Measured close to the user** — at the load balancer / edge / client, not deep in a
+  backend that can't see what the user actually got.
+- **Threshold-based, not averages** — "% of requests under 300ms," not "mean latency."
+  Averages mask the painful tail; percentiles (p95/p99) don't.
+- **Few and meaningful** — a handful of SLIs that, if green, mean users are happy. Too many
+  and none drive decisions.
+
+### Error-budget policy (what gives it teeth)
+
+The number is useless without a *pre-agreed* consequence:
+
+- **Budget remaining → ship freely.** Launches, experiments, and risk are green-lit.
+- **Budget exhausted → the policy triggers.** Typically: freeze non-critical feature
+  launches, divert engineering to reliability work, require extra review, until the budget
+  recovers. Agreed *in advance* by dev and ops leadership, so it's automatic, not a fight per
+  incident.
+
+### Burn-rate alerting
+
+- **Burn rate** = budget consumed / budget that "should" be consumed by now. Rate `1` =
+  on-pace to exactly exhaust by period end.
+- **Multi-window, multi-burn-rate (the SRE workbook recommendation).** Pair a *fast* burn
+  alert (e.g. burn rate ≥ 14.4 over 1 hour AND 5 min → page now; a sustained burn rate of
+  14.4 would exhaust a 30-day budget in about 2 hours) with a *slow* burn alert (e.g. burn
+  rate ≥ 1 over 6 hours → ticket). The short second window prevents alerting on an
+  already-recovered spike.
+  This gives high precision (few false pages) and high recall (catches slow bleeds).
+
+### Toil
+
+- **Toil** = manual, repetitive, automatable, reactive operational work that scales with
+  service size and produces no lasting value (manually restarting a service, hand-running a
+  failover). SRE caps toil (e.g. ≤50% of an engineer's time) and spends the rest *eliminating*
+  it through automation — because toil crowds out the engineering that actually improves
+  reliability.
+
+## When to use / When NOT
+
+- **Define SLOs when:** you have real users with expectations and you want to make
+  reliability-vs-velocity decisions objectively (any production service that matters).
+  **Don't over-SLO when:** an internal best-effort tool — a heavyweight SLO regime is
+  overhead nobody acts on.
+- **Use error budgets when:** dev and ops need a shared, depoliticized way to balance shipping
+  against stability. **Avoid when:** leadership won't actually *honor* the policy — an error
+  budget nobody enforces is a vanity metric, and instituting it without buy-in breeds cynicism.
+- **Set the SLO from user expectations, not from current performance** — measure what users
+  need, then engineer to it. **Don't set the SLO at 100%** — it's unachievable, unaffordable,
+  and imperceptible above the user's own connection floor.
+- **Use burn-rate alerts when:** you have an SLO and a budget to protect. **Avoid raw static
+  error-rate alerts** as your primary signal — they trade precision against recall badly and
+  cause alert fatigue.
+- **Make the SLA looser than the SLO — always**, so you have a margin to react internally
+  before you breach the customer contract. Setting SLA = SLO leaves no room to act.
+- **Track and cap toil when:** ops load is growing with scale and engineers are drowning in
+  manual work. The cap forces the automation investment that fixes the root cause.
+
+## Tradeoffs
+
+| Decision | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Stricter SLO (more nines) | Happier users, stronger SLA headroom | Exponential cost; less error budget → less room to ship |
+| Looser SLO | More error budget → faster shipping | Risk of user-perceived unreliability; weaker SLA margin |
+| Error-budget policy | Depoliticized dev/ops balance; self-policing | Worthless unless leadership enforces the freeze |
+| Burn-rate (multi-window) alerts | High precision + recall; catches slow bleeds | More complex to configure than a static threshold |
+| Static error-rate alerts | Dead simple | Alert fatigue or missed slow bleeds — bad precision/recall |
+| Many SLIs | Fine-grained visibility | Noise; none drive decisions; maintenance burden |
+| Capping toil (automate) | Frees engineering time; reduces human error | Upfront automation investment before payoff |
+
+The master tradeoff is **reliability vs velocity**, and the error budget is the instrument
+that *prices* it: reliability above the SLO is wasted spend, reliability below it is a debt
+that auto-triggers a slowdown. Set the SLO where the *marginal* nine stops being worth more
+than the features you'd otherwise ship.
+
+## Diagram
+
+The error-budget feedback loop: SLIs feed the budget, burn-rate alerts watch it, and the
+policy gates velocity — closing the loop between measurement and engineering decisions.
+
+<Mermaid code={`graph TD
+  U[User experience] --> SLI[SLIs<br/>good events / valid events<br/>measured near the user]
+  SLI --> SLO[SLO target<br/>e.g. 99.9% over 30d]
+  SLO --> EB[Error budget<br/>100% − SLO = allowed failures]
+  SLI -->|consumption| BR[Burn-rate monitor<br/>multi-window, multi-rate]
+  BR -->|fast burn| PAGE[Page on-call NOW]
+  BR -->|slow burn| TICKET[File a ticket]
+  EB --> GATE{Budget remaining?}
+  GATE -->|yes| SHIP[Ship freely<br/>launches, experiments, risk]
+  GATE -->|exhausted| FREEZE[Policy triggers<br/>freeze launches → fix reliability]
+  SHIP -->|may spend budget| SLI
+  FREEZE -->|budget recovers| GATE`} />
+
+SLIs derived from real user experience set the SLO, whose complement is the error budget.
+Burn-rate monitoring pages urgently on fast budget consumption and tickets on slow bleeds.
+The budget gates velocity: while it remains the team ships and experiments freely (spending
+budget); when it's exhausted the pre-agreed policy freezes launches and redirects effort to
+reliability until the budget recovers — a self-correcting loop.
+
+## Try it
+
+When and why to reach for each part of the SLO toolkit, and where to set the
+reliability-vs-velocity dial.
+
+<WhenWhyTabs
+  client:visible
+  caption="The SLO toolkit in practice"
+  tabs={[
+    { label: 'SLI', content: 'WHEN: you need to quantify how well the service serves users. WHY: a ratio of good-to-valid events (success rate, % of requests under a latency threshold) measured close to the user is what actually reflects user happiness — unlike CPU or memory, which users never feel. RULE: prefer thresholds over averages (averages hide the painful tail), measure at the edge/load balancer, and keep the set small and meaningful.' },
+    { label: 'SLO', content: 'WHEN: you want an objective reliability target to engineer toward and to make ship/no-ship decisions against. WHY: a deliberately-imperfect target (e.g. 99.9%) is achievable, affordable, and leaves an error budget to spend; 100% is none of those and is imperceptible above the user’s own connection floor. SET IT from what users need, and keep it stricter than the SLA so you react before breaching the contract.' },
+    { label: 'SLA', content: 'WHEN: you make a contractual reliability promise to customers with penalties. WHY: it is the external, money-backed commitment; you keep it deliberately LOOSER than your internal SLO so that breaching the SLO is an internal warning, not yet a customer-facing, credit-triggering breach. The gap between SLO and SLA is your reaction margin.' },
+    { label: 'Error budget', content: 'WHEN: dev and ops need a shared, depoliticized way to balance shipping speed against stability. WHY: 100% minus the SLO is a finite quantity of allowed failure you may SPEND on releases, experiments, and risk. While it remains, ship freely; when exhausted, a pre-agreed policy freezes launches and redirects effort to reliability. The number makes the call, not a person — dissolving the dev-vs-ops fight. CAVEAT: worthless unless leadership actually honors the freeze.' },
+    { label: 'Burn-rate alerts', content: 'WHEN: you have an SLO and want to be alerted before the budget is gone. WHY: alerting on the RATE of budget consumption (multi-window, multi-burn-rate) pages urgently on fast burns and tickets on slow bleeds — giving both high precision (few false pages, no alert fatigue) and high recall (catches the slow leak a static threshold misses). A short confirmation window stops you paging on an already-recovered spike.' },
+    { label: 'Toil', content: 'WHEN: manual operational work grows with the service and engineers are drowning in repetitive reactive tasks (hand-restarts, manual failovers). WHY: toil is automatable, value-less work that crowds out the engineering that actually improves reliability. SRE caps it (commonly ≤50% of time) and spends the rest eliminating it through automation — attacking the root cause rather than the symptom.' },
+  ]}
+/>
+
+<TradeoffSlider
+  client:visible
+  caption="Reliability target vs shipping velocity (where to set the SLO)"
+  leftAxis="Maximize velocity"
+  rightAxis="Maximize reliability"
+  stops={[
+    { label: 'No SLO (ship blind)', description: 'No target, no budget. Maximum ship speed but no objective way to know when you are hurting users — reliability decisions become political and reactive. Fine only for throwaway/internal tools.' },
+    { label: '99% SLO (large budget)', description: 'A generous error budget (~7 hours/month) means the team ships and experiments almost unconstrained. Good for early products where iteration speed dwarfs the cost of occasional outages.' },
+    { label: '99.9% SLO (balanced)', description: 'The common SaaS sweet spot: ~43 min/month of budget. Enough room to ship steadily, tight enough that a real regression triggers the policy. Burn-rate alerts protect the budget.' },
+    { label: '99.99% SLO (tight budget)', description: '~4 min/month of budget. Velocity is now constrained — every risky change is scrutinized, launches gate on remaining budget. Needs multi-AZ + automated failover to even be feasible.' },
+    { label: '99.999% (near-frozen)', description: '~26 sec/month. Almost no budget to spend; change velocity is heavily gated and humans are removed from recovery. Only worth it where downtime is financially or physically catastrophic (payments, telecom).' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google SRE** invented and operationalized SLIs/SLOs/error budgets, including the
+  **error-budget policy** that freezes launches when the budget is spent and the
+  **multi-window multi-burn-rate** alerting recipe — the entire vocabulary on this page is
+  theirs.
+- **Cloud provider SLAs** (e.g. compute at 99.99%, with service credits) are the contractual
+  SLA layer; providers run *internal* SLOs stricter than the published SLA so they react
+  before owing credits.
+- **Prometheus + Grafana** with the **`slo-libsonnet` / Pyrra / Sloth** tooling implement
+  SLO recording rules and multi-burn-rate alerts as code — the common open-source stack for
+  putting this page into practice.
+- **Datadog, Nobl9, and Honeycomb** ship managed SLO products with burn-rate alerting,
+  reflecting how mainstream the discipline has become beyond Google.
+- **Fintech/payments platforms** run tight SLOs (often four-plus nines on the payment path)
+  with strict error-budget policies, because the budget on a money-moving path is small and a
+  burn directly maps to failed transactions and regulatory scrutiny.
+
+## Further reading
+
+- [Google SRE Book — Service Level Objectives](https://sre.google/sre-book/service-level-objectives/) — the foundational definitions of SLI, SLO, SLA, and error budget.
+- [Google SRE Workbook — Alerting on SLOs (multi-window, multi-burn-rate)](https://sre.google/workbook/alerting-on-slos/) — the precise burn-rate alerting recipe with worked numbers.
+- [Google SRE Book — Eliminating Toil](https://sre.google/sre-book/eliminating-toil/) — what toil is, why to cap it, and how it crowds out real engineering.
+- [The Art of SLOs (Google) workshop materials](https://sre.google/resources/practices-and-processes/art-of-slos/) — a hands-on guide to choosing SLIs and setting SLOs.

@@ -1,0 +1,245 @@
+---
+title: Reliability & Resilience
+description: The engineering discipline of building reliable systems — reliability vs availability vs resilience, the nines and the cost per nine, MTBF and MTTR, the fault/error/failure chain, blast radius, and designing for failure as the default.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+This cluster is about the *discipline* of building systems that keep working when
+their parts don't — the patterns, the measurements, and the operations practices.
+The theory of *why* distributed systems fail (failure detectors, partitions, gray and
+cascading failures, the impossibility of exactly-once) lives in
+[Distributed failure](/distributed-systems/distributed-failure/); this cluster
+assumes that theory and asks the engineering question instead: **given that
+everything fails, how do you build, measure, and operate a system that survives it?**
+
+That starts with precise vocabulary, because "reliability," "availability," and
+"resilience" get used interchangeably and they are not the same thing — confusing
+them leads teams to over-invest in the wrong place (chasing a fifth nine of
+availability on a system whose real problem is a 4-hour recovery time). This page
+sets the definitions, the math of the **nines** and what each one costs, the
+**MTBF/MTTR** levers, the **fault → error → failure** chain that tells you where to
+intervene, **blast radius** as the unit of damage control, and the central mindset:
+**design for failure as the default**, not as an exception you bolt on later.
+
+## Mental model
+
+**Reliability is a property you measure, availability is a number you report, and
+resilience is a behavior you engineer.** They relate but don't reduce to each other:
+
+- **Reliability** — the probability the system does the *right* thing for a given
+  period. It includes correctness, not just being up. A system returning wrong
+  answers quickly is available but not reliable.
+- **Availability** — the fraction of time the system is *usable*, the famous "nines."
+  A purely uptime measure; it says nothing about correctness or how badly a failure
+  hurt while it lasted.
+- **Resilience** — the system's ability to *absorb* faults and *recover* — to degrade
+  gracefully and bounce back rather than collapse. Resilience is *how* you achieve
+  high reliability and availability in a world of constant faults.
+
+The second durable model is the **fault → error → failure** chain, the language of
+dependability:
+
+- A **fault** is a defect — a bug, a dead disk, a bad config. It may lie dormant.
+- An **error** is a fault *activated* — the system reaches a wrong internal state.
+- A **failure** is an error that *escapes* — the service deviates from its spec as
+  seen by a user.
+
+You build reliability by breaking this chain at the cheapest point: prevent faults
+(testing, review), tolerate errors so they don't become failures (redundancy,
+retries, isolation), or contain failures so they don't spread (bulkheads, blast-radius
+limits). **Most resilience engineering is error-containment** — you can't prevent
+every fault, so you stop errors from propagating into user-visible failure.
+
+Third: **`availability = MTBF / (MTBF + MTTR)`.** You raise availability two ways —
+make failures *rarer* (higher Mean Time Between Failures) or make recovery *faster*
+(lower Mean Time To Recovery). Past a point, chasing rarer failures gets
+exponentially expensive, while **shrinking MTTR is usually the higher-leverage
+investment**: a system that fails often but recovers in seconds can beat one that
+fails rarely but takes hours. This is why the industry pivoted from "prevent all
+failure" to "**recover fast**" — fast detection, fast rollback, fast failover.
+
+Fourth: **blast radius** is the unit of damage control. When (not if) something
+fails, *how much* breaks? One user, one shard, one AZ, one region, or everything?
+Reliability engineering is largely the work of shrinking blast radius — cell-based
+architecture, sharding, isolation — so a failure is a contained incident, not a
+company-ending outage. **Design for failure as the default**: assume every
+dependency will be down, slow, or wrong, and decide what your system does *then* —
+before it happens, not during the incident.
+
+## Types / Variants
+
+### The dimensions of "doing the right thing"
+
+Dependability is an umbrella over several distinct properties; teams that conflate
+them mis-prioritize:
+
+- **Availability** — usable when needed (uptime). Measured in nines.
+- **Reliability** — correct over an interval (continuity of correct service).
+- **Maintainability** — how fast you can repair/change it (drives MTTR).
+- **Durability** — data survives (the "eleven nines" of object stores; distinct from
+  service uptime — your data can be safe while the service is down).
+- **Recoverability** — how completely and quickly you restore after a disaster
+  (measured by RTO/RPO — see [Redundancy & failover](/reliability/redundancy-failover/)).
+
+### The nines (and what each costs)
+
+Availability is quoted as a percentage of uptime; each additional **nine** cuts
+allowed downtime by `10x` and typically multiplies engineering cost:
+
+- **Two nines (99%)** — ~3.65 days/year down. A single well-run server.
+- **Three nines (99.9%)** — ~8.77 hours/year. Redundancy + monitoring + on-call.
+- **Four nines (99.99%)** — ~52.6 min/year. Multi-AZ, automated failover, fast
+  rollback, mature ops. Most SaaS SLAs top out here.
+- **Five nines (99.999%)** — ~5.26 min/year. Multi-region, no manual steps in the
+  recovery path — humans are too slow to hit five nines. Telecom/payments territory.
+- **Six nines (99.9999%)** — ~31.5 sec/year. Exotic; usually aspirational marketing
+  unless you're a core network/exchange.
+
+The discontinuity: **each nine roughly multiplies cost**, and **the jump to five nines
+removes humans from the loop** (5 minutes/year is less than one human reaction +
+decision). Know which nine your *business* actually needs — most don't need five, and
+buying it wastes money that fast-MTTR would spend better.
+
+### The two levers: MTBF and MTTR
+
+- **MTBF (Mean Time Between Failures)** — raise it by preventing faults: redundancy,
+  better testing, hardened dependencies, capacity headroom. Diminishing returns and
+  expensive at the tail.
+- **MTTR (Mean Time To Recovery)** — lower it by recovering faster: good detection
+  (MTTD), automated failover, instant rollback, runbooks, practiced incident response.
+  Usually the cheaper, higher-leverage lever — and the one SRE optimizes.
+- **MTTD (Mean Time To Detect)** is the hidden front-half of MTTR: you can't recover
+  from what you haven't noticed. Most "long outages" are long *detection*, not long
+  *fixes*.
+
+### Blast-radius containment patterns
+
+- **Sharding / partitioning** — a failure hits one shard's users, not all.
+- **Cell-based architecture** — replicate the whole stack into independent cells;
+  route each user to one cell; a cell failure caps the blast radius at `1/N` of users.
+- **Availability zones / regions** — physical isolation so one datacenter's loss is
+  survivable.
+- **Bulkheads** — isolate resource pools so one overloaded dependency can't sink the
+  whole process (see [Resilience patterns](/reliability/resilience-patterns/)).
+
+## When to use / When NOT
+
+- **Invest in higher availability (more nines) when:** downtime directly costs revenue
+  or safety (payments, trading, health), or contractual SLAs demand it. **Don't chase
+  nines when:** your users tolerate brief outages and the spend would buy more value
+  as features or faster MTTR. Five nines on an internal analytics dashboard is waste.
+- **Optimize MTTR over MTBF when:** failures are inevitable and recovery is currently
+  slow (the common case) — fast rollback/failover beats marginally rarer failures.
+  **Optimize MTBF when:** each failure is catastrophic or unrecoverable (data
+  corruption, irreversible financial action) — there, prevention is non-negotiable.
+- **Engineer for blast-radius containment when:** you have many tenants/users and a
+  shared failure mode would take all of them down at once. **Skip heavy cell isolation
+  when:** you're small enough that the operational complexity outweighs a still-rare,
+  still-contained outage.
+- **Design for failure as default — always.** There is no system at scale where
+  "assume dependencies are healthy" is a safe default. The only question is whether you
+  decide the failure behavior *now* or discover it *during the incident*.
+- **Distinguish durability from availability when:** the data is irreplaceable
+  (ledgers, customer records). You may accept the *service* being down briefly but never
+  accept *losing the data* — different mechanisms (backups/replication vs failover).
+
+## Tradeoffs
+
+| Lever | Buys you | Costs / risk |
+| ----- | -------- | ------------ |
+| More nines of availability | Less downtime, stronger SLAs | Exponential cost per nine; complexity; over-investment if unneeded |
+| Raise MTBF (prevent failures) | Failures happen less often | Diminishing returns; can't prevent everything; lulls you into slow recovery |
+| Lower MTTR (recover faster) | Outages end fast; cheaper than prevention | Requires automation + practiced ops; needs investment in detection |
+| Lower MTTD (detect faster) | Shrinks the front-half of every outage | Monitoring/alerting cost; alert fatigue if done badly |
+| Shrink blast radius (cells/shards) | A failure is contained, not total | Routing complexity; per-cell overhead; harder cross-cell features |
+| Redundancy (2N, multi-region) | Survives component/site loss | Multiplied infra cost; consistency + failover complexity |
+
+The master tradeoff is **cost vs the marginal nine**, and the master insight is that
+**MTTR and blast radius usually beat MTBF on cost-effectiveness**: build to recover
+fast and fail small, rather than spending unboundedly to fail never.
+
+## Diagram
+
+The fault → error → failure chain, and where each class of defense intervenes to keep
+a defect from becoming a user-visible outage.
+
+<Mermaid code={`graph LR
+  F[Fault<br/>latent defect: bug, dead disk, bad config] -->|activated| E[Error<br/>wrong internal state]
+  E -->|escapes to user| FAIL[Failure<br/>service violates spec]
+  PREV[Prevention<br/>testing, review, redundancy] -. blocks .-> F
+  TOL[Tolerance<br/>retries, failover, isolation] -. blocks .-> E
+  CONT[Containment<br/>bulkheads, blast-radius limits] -. blocks .-> FAIL
+  FAIL --> R[Recovery<br/>detect MTTD -> restore MTTR]
+  R -->|fast| OK[Contained incident]
+  R -->|slow| OUT[Major outage]`} />
+
+Prevention raises MTBF by stopping faults; tolerance and containment stop activated
+errors from escaping into failure; and fast recovery (low MTTD + MTTR) turns the
+failures that *do* escape into contained incidents instead of major outages.
+
+## Try it
+
+Slide from "prevent every failure" to "recover instantly" to see where each strategy
+sits, and use the matrix to read each availability target's real downtime budget.
+
+<TradeoffSlider
+  client:visible
+  caption="Reliability strategy: prevent failure ↔ recover fast"
+  leftAxis="Maximize MTBF (prevent)"
+  rightAxis="Minimize MTTR (recover)"
+  stops={[
+    { label: 'Bulletproof single node', description: 'Pour everything into making one system never fail: gold-plated hardware, exhaustive testing. High MTBF, but when it does fail, recovery is slow and total. Fragile at the tail.' },
+    { label: 'Redundancy + monitoring', description: 'Add N+1 redundancy and alerting. Failures are rarer AND noticed faster. The pragmatic three-nines baseline for most services.' },
+    { label: 'Automated failover', description: 'Health checks trip automatic failover to a standby. MTTR drops from minutes-of-human to seconds-of-machine — the four-nines pivot.' },
+    { label: 'Fast rollback + cells', description: 'Assume failure; make recovery instant. One-click rollback, cell isolation caps blast radius. Fail often but small and brief.' },
+    { label: 'Self-healing, no humans', description: 'Recovery fully automated, no human in the critical path — the only way to reach five nines, since 5 min/year is below human reaction time.' },
+  ]}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Availability targets: the nines and what they cost"
+  columns={['99% (two)', '99.9% (three)', '99.99% (four)', '99.999% (five)']}
+  rows={[
+    { criterion: 'Downtime per year', cells: ['~3.65 days', '~8.77 hours', '~52.6 min', '~5.26 min'] },
+    { criterion: 'Downtime per month', cells: ['~7.2 hours', '~43.8 min', '~4.38 min', '~26 sec'] },
+    { criterion: 'Downtime per day', cells: ['~14.4 min', '~1.44 min', '~8.6 sec', '~0.86 sec'] },
+    { criterion: 'Typical architecture', cells: ['Single well-run server', 'Redundant + monitored + on-call', 'Multi-AZ, automated failover', 'Multi-region, zero manual steps'] },
+    { criterion: 'Humans in recovery path?', cells: ['Yes', 'Yes', 'Mostly automated', 'None — too slow'] },
+    { criterion: 'Relative cost', cells: ['Baseline', '~3–5x', '~10x+', 'Often 10x again; specialized'] },
+    { criterion: 'Who needs it', cells: ['Internal tools', 'Most SaaS', 'Serious SaaS / commerce', 'Payments, telecom, trading'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **AWS / Azure / GCP** publish per-service SLAs (commonly 99.9%–99.99%) with service
+  credits as the penalty — the contractual face of "the nines," and a reminder that
+  even hyperscalers don't promise five nines on most services.
+- **AWS cell-based architecture** is the canonical **blast-radius** discipline:
+  replicate the stack into independent cells so a failure caps at `1/N` of customers
+  rather than all of them; documented in their Well-Architected and Builders' Library
+  material.
+- **S3's "eleven nines" of durability** (99.999999999%) shows **durability ≠
+  availability**: your objects are essentially never lost even though the *service* has
+  a far lower availability SLA — different property, different mechanism.
+- **Google SRE** institutionalized **MTTR over MTBF**: error budgets, fast rollback,
+  and practiced incident response over chasing zero failures — the explicit bet that
+  recovering fast beats failing never.
+- **Payment networks (Visa/UPI-scale)** operate near five nines because seconds of
+  downtime cascade into financial and regulatory consequences — one of the few domains
+  where the cost of the fifth nine is genuinely justified.
+
+## Further reading
+
+- [Google SRE Book — Embracing Risk](https://sre.google/sre-book/embracing-risk/) — availability targets, the nines, and why 100% is the wrong goal.
+- [Availability cheat sheet — the nines and their downtime](https://uptime.is/) — quick reference mapping each target to allowed downtime per day/month/year.
+- [AWS — Cell-based architecture (Well-Architected / Builders' Library)](https://docs.aws.amazon.com/wellarchitected/latest/reducing-scope-of-impact-with-cell-based-architecture/reducing-scope-of-impact-with-cell-based-architecture.html) — shrinking blast radius as a first-class design goal.
+- [Avižienis et al. — Basic Concepts and Taxonomy of Dependable and Secure Computing](https://ieeexplore.ieee.org/document/1335465) — the canonical fault/error/failure and dependability vocabulary.

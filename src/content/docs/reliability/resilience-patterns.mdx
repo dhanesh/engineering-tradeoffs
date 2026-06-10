@@ -1,0 +1,285 @@
+---
+title: Resilience Patterns
+description: The catalog of client-side resilience patterns — timeouts, retries with budgets/backoff/jitter, circuit breakers and their state machine, bulkheads, fallback and graceful degradation, load shedding, hedged requests, and idempotency.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+When a dependency is slow, failing, or overloaded, the *caller* decides whether a blip
+becomes an outage. The resilience patterns on this page are the caller-side toolkit:
+the small set of well-understood mechanisms — **timeouts, retries, circuit breakers,
+bulkheads, fallbacks, load shedding, hedging, idempotency** — that keep one bad
+dependency from cascading across your system. The theory of *why* failures amplify
+(retry storms, cascading and metastable failure) is in
+[Distributed failure](/distributed-systems/distributed-failure/); this page is the
+engineering catalog of *what to apply and when*.
+
+The patterns compose, and the order matters. A correct resilient call stack is roughly:
+**bound the call (timeout) → isolate it (bulkhead) → retry it safely (bounded, jittered,
+idempotent) → stop hammering a dead dependency (circuit breaker) → have a plan B
+(fallback / graceful degradation) → and protect *yourself* from overload (load shedding,
+rate limiting)**. Get any layer wrong — especially unbounded retries or a missing
+timeout — and the other layers can't save you.
+
+## Mental model
+
+**Every remote call is a liability you must bound on three axes: time, concurrency, and
+blast radius.** Most outages trace to an *unbounded* one of these.
+
+- **Time** — a call with no timeout can hang forever, and a hung call holds a thread,
+  a connection, and memory. Threads pile up behind one slow dependency until the whole
+  service is exhausted. **The timeout is the most important resilience pattern; a
+  missing timeout is the most common cause of cascading failure.**
+- **Concurrency** — without a bound on *how many* concurrent calls a dependency can
+  consume, one slow dependency drains the shared pool and starves *every other*
+  dependency. The **bulkhead** caps that: a dedicated, bounded pool per dependency, so
+  one sinking compartment doesn't flood the ship.
+- **Blast radius / load** — retries multiply load exactly when a dependency is least
+  able to take it. The **circuit breaker** detects sustained failure and *stops calling*
+  — failing fast and giving the dependency room to recover instead of pouring fuel on
+  the fire.
+
+The second model: **retries are a loaded gun.** They're mandatory for transient faults
+but they *amplify* load, and naïvely they synchronize into storms. Safe retrying needs
+four guards together — **(1) only on idempotent operations, (2) bounded attempts,
+(3) exponential backoff with jitter, and (4) a retry budget** that caps retries as a
+*fraction* of total traffic (e.g. retries ≤ 10% of requests) so a broad failure can't
+triple your load. A retry without all four is a future incident.
+
+The third model: **degrade, don't disappear.** When a dependency is gone, the resilient
+move is rarely "return an error" — it's **fallback**: serve stale cache, a default, a
+reduced feature, or a queued-for-later acknowledgement. The user gets *something*. This
+is **graceful degradation**: the system sheds capability, not availability.
+
+## Types / Variants
+
+### Bounding and isolation
+
+- **Timeout.** Cap how long you wait. Set it from the dependency's latency distribution
+  (e.g. just above p99), not a round number. **Always finite.** Distinguish *connect*,
+  *read/request*, and *overall* timeouts. A deadline that propagates down the call chain
+  (deadline propagation) is the mature form — each hop subtracts elapsed time.
+- **Bulkhead.** Isolate resources (thread pools, connection pools, semaphores) per
+  dependency so one saturated dependency can't consume the pool the others need. Named
+  for a ship's watertight compartments. Limits the blast radius of a single dependency's
+  slowdown to that compartment.
+
+### Retry and its guards
+
+- **Retry.** Re-issue a failed call. Only for *transient* faults (timeouts, 5xx,
+  connection resets) and only on *idempotent* operations or with an idempotency key.
+- **Bounded attempts.** Hard cap (e.g. 3). Unbounded retry loops are how a blip becomes
+  a metastable outage.
+- **Exponential backoff.** Wait `base · 2^attempt`, capped, so you don't hammer a
+  struggling dependency.
+- **Jitter.** Randomize the backoff so thousands of clients that failed at the same
+  instant don't retry in synchronized waves. **Full jitter** (`random(0, min(cap,
+  base·2^n))`) is the AWS-recommended default.
+- **Retry budget.** Cap retries as a percentage of total requests (e.g. 10%). Unlike
+  per-call caps, the budget bounds *aggregate* retry load — the thing that actually
+  causes retry storms. Used by Envoy/gRPC.
+
+### Stopping the bleed
+
+- **Circuit breaker.** A state machine that monitors failure rate to a dependency and,
+  once it crosses a threshold, **opens** — short-circuiting calls to fail *fast* instead
+  of waiting on a known-bad dependency. After a cooldown it goes **half-open** to probe,
+  and **closes** again on success. The single most important cascade-stopper.
+- **Load shedding.** Under overload, *reject* low-priority work early (429/503) rather
+  than accept everything and collapse. Keeps the system in a recoverable regime. Prefer
+  shedding cheap-to-reject work and protecting high-value requests.
+- **Rate limiting / throttling.** Bound the request rate a client or tenant can consume
+  so one noisy neighbor can't starve others. (Full treatment in
+  [Rate limiting & throttling](/scalability/rate-limiting-throttling/).)
+
+### Latency and correctness patterns
+
+- **Hedged requests.** For latency-sensitive reads, send a *second* request to another
+  replica if the first hasn't answered by some threshold (e.g. p95), and take whichever
+  returns first. Cuts tail latency dramatically. Costs extra load, so cap hedging (e.g.
+  only the slowest 5%) and require idempotency. (From Dean & Barroso, "The Tail at
+  Scale.")
+- **Fallback / graceful degradation.** A defined plan B when the call fails: stale
+  cache, default value, reduced feature, or queue-for-later. Turns a failure into a
+  degraded-but-useful response.
+- **Idempotency.** Make repeated execution have the same effect as one execution
+  (idempotency key + server-side dedup). The *precondition* that makes retries and
+  hedging safe — without it, both duplicate side effects (double charges). The bridge to
+  "effectively-once" (see [Failure handling](/reliability/failure-handling/)).
+
+## When to use / When NOT
+
+- **Timeout — always.** Every network call gets a finite timeout derived from the
+  dependency's latency profile. **Never** issue a remote call with no timeout — there is
+  no scenario where infinite waiting is correct.
+- **Retry — use when:** the fault is transient *and* the operation is idempotent.
+  **Avoid when:** the error is permanent (4xx/validation — retrying wastes capacity), or
+  the op is non-idempotent without an idempotency key (you'll duplicate effects).
+- **Circuit breaker — use when:** a dependency can fail or hang and you'd otherwise pile
+  up retries against it (i.e. essentially every external dependency at scale). **Avoid /
+  tune carefully when:** call volume is very low (statistically noisy — the breaker
+  trips on a few flukes) or the call has no alternative and failing fast helps no one.
+- **Bulkhead — use when:** multiple dependencies share a resource pool and one's
+  slowdown would starve the others. **Skip when:** there's effectively one dependency and
+  the isolation overhead buys nothing.
+- **Load shedding — use when:** you can be overloaded (always, at scale) and would rather
+  serve some traffic well than all traffic badly. **Avoid shedding** high-value/already-
+  paid-for work first — shed cheap, low-priority traffic.
+- **Hedged requests — use when:** reads are idempotent, replicas exist, and tail latency
+  matters. **Avoid when:** requests are writes/non-idempotent, or the extra load can't be
+  afforded — hedging *adds* load.
+- **Fallback — use when:** a degraded answer beats an error (most read paths: stale data
+  is usually better than no data). **Avoid stale fallbacks when:** correctness is
+  absolute (showing a stale account balance can be worse than an honest error).
+
+## Tradeoffs
+
+| Pattern | Buys you | Costs / risk |
+| ------- | -------- | ------------ |
+| Timeout | Bounds hung calls; frees resources | Too tight → false failures on slow-but-ok calls; too loose → slow detection |
+| Retry (bounded + backoff + jitter) | Recovers transient faults | Amplifies load; duplicates effects if non-idempotent; latency added |
+| Retry budget | Caps *aggregate* retry load → kills storms | One more knob; needs central enforcement (mesh/SDK) |
+| Circuit breaker | Fails fast; stops cascades; lets dependency recover | False trips shed good traffic; noisy at low volume; tuning required |
+| Bulkhead | Isolates one dependency's slowdown | Lower utilization (reserved pools); more pools to size |
+| Load shedding | Stays recoverable under overload | Rejects some requests (partial unavailability) |
+| Hedged requests | Slashes tail latency | Extra load; requires idempotency + replicas |
+| Fallback / degradation | Useful answer instead of an error | Stale/partial data; can mask real failures if overused |
+| Idempotency | Makes retry + hedging safe | Dedup store + key management overhead |
+
+The master discipline: **bound everything (time, concurrency, retries), make effects
+idempotent, and degrade rather than disappear.** The single highest-leverage pattern is
+the humble timeout; the single most dangerous omission is an unbounded retry.
+
+## Diagram
+
+The circuit breaker state machine — the heart of cascade prevention. It rides three
+states: **closed** (calls flow, failures counted), **open** (calls short-circuit and
+fail fast), and **half-open** (a few trial calls probe recovery).
+
+<Mermaid code={`stateDiagram-v2
+  [*] --> Closed
+  Closed --> Open: failure rate exceeds threshold<br/>(e.g. 50% over rolling window)
+  Open --> HalfOpen: cooldown timer elapses<br/>(e.g. after 30s)
+  HalfOpen --> Closed: trial call(s) succeed<br/>dependency healthy again
+  HalfOpen --> Open: trial call fails<br/>back off, restart cooldown
+  Closed --> Closed: success<br/>reset failure count
+  note right of Closed
+    Requests pass through.
+    Track failures in a rolling
+    window (count or %).
+  end note
+  note right of Open
+    Requests fail FAST
+    (no call made) -> fallback.
+    Dependency gets room to recover.
+  end note
+  note right of HalfOpen
+    Allow a limited number of
+    probe requests. Success -> Closed,
+    failure -> Open. Prevents a stampede
+    of full traffic onto a fragile service.
+  end note`} />
+
+**Closed** is normal operation — calls pass and failures accumulate in a rolling window.
+Crossing the failure threshold trips to **open**, where every call fails fast (returning
+a fallback) without touching the sick dependency — this is what stops the retry storm and
+lets the dependency recover. After a cooldown the breaker goes **half-open** and admits a
+*small* number of probe requests; if they succeed it **closes** (full traffic resumes),
+if any fails it snaps back to **open** and restarts the timer. The half-open gate is the
+crucial detail: it prevents slamming a just-recovering service with full traffic the
+instant the cooldown ends.
+
+## Try it
+
+Pick the resilience pattern for a failing or slow dependency.
+
+<DecisionTree
+  client:visible
+  caption="Which resilience pattern do I reach for?"
+  root={{
+    question: 'What is the problem with the dependency right now?',
+    branches: [
+      {
+        label: 'It hangs / is too slow (latency)',
+        next: {
+          question: 'Is this individual calls hanging, or tail latency across many calls?',
+          branches: [
+            { label: 'Calls hang with no bound', next: { leaf: { recommendation: 'Add a finite timeout (and propagate a deadline)', detail: 'Bound every call just above the dependency p99. A missing timeout is the #1 cause of thread exhaustion and cascading failure. This comes before anything else.' } } },
+            { label: 'Tail latency on idempotent reads', next: { leaf: { recommendation: 'Hedged requests against a second replica', detail: 'Send a backup request after p95 and take the first to return. Slashes tail latency. Cap hedging to the slowest few % and require idempotency so the duplicate is harmless.' } } },
+            { label: 'One slow dependency starves others', next: { leaf: { recommendation: 'Bulkhead (dedicated bounded pool per dependency)', detail: 'Isolate thread/connection pools so the slow dependency drains only its own compartment, not the shared pool every other dependency needs.' } } },
+          ],
+        },
+      },
+      {
+        label: 'It is failing (errors / 5xx)',
+        next: {
+          question: 'Is the failure transient, or is the dependency sustainedly down?',
+          branches: [
+            {
+              label: 'Transient (occasional 5xx / reset)',
+              next: {
+                question: 'Is the operation idempotent (or do you have an idempotency key)?',
+                branches: [
+                  { label: 'Yes — safe to repeat', next: { leaf: { recommendation: 'Bounded retry with exponential backoff + full jitter + retry budget', detail: 'A few jittered retries handle the blip. The budget caps aggregate retry load (e.g. ≤10% of traffic) so a broad failure cannot triple your load into a storm.' } } },
+                  { label: 'No — has side effects', next: { leaf: { recommendation: 'Make it idempotent FIRST, then retry', detail: 'Attach an idempotency key with server-side dedup so a retry executes the effect once. Never blind-retry a non-idempotent op — double charges await.' } } },
+                ],
+              },
+            },
+            { label: 'Sustained / dependency is down', next: { leaf: { recommendation: 'Circuit breaker + fallback', detail: 'Open the breaker to fail fast and stop hammering the dead dependency (half-open later to probe recovery). Serve a fallback — stale cache, default, or degraded feature — so users get something.' } } },
+          ],
+        },
+      },
+      {
+        label: 'YOU are overloaded (too much inbound)',
+        next: { leaf: { recommendation: 'Load shedding + rate limiting', detail: 'Reject low-priority work early (429/503) and rate-limit per client/tenant so you stay in a recoverable regime and serve high-value traffic well rather than collapsing under all of it.' } },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Resilience patterns at a glance"
+  columns={['Timeout', 'Retry+backoff', 'Circuit breaker', 'Bulkhead', 'Load shed', 'Hedging', 'Fallback']}
+  rows={[
+    { criterion: 'Problem solved', cells: ['Hung calls', 'Transient faults', 'Sustained failure / cascade', 'Resource starvation', 'Self-overload', 'Tail latency', 'Dependency gone'] },
+    { criterion: 'Where it acts', cells: ['Per call', 'Per call', 'Per dependency', 'Per dependency pool', 'At admission', 'Per read', 'On failure'] },
+    { criterion: 'Adds load?', cells: ['No', 'Yes (amplifies)', 'No (reduces)', 'No', 'No (reduces)', 'Yes (duplicate)', 'No'] },
+    { criterion: 'Needs idempotency?', cells: ['No', 'Yes', 'No', 'No', 'No', 'Yes', 'No'] },
+    { criterion: 'Main risk', cells: ['Wrong threshold', 'Retry storm if naive', 'False trips at low volume', 'Lower utilization', 'Rejects traffic', 'Extra load', 'Stale/partial data'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Netflix Hystrix** (and its successor **resilience4j**) popularized the
+  **circuit breaker + bulkhead + timeout + fallback** combination as a standard library,
+  making these patterns mainstream in the JVM microservice world.
+- **Envoy / Istio service mesh** implements **retries with budgets, timeouts, circuit
+  breaking (outlier detection), and load shedding** at the proxy layer — so resilience is
+  enforced uniformly without touching application code.
+- **gRPC** ships built-in **retry policies with backoff + a retry throttle (budget)** and
+  **deadline propagation**, the modern reference implementation of safe retrying.
+- **AWS SDKs** implement **exponential backoff with full jitter** by default after AWS
+  published the canonical analysis showing full jitter beats plain backoff at defusing
+  retry storms.
+- **Google (Dean & Barroso, "The Tail at Scale")** documented **hedged and tied
+  requests** as the production technique for taming tail latency in large fan-out
+  services like web search.
+- **Stripe** requires **idempotency keys** on write requests so a client retry after a
+  timeout can't double-charge — the precondition that makes the whole retry machinery safe
+  for money (directly relevant to fintech ledgers).
+
+## Further reading
+
+- [Marc Brooker (AWS) — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) — the measured case for full jitter, with charts.
+- [Martin Fowler — CircuitBreaker](https://martinfowler.com/bliki/CircuitBreaker.html) — the canonical explanation of the breaker states and trip logic.
+- [Dean & Barroso — The Tail at Scale (CACM 2013)](https://www.barroso.org/publications/TheTailAtScale.pdf) — hedged/tied requests and tail-tolerant design.
+- [resilience4j documentation](https://resilience4j.readme.io/docs/getting-started) — a production reference for composing breaker, bulkhead, retry, rate limiter, and timeout.
+- [Google SRE Book — Handling Overload](https://sre.google/sre-book/handling-overload/) — load shedding, graceful degradation, and the criticality of bounded retries.

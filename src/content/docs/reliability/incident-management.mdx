@@ -1,0 +1,221 @@
+---
+title: Incident Management
+description: The operational discipline of handling and learning from outages — detection and MTTD, on-call, runbooks, incident command, severity levels, blameless postmortems, chaos engineering and Game Days, and the resilience flywheel.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Every other page in this cluster reduces how *often* and how *badly* systems fail; this page
+is about the human-and-process machinery for the failures that happen anyway — **detecting**
+them fast, **responding** to them under pressure without making things worse, and **learning**
+from them so the same outage doesn't recur. Incident management is where reliability stops
+being an architecture diagram and becomes an organizational capability: the on-call rotation,
+the runbook, the incident commander, the severity ladder, and — most importantly — the
+**blameless postmortem** that turns each outage into a permanent improvement.
+
+The through-line is the **resilience flywheel**: every incident is a free (if painful) lesson,
+and a mature organization extracts that lesson and feeds it back — into better detection,
+better runbooks, better architecture, and proactively-discovered weaknesses via **chaos
+engineering** and **Game Days**. Done well, the system gets *more* reliable with every failure;
+done badly (blame, no follow-up), the same incidents recur and the team burns out. This page is
+the operational complement to the measurement discipline in
+[SLOs & error budgets](/reliability/slo-sli-error-budgets/): SLOs tell you *when* reliability is
+slipping; incident management is *what you do about it*.
+
+## Mental model
+
+**An incident's total cost is `MTTD + MTTR`, and most of it is usually detection and
+coordination, not the fix.** The clock starts when the system breaks, not when you notice. So
+the biggest wins are often *not* "fix faster" but **"detect faster" (MTTD)** and **"coordinate
+better."** A bug you find in 30 seconds via good alerting and fix in 2 minutes beats one you
+discover from angry customers an hour later. The phases — **detect → triage → mitigate → resolve
+→ learn** — each have their own discipline, and **mitigation comes before resolution**: stop the
+bleeding (roll back, fail over, shed load) *first*, find and fix the root cause *after*. Trying
+to root-cause a live outage before mitigating is the classic rookie error.
+
+The second model: **under incident pressure, structure beats heroics.** A major incident with
+five engineers all debugging in parallel, nobody coordinating, and stakeholders interrupting for
+updates is *slower*, not faster. The **Incident Command System** imposes roles — an **Incident
+Commander** (coordinates, decides, owns the incident — does *not* debug), **Operations/responders**
+(do the hands-on work), and a **Communications lead** (updates stakeholders) — so the responders
+can focus while one person holds the big picture. Clear roles turn chaos into a controlled
+response. **Severity levels** (SEV1–SEV4) then calibrate the response: a SEV1 (full outage,
+revenue-impacting) pages leadership and convenes incident command; a SEV4 is a ticket.
+
+The third, and culturally most important model: **postmortems must be blameless, because the
+goal is to fix the system, not the human.** People don't cause outages; *systems that allow a
+human action to cause an outage* cause outages. If postmortems assign blame, people hide
+mistakes, information dries up, and you lose the learning — the opposite of what you need. A
+blameless postmortem assumes everyone acted reasonably with the information they had, and asks
+"what about the *system* let this happen, and how do we make it impossible (or harmless) next
+time?" Every postmortem produces **tracked action items** with owners — a postmortem with no
+follow-through is theater.
+
+The fourth model: **don't wait for failures — manufacture them on purpose.** **Chaos
+engineering** injects controlled failures (kill a node, add latency, sever a dependency) into
+*production or near-production* to discover weaknesses *before* they discover you — turning
+unknown failure modes into known, fixed ones. **Game Days / DiRT** (Disaster Recovery Testing)
+are the scheduled, organization-level version: rehearse a major outage, exercise the runbooks
+and the humans, and find the gaps when the stakes are a drill, not a real incident. You only know
+your failover works if you've actually triggered it.
+
+## Types / Variants
+
+### Detection
+
+- **MTTD (Mean Time To Detect).** The front-half of every incident; minimizing it is
+  high-leverage. Driven by good alerting — ideally **symptom-based** (SLO burn rate, user-facing
+  error/latency), not just **cause-based** (a single host's CPU). Symptom alerts catch gray
+  failures that cause-based alerts miss.
+- **Alert quality.** Every alert must be *actionable* and *urgent*. Non-actionable or noisy
+  alerts cause **alert fatigue** — responders tune out, and the real page gets missed. Page on
+  what needs a *human now*; ticket the rest.
+
+### Response roles & structure
+
+- **On-call.** A rotation of engineers responsible for responding to pages. Sustainable on-call
+  (reasonable rotation length, follow-the-sun for global teams, compensation, a cap on pages per
+  shift) is a reliability *and* humane-ops concern — a burned-out on-call is a slow on-call.
+- **Runbooks.** Documented, step-by-step procedures for known failure modes ("if the queue
+  backs up, do X"). They turn tribal knowledge into a checklist anyone on-call can execute at
+  3am, cutting MTTR and reducing error under stress. Best when linked directly from the alert.
+- **Incident Command System (ICS).** Roles for major incidents: **Incident Commander** (owns
+  coordination and decisions, does not debug), **Ops lead / responders** (hands-on fix),
+  **Comms lead** (stakeholder updates), **Scribe** (timeline). Borrowed from emergency services;
+  scales the response without chaos.
+- **Severity levels (SEV1–SEV4).** Calibrate response to impact. SEV1 = critical/full outage,
+  all-hands + leadership; SEV2 = major degradation; SEV3 = minor/partial; SEV4 = low/cosmetic.
+  The severity drives who's paged, how often you update, and whether you convene incident command.
+
+### Learning
+
+- **Blameless postmortem.** A written, no-blame analysis after a significant incident: timeline,
+  impact, root cause(s), what went well/badly, and **tracked action items with owners**. The
+  mechanism that converts an outage into durable improvement.
+- **The "5 Whys" / contributing factors.** Push past the proximate cause to the systemic ones —
+  but reject single-root-cause thinking; complex outages have *multiple* contributing factors, and
+  fixing only the last one leaves the others armed.
+- **Action-item tracking.** Postmortem follow-ups are treated like any prioritized work and
+  closed out — otherwise the same incident recurs and trust in the process erodes.
+
+### Proactive resilience
+
+- **Chaos engineering.** Deliberately inject failures (instance kill, latency, dependency loss,
+  zone outage) under controlled conditions to surface weaknesses before they cause real incidents.
+  Start in staging, graduate to production with a small blast radius and an abort switch.
+- **Game Days / DiRT.** Scheduled disaster rehearsals at team/org scale — exercise runbooks,
+  on-call, and failover end-to-end so the humans and the procedures are tested, not just the code.
+- **The resilience flywheel.** Each incident → postmortem → action items → improved detection,
+  runbooks, and architecture → fewer/shorter incidents → capacity to invest in proactive chaos →
+  even fewer incidents. The compounding loop that makes a system reliable *over time*.
+
+## When to use / When NOT
+
+- **Invest in MTTD (symptom-based alerting) when:** you have users who notice outages before you
+  do (the painful common case). **Avoid cause-based-only alerting** — it misses gray failures and
+  pages on noise. **Don't over-alert** — every non-actionable page erodes the next real one.
+- **Use the Incident Command System when:** an incident is large enough that uncoordinated
+  responders would collide (SEV1/SEV2). **Skip the formality when:** it's a routine SEV3/SEV4 one
+  person can handle — ICS overhead on a small incident is bureaucracy.
+- **Write runbooks for:** known, recurring, or high-stakes failure modes, linked from the alert.
+  **Don't try to runbook everything** — novel incidents need judgment, not a script; runbooks
+  cover the *known* failures and free attention for the unknown.
+- **Run blameless postmortems for:** every significant incident (SEV1/SEV2, customer impact, or a
+  near-miss worth learning from). **Never run a blameful one** — blame destroys the information
+  flow that makes postmortems valuable. **Don't skip the action-item follow-through** — that's the
+  whole point.
+- **Do chaos engineering when:** the system is mature enough that you have monitoring to *observe*
+  the injected failure and a way to abort, and the cost of an undiscovered failure mode is high.
+  **Avoid chaos in production when:** you lack the observability or rollback to do it safely — you'll
+  just cause the outage you were trying to prevent. Start in staging.
+- **Hold Game Days / DiRT when:** you have DR procedures that have *never been exercised* (untested
+  failover is Schrödinger's failover). **Always rehearse before you need it** — the incident is the
+  wrong time to discover the runbook is wrong.
+
+## Tradeoffs
+
+| Practice | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Symptom-based alerting | Catches real user pain + gray failures; lower MTTD | Needs SLOs/good telemetry; tuning to avoid noise |
+| Aggressive alerting | Catch everything fast | Alert fatigue → the real page gets ignored |
+| Runbooks | Fast, low-error response under stress | Maintenance burden; staleness if not exercised |
+| Incident Command System | Coordinated response; responders stay focused | Overhead/ceremony on small incidents |
+| Severity levels | Right-sized response per impact | Mis-grading wastes effort or under-responds |
+| Blameless postmortems | Durable learning; honest information flow | Useless without action-item follow-through; needs real culture buy-in |
+| Chaos engineering | Finds failure modes proactively, on your terms | Can cause real incidents without safeguards; investment |
+| Game Days / DiRT | Tested runbooks, people, and failover | Costs engineering time; disruptive to schedule |
+
+The master discipline: **detect on symptoms, mitigate before you root-cause, coordinate with
+roles, learn blamelessly with tracked follow-up, and manufacture failures proactively.** The
+master mindset is the **resilience flywheel** — treat every incident as fuel for a system that
+gets more reliable over time, rather than a one-off fire to forget.
+
+## Diagram
+
+The incident lifecycle and the resilience flywheel — response in the moment (detect → mitigate →
+resolve) feeding learning (postmortem → action items) that compounds back into prevention.
+
+<Mermaid code={`graph TD
+  BREAK[System breaks<br/>clock starts] --> DET[Detect<br/>symptom alert / SLO burn → MTTD]
+  DET --> TRI[Triage + grade severity<br/>SEV1–4, convene incident command if major]
+  TRI --> MIT[Mitigate FIRST<br/>roll back / fail over / shed load<br/>stop the bleeding]
+  MIT --> RES[Resolve<br/>find + fix root cause]
+  RES --> PM[Blameless postmortem<br/>timeline, contributing factors,<br/>tracked action items]
+  PM --> IMP[Improvements<br/>better detection, runbooks, architecture]
+  IMP -. fewer / shorter incidents .-> BREAK
+  IMP --> CHAOS[Proactive: chaos engineering + Game Days/DiRT]
+  CHAOS -. surface weaknesses before they fail .-> IMP`} />
+
+The response path runs detect → triage → **mitigate before resolve** (stop the bleeding before
+hunting the root cause) → resolve. The learning path turns the incident into a blameless
+postmortem with tracked action items, which feed improvements to detection, runbooks, and
+architecture. Those improvements both reduce future incidents *and* enable proactive chaos
+engineering and Game Days that surface weaknesses before they become incidents — the compounding
+resilience flywheel.
+
+## Try it
+
+When and why to apply each incident-management practice.
+
+<WhenWhyTabs
+  client:visible
+  caption="Incident-management practices in context"
+  tabs={[
+    { label: 'Detection / MTTD', content: 'WHEN: users notice outages before your monitoring does, or alerts are noisy. WHY: the incident clock starts when the system breaks, not when you notice — so cutting Mean Time To Detect is often higher-leverage than fixing faster. Alert on SYMPTOMS (SLO burn rate, user-facing errors/latency) rather than only causes (a single host’s CPU), because symptom alerts catch gray failures that cause-based ones miss. RULE: every alert must be actionable and urgent, or it becomes fatigue that buries the real page.' },
+    { label: 'On-call & runbooks', content: 'WHEN: you have failure modes that recur or are high-stakes, and a rotation responsible for them. WHY: runbooks turn tribal knowledge into a 3am checklist — cutting MTTR and reducing mistakes made under stress — and sustainable on-call (sane rotation, follow-the-sun, page caps) keeps responders sharp. Link the runbook directly from the alert. TRADE: runbooks go stale if not exercised, and novel incidents still need judgment — runbook the known failures, not everything.' },
+    { label: 'Incident command', content: 'WHEN: an incident is large enough (SEV1/SEV2) that multiple uncoordinated responders would collide. WHY: structure beats heroics — an Incident Commander coordinates and decides (and does NOT debug), responders do the hands-on work, a comms lead updates stakeholders, and a scribe keeps the timeline. Roles let responders focus while one person holds the big picture. TRADE: the ceremony is overkill on a routine SEV3/SEV4 — right-size it.' },
+    { label: 'Severity levels', content: 'WHEN: you need to calibrate response to impact. WHY: a SEV1 (full, revenue-impacting outage) should page leadership and convene incident command; a SEV4 is a ticket. Severity drives who is paged, update cadence, and whether you spin up the full ICS — so effort matches stakes. RISK: mis-grading either over-responds (burns people on a cosmetic bug) or under-responds (a real outage handled as a ticket).' },
+    { label: 'Blameless postmortems', content: 'WHEN: after every significant incident or instructive near-miss. WHY: people do not cause outages — systems that let a human action cause an outage do. Blame makes people hide mistakes and dries up the information you need to actually fix the system, so postmortems assume everyone acted reasonably and ask what about the SYSTEM allowed this. Reject single-root-cause thinking; capture all contributing factors. CRITICAL: produce tracked action items with owners and close them out — a postmortem with no follow-through is theater and the incident will recur.' },
+    { label: 'Chaos & Game Days', content: 'WHEN: the system is mature enough to observe an injected failure and abort safely, and undiscovered failure modes would be costly. WHY: do not wait for failures — manufacture them on your terms. Chaos engineering injects controlled faults (kill a node, add latency, sever a dependency) to surface weaknesses before they surface themselves; Game Days/DiRT rehearse a full disaster so the runbooks AND the humans are tested, not just the code. You only know your failover works if you have actually triggered it. TRADE: without observability and a rollback/abort switch, chaos just causes the outage you were trying to prevent — start in staging, graduate to production with a small blast radius.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google SRE** codified the **Incident Command System for software** (commander / ops / comms
+  roles), **blameless postmortems**, and **DiRT** (Disaster Recovery Testing) — the practices on
+  this page are largely formalized from their published handbook and workbook.
+- **PagerDuty / Opsgenie** operationalize **on-call rotations, escalation policies, and severity-
+  driven paging**, and PagerDuty's open incident-response documentation is a widely-used template
+  for ICS roles and postmortems.
+- **Netflix Chaos Monkey / the Simian Army** pioneered **chaos engineering** — randomly killing
+  production instances to force engineers to build services that tolerate it — which grew into the
+  discipline and the *Principles of Chaos Engineering*.
+- **AWS GameDay** and **Gremlin** turned chaos engineering and disaster rehearsal into managed
+  products/events, making controlled fault injection accessible beyond Netflix-scale teams.
+- **Etsy's "Blameless PostMortems and a Just Culture"** (John Allspaw) is the canonical industry
+  essay on *why* blame destroys the learning loop — required reading that shaped how the industry
+  runs postmortems.
+
+## Further reading
+
+- [Google SRE Book — Managing Incidents](https://sre.google/sre-book/managing-incidents/) — the Incident Command System adapted for software outages.
+- [Google SRE Book — Postmortem Culture: Learning from Failure](https://sre.google/sre-book/postmortem-culture/) — the blameless postmortem in depth, with a template.
+- [Etsy / John Allspaw — Blameless PostMortems and a Just Culture](https://www.etsy.com/codeascraft/blameless-postmortems/) — why blame breaks the learning loop.
+- [Principles of Chaos Engineering](https://principlesofchaos.org/) — the discipline's foundational definition and method.
+- [PagerDuty Incident Response documentation](https://response.pagerduty.com/) — a practical, open playbook for on-call, severities, and incident command.

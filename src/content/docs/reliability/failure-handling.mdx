@@ -1,0 +1,262 @@
+---
+title: Failure Handling
+description: How to handle failures correctly in code and messaging — graceful degradation, fail-fast vs fail-safe, dead letter queues and poison messages, compensating actions, idempotency and dedup, at-least-once plus idempotent = effectively-once, and the outbox pattern.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Resilience patterns decide *how to call* a flaky dependency; this page is about *what to do
+with the failures that get through* — the in-process and in-message-pipeline discipline that
+keeps a failed operation from corrupting state, losing data, or wedging a queue. It covers
+the behavioral choices (**graceful degradation**, **fail-fast vs fail-safe**), the messaging
+machinery (**dead letter queues**, **poison messages**), the correctness machinery
+(**idempotency + dedup**, the **outbox pattern**, **compensating actions**), and the single
+most important practical equation in distributed messaging:
+**at-least-once delivery + idempotent processing = effectively-once.**
+
+The theme is that **failure handling is mostly about state**. A failure mid-operation leaves
+the system in *some* state — the question is whether that state is correct, recoverable, and
+non-duplicating. The patterns here exist to guarantee that: a retried message doesn't
+double-charge (idempotency), a permanently-bad message doesn't block the queue forever (dead
+letter queue), a write-then-publish doesn't lose the publish if the process dies between them
+(outbox), and a multi-step workflow that fails halfway can be unwound (compensating actions).
+The theory behind why exactly-once is impossible lives in
+[Distributed failure](/distributed-systems/distributed-failure/); this page is how you build
+*around* that impossibility in practice.
+
+## Mental model
+
+**You can't deliver exactly once, so deliver at-least-once and make processing idempotent —
+the duplicates become harmless.** This is the load-bearing idea. Because a sender can't tell
+"message lost" from "ack lost," any reliable delivery *will* sometimes deliver twice. Fighting
+that on the wire is futile (it's the Two Generals problem). Instead you accept duplicates and
+neutralize them at the *effect*: every operation carries an **idempotency key**, the consumer
+**dedups** on that key, and so processing a message once or five times yields the *same state*.
+At-least-once + idempotent = **effectively-once** — the only "exactly-once" that actually
+exists in production. (Kafka's "exactly-once semantics" is this, scoped to within-Kafka
+transactions, not a general guarantee.)
+
+The second model: **decide your failure *posture* per operation — fail-fast or fail-safe.**
+
+- **Fail-fast**: on error, stop immediately and surface it loudly. Right when continuing on
+  bad state is *dangerous* (a financial transaction with a validation error should abort, not
+  guess). Bugs surface early; no silent corruption.
+- **Fail-safe / fail-open vs fail-closed**: on error, fall back to a *safe default* and keep
+  going. Right when partial service beats no service (a recommendation engine failing should
+  return a generic list, not a 500). The sub-choice — **fail-open** (allow on failure) vs
+  **fail-closed** (deny on failure) — is a *security* decision: a payment authorizer should
+  **fail-closed** (deny if you can't verify), while a CDN should **fail-open** (serve stale if
+  the origin is unreachable). Choosing wrong is how outages become breaches or vice-versa.
+
+The third model: **a poison message must not be able to wedge the pipeline.** A message that
+*always* fails (malformed, references deleted data) will, under naïve at-least-once redelivery,
+be retried forever — blocking everything behind it and burning capacity. The **dead letter
+queue (DLQ)** is the escape valve: after N failed attempts, move the message *aside* to a DLQ
+for human/automated inspection, and let the pipeline proceed. **No DLQ = one bad message can
+halt a whole consumer.**
+
+The fourth model: **the dual-write problem — never write to two systems and hope both
+succeed.** "Update the database, then publish an event" has a gap: if the process dies after
+the DB commit but before the publish, the event is lost forever and the systems diverge.
+Distributed transactions across DB+broker are slow and brittle. The **outbox pattern** solves
+it: write the event into an `outbox` table *in the same DB transaction* as the state change
+(so they're atomic), then a separate relay reliably ships outbox rows to the broker. One atomic
+write, guaranteed eventual publish.
+
+## Types / Variants
+
+### Behavioral postures
+
+- **Graceful degradation.** Shed *capability*, not availability — return stale cache, a
+  default, a reduced feature set, or a queued acknowledgement when a dependency is down. The
+  user gets a degraded-but-useful response instead of an error. (The fallback side of
+  [Resilience patterns](/reliability/resilience-patterns/).)
+- **Fail-fast.** Abort and surface the error immediately rather than proceed on bad/unknown
+  state. Use where continuing risks corruption or wrong results.
+- **Fail-safe.** Fall back to a known-safe behavior and continue. Splits into **fail-open**
+  (permit/serve on failure — availability-first; right for non-security paths like a CDN) and
+  **fail-closed** (deny on failure — safety-first; right for auth, payments, access control).
+
+### Messaging-pipeline machinery
+
+- **Dead letter queue (DLQ).** A side queue where messages land after exhausting retries.
+  Unblocks the main queue, preserves the bad message for diagnosis, and is itself monitored
+  (a filling DLQ is an alert). Often paired with a *redrive* path to replay fixed messages.
+- **Poison message.** A message that deterministically fails every processing attempt. The
+  DLQ's reason for existing — without a retry cap + DLQ, a poison message loops forever and
+  starves the consumer.
+- **Retry-with-backoff before DLQ.** Transient failures get a few bounded, backed-off retries
+  first; only after exhausting them does a message go to the DLQ — so transient blips don't
+  prematurely dead-letter good messages.
+
+### Correctness machinery
+
+- **Idempotency + dedup.** A unique idempotency key per logical operation; the consumer
+  records processed keys (a dedup store / processed-message table) and skips repeats. Makes
+  redelivery and retries harmless. The dedup store needs a retention window (you can't remember
+  every key forever — bound it to the max redelivery window).
+- **At-least-once + idempotent = effectively-once.** The practical recipe: choose at-least-once
+  delivery (never lose a message) and make every consumer idempotent (duplicates are no-ops).
+  This is the only achievable "exactly-once."
+- **Outbox pattern.** Atomically persist the outbound event alongside the state change in one
+  local DB transaction; a relay (polling or change-data-capture) reliably publishes outbox
+  rows. Eliminates the dual-write / lost-event gap. (Inbox is the dual on the consumer side:
+  record received message IDs to dedup.)
+- **Compensating actions / sagas.** For a multi-step workflow with no global transaction, each
+  step has a *compensating* action that semantically undoes it (refund a charge, release a
+  reservation). On a mid-workflow failure, run the compensations in reverse to restore a
+  consistent state. The reliability face of the **saga** pattern (full treatment in
+  event-driven patterns); idempotent compensations are mandatory.
+
+## When to use / When NOT
+
+- **Graceful degradation — use when:** a degraded answer beats an error (most read paths:
+  stale data usually beats no data). **Avoid degrading silently when:** correctness is absolute
+  — a stale account balance shown as current can be worse than an honest error.
+- **Fail-fast — use when:** proceeding on bad/unknown state risks corruption or wrong results
+  (writes, financial ops, validation failures). **Avoid when:** the failure is non-critical and
+  a safe default keeps the user served.
+- **Fail-closed — use when:** the operation is security- or money-sensitive and "allow on
+  uncertainty" is dangerous (auth, authorization, payment capture). **Fail-open — use when:**
+  availability beats strictness and the path isn't a security gate (serving cached content,
+  feature flags defaulting to a safe state). **Choosing wrong here turns an outage into a
+  breach** (fail-open on auth) **or a breach into an outage** (fail-closed on a CDN).
+- **DLQ — use when:** any at-least-once queue where a poison message could block the pipeline
+  (i.e. essentially always). **Don't skip the DLQ** — "it'll never get a bad message" is how
+  consumers wedge at 3am.
+- **Idempotency + dedup — use when:** delivery is at-least-once (the norm) and the operation
+  has side effects. **Required for** any retried or redelivered write with effects — without it,
+  duplicates double the effect.
+- **Outbox — use when:** you must update local state *and* publish an event reliably (the
+  classic "save order + emit OrderPlaced"). **Avoid the naïve dual write — always.** Use outbox
+  (or a transactional broker) rather than "commit then publish and hope."
+- **Compensating actions / sagas — use when:** a workflow spans services with no shared
+  transaction and you need eventual consistency with rollback. **Avoid when:** a single local
+  ACID transaction can do the job — don't reach for sagas where a transaction suffices.
+
+## Tradeoffs
+
+| Pattern | Buys you | Costs / risk |
+| ------- | -------- | ------------ |
+| Graceful degradation | Useful answer instead of an error | Stale/partial data; can mask real failures |
+| Fail-fast | No silent corruption; bugs surface early | Less availability — aborts instead of coping |
+| Fail-open | Availability under failure | Dangerous on security paths (lets bad through) |
+| Fail-closed | Safety under failure | A dependency outage becomes a full denial |
+| Dead letter queue | Unblocks pipeline; preserves bad msgs | Needs monitoring + redrive; silent data loss if ignored |
+| Idempotency + dedup | Duplicates become harmless (effectively-once) | Dedup store + key lifecycle + retention window |
+| Outbox | Atomic state+event; no lost/dual-write gap | Extra table + relay; small publish latency; relay must be reliable |
+| Compensating actions / sagas | Multi-step rollback without 2PC | Complex; compensations must be idempotent + may be lossy (a refund isn't a true undo) |
+
+The master discipline: **at-least-once + idempotent processing**, a **DLQ on every consumer**,
+the **outbox** for any write-plus-publish, and a *consciously chosen* fail-fast/fail-safe and
+fail-open/fail-closed posture per operation. The most common production bugs here are the naïve
+dual write (lost events) and the missing idempotency key (double effects).
+
+## Diagram
+
+The end-to-end reliable-messaging path: outbox guarantees the event is published atomically
+with the state change; the consumer dedups (effectively-once); poison messages bounded by
+retries land in a DLQ instead of wedging the pipeline.
+
+<Mermaid code={`graph TD
+  P[Producer] -->|one local TX| DB[(DB: state change<br/>+ outbox row)]
+  DB --> REL[Outbox relay<br/>poll / CDC]
+  REL -->|publish at-least-once| Q[Message queue]
+  Q --> C[Consumer]
+  C --> DEDUP{Seen this<br/>idempotency key?}
+  DEDUP -->|yes| SKIP[Skip — no-op<br/>effectively-once]
+  DEDUP -->|no| PROC[Process + record key]
+  PROC -->|success| ACK[Ack]
+  PROC -->|transient fail| RETRY[Retry w/ backoff<br/>bounded]
+  RETRY -->|still failing after N| DLQ[(Dead letter queue)]
+  DLQ --> INSPECT[Alert + inspect + redrive]`} />
+
+The producer writes its state change and the outbound event into the same DB transaction
+(outbox), so they commit atomically — no lost-event gap. A relay ships outbox rows to the queue
+at-least-once. The consumer checks the idempotency key and skips duplicates (effectively-once
+processing), retries transient failures with bounded backoff, and after N attempts sends a
+poison message to the DLQ — keeping the main pipeline flowing while the bad message is alerted
+on and redriven after a fix.
+
+## Try it
+
+Decide how to handle a failure correctly, given the operation's nature.
+
+<DecisionTree
+  client:visible
+  caption="How should this failure be handled?"
+  root={{
+    question: 'What kind of failure are you handling?',
+    branches: [
+      {
+        label: 'A dependency call failed at request time',
+        next: {
+          question: 'Is continuing on a fallback safe, or is correctness/security critical?',
+          branches: [
+            {
+              label: 'Safe to serve a degraded answer',
+              next: { leaf: { recommendation: 'Graceful degradation (fallback) — usually fail-open', detail: 'Return stale cache, a default, or a reduced feature so the user gets something. For non-security paths (content, recommendations) fail-open: serve degraded rather than error.' } },
+            },
+            {
+              label: 'Security / money / correctness critical',
+              next: { leaf: { recommendation: 'Fail-fast and fail-closed', detail: 'Abort and surface the error rather than guess; deny on uncertainty (auth, authorization, payment capture). Continuing on unverified state risks corruption or a breach.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'A message keeps failing in a queue',
+        next: {
+          question: 'Does it fail every attempt (deterministic), or just transiently?',
+          branches: [
+            { label: 'Transient (will likely succeed soon)', next: { leaf: { recommendation: 'Bounded retry with backoff, then DLQ', detail: 'Give it a few backed-off retries for the blip. Only after exhausting them route it onward — so transient failures do not prematurely dead-letter good messages.' } } },
+            { label: 'Deterministic — poison message', next: { leaf: { recommendation: 'Dead letter queue after N attempts', detail: 'A message that always fails will loop forever and wedge the consumer under at-least-once redelivery. Cap attempts and move it to a monitored DLQ for inspection/redrive so the pipeline keeps flowing.' } } },
+          ],
+        },
+      },
+      {
+        label: 'A retry/redelivery might duplicate a side effect',
+        next: { leaf: { recommendation: 'Idempotency key + dedup (at-least-once + idempotent = effectively-once)', detail: 'Attach a unique key per logical operation and have the consumer record processed keys and skip repeats. Accept at-least-once delivery and neutralize duplicates at the effect — the only achievable exactly-once.' } },
+      },
+      {
+        label: 'I must update local state AND publish an event',
+        next: { leaf: { recommendation: 'Outbox pattern — never a naive dual write', detail: 'Write the event to an outbox table in the SAME DB transaction as the state change (atomic), then a relay reliably publishes it. Avoids the lost-event gap when the process dies between commit and publish.' } },
+      },
+      {
+        label: 'A multi-step workflow failed halfway',
+        next: { leaf: { recommendation: 'Compensating actions (saga)', detail: 'With no global transaction, run each completed step’s compensating action in reverse (refund, release reservation) to restore a consistent state. Compensations must be idempotent; note a compensation is semantic undo, not a true rollback.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Stripe** keys writes on **idempotency keys** and dedups server-side, so a client retry
+  after a timeout executes the charge once — the canonical at-least-once + idempotent design on
+  a money path.
+- **AWS SQS / SNS, Azure Service Bus, RabbitMQ** all ship first-class **dead letter queues**
+  with configurable max-receive counts and redrive — poison-message handling as a platform
+  feature.
+- **Kafka transactions / "exactly-once semantics"** implement effectively-once *within Kafka*
+  (the producer-side dual of the outbox: atomic write + offset commit), explicitly *not* a
+  general cross-system exactly-once — illustrating the scope limit of the term.
+- **Debezium + the outbox pattern** is the standard CDC-based implementation: change-data-
+  capture tails the outbox table and publishes events, giving atomic state-plus-event without
+  distributed transactions — widely used in microservice architectures.
+- **The saga / compensating-transaction pattern** underpins booking and order systems (travel,
+  e-commerce) and is documented in Microsoft's Azure architecture guidance and Chris
+  Richardson's microservices patterns as the standard answer to cross-service consistency.
+
+## Further reading
+
+- [microservices.io — Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html) — the dual-write problem and the outbox solution, with diagrams.
+- [microservices.io — Saga & Compensating Transactions](https://microservices.io/patterns/data/saga.html) — multi-step workflows with rollback and why compensations must be idempotent.
+- [AWS — Amazon SQS dead-letter queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html) — poison-message handling, max receive count, and redrive.
+- [Confluent — Exactly-Once Semantics in Apache Kafka](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/) — what "exactly-once" actually means and its boundaries.
+- [Stripe — Idempotent Requests](https://stripe.com/docs/api/idempotent_requests) — the reference design for safe retries on a financial API.

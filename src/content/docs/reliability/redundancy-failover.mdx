@@ -1,0 +1,233 @@
+---
+title: Redundancy & Failover
+description: Building availability through redundancy — active-active vs active-passive, N+1 and 2N, failover and failback, health checks, multi-AZ and multi-region, RTO and RPO, and why backups and replication solve different problems.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A single instance of anything has a single point of failure: when it dies, the service
+dies with it. **Redundancy** is the answer — run more than one of every critical
+component so the loss of any one is survivable — and **failover** is the act of shifting
+work from a failed component to a healthy one. Together they are how availability is
+actually *bought*: the nines in [the overview](/reliability/index/) come from removing
+single points of failure and recovering fast when a component is lost.
+
+This page covers the engineering choices inside that idea: **active-active vs
+active-passive** topologies, the redundancy math (**N+1, N+2, 2N**), the mechanics of
+**health checks → failover → failback**, the physical isolation hierarchy
+(**multi-AZ, multi-region**), and the two numbers that quantify a disaster-recovery
+posture (**RTO and RPO**). It closes on a distinction teams routinely get wrong: **backups
+and replication are not substitutes** — one protects against *data loss / corruption*,
+the other against *component loss*, and you need both.
+
+## Mental model
+
+**Redundancy converts a single point of failure into a recoverable event — but only if
+failover is automatic, tested, and fast.** Redundancy *without* working failover is
+theater: a standby that nobody has verified will take over is, in the moment of failure,
+just expensive idle hardware. The discipline is three linked questions:
+
+1. **How many spares?** — N+1 (one spare), N+2 (survive a spare failing *during* a
+   failure), or 2N (a full duplicate). More spares = more cost, more survivable.
+2. **Are the spares working or waiting?** — **active-active** (all serve traffic, you
+   lose capacity on failure but failover is instant) vs **active-passive** (standby waits
+   idle, simpler but you pay for idle capacity and failover has a delay).
+3. **How fast and how lossless is the cutover?** — quantified by **RTO** (how long to
+   recover) and **RPO** (how much data you can lose). These two numbers, set by the
+   *business*, dictate the entire architecture.
+
+The second model: **the loss you're protecting against has a hierarchy, and your
+redundancy must match it.** A redundant process survives a crash; redundant hosts survive
+a machine; **multiple availability zones** survive a datacenter/power/network failure;
+**multiple regions** survive a whole-region outage or natural disaster. Each level up is
+more expensive and adds latency/consistency complexity — so you buy only the level your
+RTO/RPO and threat model demand.
+
+The third, often-missed model: **replication protects availability; backups protect
+durability — they are orthogonal.** Replication keeps a *live, current* copy so you can
+fail over instantly — but it faithfully replicates *corruption and bad deletes too*. A
+backup is a *point-in-time, offline* copy that lets you recover from a logical disaster
+(someone dropped the table, ransomware, a bad migration) that replication would have
+dutifully propagated to every replica. **"We have replicas" is not a backup strategy.**
+
+## Types / Variants
+
+### Topologies
+
+- **Active-passive (failover).** One node serves; one or more standbys wait, kept warm by
+  replication. On failure, promote a standby. **Pro:** simple, no write-conflict problem
+  (one writer). **Con:** idle capacity you pay for; a failover *gap* (detection +
+  promotion time) during which you're down; standby may be stale (RPO > 0). Standby can be
+  *hot* (ready instantly), *warm* (needs brief spin-up), or *cold* (provisioned on
+  demand — cheapest, slowest).
+- **Active-active.** All nodes serve traffic simultaneously behind a load balancer. **Pro:**
+  no idle capacity, near-zero failover time (just stop routing to the dead node), and you
+  get horizontal scale for free. **Con:** multi-writer complexity — conflict resolution,
+  consistency, and you must run with enough headroom that losing one node doesn't overload
+  the rest.
+
+### Redundancy levels
+
+- **N+1.** Provision one spare beyond the N needed for load. Survives one failure. The
+  common, cost-effective default.
+- **N+2.** Two spares — survives a second failure *while the first is still being
+  repaired* (or during planned maintenance). For higher-stakes systems.
+- **2N (full redundancy).** A complete duplicate of capacity — survives losing half of
+  everything. Expensive; used where a whole site/path must be survivable.
+- **2N+1.** Full duplicate *plus* a spare — belt and suspenders for critical
+  infrastructure (power, networking).
+
+### Failover mechanics
+
+- **Health checks.** The trigger. *Shallow* checks ("is the port open / does `/healthz`
+  return 200?") catch crashes but miss **gray failures**; *deep* checks exercise real
+  dependencies (can it reach the DB?) and catch partial failure. Watch for **flapping** —
+  a node bouncing healthy/unhealthy — and damp it with thresholds (N consecutive failures).
+- **Failover.** Detect the failure, then redirect traffic — by promoting a replica,
+  updating DNS, reassigning a virtual IP, or simply de-listing the node from the load
+  balancer. **Leader election** picks the new primary in clustered systems (see
+  [Coordination](/distributed-systems/coordination/)).
+- **Failback.** Returning to the original (or repaired) node once it's healthy. Often the
+  *riskier* operation — a hasty failback to a node that hasn't fully caught up can lose
+  data or cause a second outage. Many shops avoid automatic failback entirely and treat
+  the new primary as primary.
+- **Split-brain.** The danger when failover misfires: two nodes both believe they're
+  primary (typically during a network partition) and both accept writes, diverging the
+  data. Prevented by **quorum / fencing** — only the side with majority may act (see
+  [Distributed failure](/distributed-systems/distributed-failure/)).
+
+### Isolation hierarchy (what you survive)
+
+- **Multi-AZ** — replicas in separate availability zones (independent power/cooling/network
+  in one region). Survives a datacenter-level failure with low inter-AZ latency. The
+  baseline for serious production.
+- **Multi-region** — replicas in geographically distant regions. Survives a whole-region
+  outage or regional disaster, and serves users with lower latency — at the cost of
+  cross-region replication lag (so RPO > 0 for async) and far more consistency complexity.
+
+## When to use / When NOT
+
+- **Active-passive — use when:** you need a single writer for correctness (most relational
+  primaries), simplicity matters, and a few seconds/minutes of failover gap is acceptable.
+  **Avoid when:** you need near-zero RTO or want to use the standby capacity — idle standbys
+  are wasted money.
+- **Active-active — use when:** you need near-zero failover time, want to use all capacity,
+  and can handle multi-writer concurrency (stateless tiers; or stores built for it —
+  Cassandra, DynamoDB global tables). **Avoid when:** a single writer is required for
+  correctness and conflict resolution would be error-prone (e.g. a strongly-consistent
+  ledger primary).
+- **Multi-AZ — use when:** you run anything production-serious; it's the modern baseline and
+  cloud-native. **Multi-region — add when:** your RTO/RPO requires surviving a full region,
+  you serve a global audience needing low latency, or regulation mandates geographic DR.
+  **Don't pay for multi-region** when multi-AZ already meets your RTO/RPO — it roughly
+  doubles cost and complexity.
+- **N+1 — use when:** single-failure tolerance is enough (most systems). **N+2 / 2N — use
+  when:** you must tolerate a failure *during* maintenance or a second concurrent failure,
+  or for foundational infra (power, network) where loss is catastrophic.
+- **Backups — always**, in addition to replication, when data is valuable. **Never rely on
+  replication as your backup** — it propagates corruption and deletes. Test restores, not
+  just backups: an untested backup is Schrödinger's data.
+
+## Tradeoffs
+
+| Choice | Buys you | Costs / risk |
+| ------ | -------- | ------------ |
+| Active-passive | Single writer, simple, no conflicts | Idle standby cost; failover gap (RTO > 0); possible stale standby |
+| Active-active | Near-zero RTO, full capacity use, scale | Multi-writer conflicts; need headroom for node loss; consistency complexity |
+| N+1 | Cheap single-failure tolerance | Doesn't survive a second concurrent failure |
+| 2N | Survives losing half | ~2x infrastructure cost |
+| Multi-AZ | Survives a datacenter; low latency | Modest cross-AZ cost; still one-region risk |
+| Multi-region | Survives a region; global low latency | Replication lag (RPO), big cost + consistency complexity |
+| Sync replication | RPO ≈ 0 (no data loss) | Higher write latency; a slow replica stalls the primary |
+| Async replication | Fast writes, decoupled | RPO > 0 — recent writes can be lost on failover |
+| Replication | Live copy, instant failover | Propagates corruption/deletes — not a backup |
+| Backups | Recover from corruption/disaster | Point-in-time (RPO = backup interval); restore takes time |
+
+The master tradeoffs: **RTO trades against cost** (faster recovery needs hotter, more
+redundant standby), and **RPO trades against write latency** (zero data loss needs
+synchronous replication, which slows every write). The business sets RTO/RPO; the
+architecture follows.
+
+## Diagram
+
+Active-passive failover with health-check-driven promotion, and the split-brain hazard a
+quorum/fence must prevent.
+
+<Mermaid code={`graph TD
+  LB[Load balancer / clients] -->|writes| P[Primary<br/>active]
+  P -->|replication| S1[Standby A<br/>passive, warm]
+  P -->|replication| S2[Standby B<br/>passive, warm]
+  HC[Health checker<br/>deep check + threshold] -. monitors .-> P
+  HC -->|N consecutive failures| FO{Failover}
+  FO -->|promote, fence old primary| S1
+  S1 -->|now primary| LB
+  P -. "partition: old primary still alive?" .-> SB[Split-brain risk<br/>two primaries]
+  SB -. "quorum / fencing prevents" .-> ONE[Only majority side writes]`} />
+
+The health checker promotes a standby only after a *threshold* of consecutive deep-check
+failures (to avoid flapping on a transient blip). The dangerous case is a network
+partition where the old primary is still alive and reachable by some clients — fencing or
+a quorum requirement ensures only the side holding majority may accept writes, so the two
+sides never diverge.
+
+## Try it
+
+When to reach for each redundancy and DR strategy, and why.
+
+<WhenWhyTabs
+  client:visible
+  caption="Choosing redundancy & DR posture"
+  tabs={[
+    { label: 'Active-passive', content: 'WHEN: you require a single writer for correctness (relational primary, a ledger), simplicity is valued, and a brief failover gap (seconds to a couple of minutes RTO) is acceptable. WHY: one writer eliminates write-conflict and split-brain-by-design concerns; the standby is kept current by replication and promoted on failure. TRADE: you pay for idle standby capacity and accept a detection-plus-promotion gap during which the service is down.' },
+    { label: 'Active-active', content: 'WHEN: you need near-zero RTO, want every node serving (no idle capacity), and the workload tolerates multiple writers — stateless app tiers, or stores designed for it (Cassandra, DynamoDB global tables). WHY: losing a node is just "stop routing to it" — failover is instant and you also get horizontal scale. TRADE: multi-writer conflict resolution and consistency complexity, and you must run with headroom so the survivors can absorb a dead node\'s load.' },
+    { label: 'Multi-AZ', content: 'WHEN: any serious production system — this is the modern baseline. WHY: availability zones have independent power, cooling, and network, so a datacenter-level failure is survivable, while inter-AZ latency stays low enough for synchronous replication. TRADE: modest cross-AZ data-transfer cost; you are still exposed to a full-region outage.' },
+    { label: 'Multi-region', content: 'WHEN: your RTO/RPO requires surviving an entire region, you serve a global audience that needs local latency, or regulation mandates geographic DR. WHY: a regional disaster (or a bad regional deploy) cannot take you fully down, and users hit a nearby region. TRADE: cross-region replication lag means RPO > 0 for async; cost and consistency complexity roughly double. Do not buy it if multi-AZ already meets your targets.' },
+    { label: 'RTO vs RPO', content: 'WHEN: defining the disaster-recovery requirement before choosing architecture. WHY: RTO (how long until recovered) drives how hot your standby and how automated your failover must be; RPO (how much data you can lose) drives synchronous vs asynchronous replication and backup frequency. TRADE: low RTO needs hot, costly standby; near-zero RPO needs synchronous replication that slows every write. The business sets both numbers; the architecture is derived from them.' },
+    { label: 'Backups vs replication', content: 'WHEN: protecting valuable or irreplaceable data (ledgers, customer records). WHY: replication gives a live copy for instant failover but faithfully propagates corruption, bad migrations, and accidental deletes; backups are point-in-time offline copies that let you recover from exactly those logical disasters. You need BOTH. TRADE: backups have RPO = backup interval and a restore time; the cardinal rule is to test restores, not just that backups ran — an untested backup is not a backup.' },
+  ]}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Active-passive vs active-active vs multi-region"
+  columns={['Active-passive', 'Active-active (1 region)', 'Multi-region active-active']}
+  rows={[
+    { criterion: 'Failover time (RTO)', cells: ['Seconds–minutes (promote)', 'Near-zero (de-route)', 'Near-zero (de-route region)'] },
+    { criterion: 'Capacity utilization', cells: ['Standby idle (wasted)', 'All nodes serving', 'All regions serving'] },
+    { criterion: 'Write model', cells: ['Single writer (simple)', 'Multi-writer (conflicts)', 'Multi-writer across regions (hard)'] },
+    { criterion: 'Survives loss of', cells: ['A node', 'A node / AZ', 'A whole region'] },
+    { criterion: 'Consistency complexity', cells: ['Low', 'Medium', 'High (cross-region lag)'] },
+    { criterion: 'Relative cost', cells: ['Low–medium (idle standby)', 'Medium', 'High (~2x+)'] },
+    { criterion: 'Best for', cells: ['Relational primary, ledger', 'Stateless tier, scalable store', 'Global, region-disaster-tolerant'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **AWS RDS Multi-AZ** is textbook **active-passive**: a synchronous standby in another AZ,
+  with automatic failover on primary failure (RTO typically 1–2 minutes) — and AWS is
+  explicit that the read-replica/standby is *not* a backup; you still need snapshots.
+- **DynamoDB global tables** and **Cassandra** are **multi-region active-active**: every
+  region accepts writes, with last-writer-wins / conflict resolution — the model when
+  near-zero RTO across regions matters more than single-writer simplicity.
+- **Kubernetes** runs **N+1/N+2** via replica counts and reschedules pods off a failed
+  node; **liveness/readiness probes** are its shallow/deep health checks, and it de-routes
+  unready pods automatically.
+- **Datacenter power (2N / 2N+1)** — redundant UPS and generator paths so the facility
+  survives a power-path failure during maintenance; the canonical use of full redundancy.
+- **The classic "replica isn't a backup" outages** — GitLab's 2017 incident (a replica
+  was the only "backup," and several backup methods were silently broken) is the industry's
+  standing lesson that **untested backups + replication-as-backup = data loss**.
+
+## Further reading
+
+- [AWS Well-Architected — Reliability Pillar (failure management, RTO/RPO)](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/welcome.html) — disaster-recovery strategies mapped to RTO/RPO and cost.
+- [AWS — Disaster recovery options in the cloud (backup/restore → pilot light → warm standby → multi-site)](https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-options-in-the-cloud.html) — the standard DR spectrum and what each buys.
+- [Google SRE Workbook — Data Processing & Recovery; on testing restores](https://sre.google/workbook/) — why a backup you haven't restored is not a backup.
+- [GitLab.com Database Incident (2017) postmortem](https://about.gitlab.com/blog/postmortem-of-database-outage-of-january-31/) — the canonical case study in backups vs replication and untested restores.

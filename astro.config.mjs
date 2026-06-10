@@ -120,6 +120,17 @@ export default defineConfig({
             { label: 'Scaling the data tier', slug: 'scalability/scaling-the-data-tier' },
           ],
         },
+        {
+          label: 'Reliability & Resilience',
+          items: [
+            { label: 'Overview', slug: 'reliability' },
+            { label: 'Resilience patterns', slug: 'reliability/resilience-patterns' },
+            { label: 'Redundancy & failover', slug: 'reliability/redundancy-failover' },
+            { label: 'SLOs, SLIs & error budgets', slug: 'reliability/slo-sli-error-budgets' },
+            { label: 'Failure handling', slug: 'reliability/failure-handling' },
+            { label: 'Incident management', slug: 'reliability/incident-management' },
+          ],
+        },
       ],
     }),
   ],
