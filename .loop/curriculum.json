@@ -15,7 +15,7 @@
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
   "dry_streak": 0,
-  "round": 15,
+  "round": 16,
   "clusters": [
     {
       "slug": "design-patterns",
@@ -160,8 +160,9 @@
     {
       "slug": "data-engineering",
       "title": "Data Engineering & Pipelines",
-      "status": "uncovered",
-      "tier": "fullstack"
+      "status": "covered",
+      "tier": "fullstack",
+      "pages": 6
     },
     {
       "slug": "ml-systems",
