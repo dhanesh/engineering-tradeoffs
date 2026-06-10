@@ -1,0 +1,219 @@
+---
+title: Test Types
+description: Unit, integration, end-to-end, contract, smoke, and regression tests — what each catches, what each misses, the pyramid proportions, where test boundaries fall, and why the ice-cream-cone shape is an anti-pattern.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+"Test type" is mostly a question of **scope** — how much of the system a single test
+exercises and how realistic the surrounding environment is. A unit test pins one
+function in isolation; an end-to-end test drives the whole product as a user would.
+The wider the scope, the more real bugs a passing test rules out, but the slower,
+flakier, and vaguer the failure becomes. Picking the right type for a given risk is
+the core skill: you want the **narrowest test that still exercises the bug class you
+care about**. This page defines each type by what it actually catches and misses, so
+you can place each test deliberately rather than by habit.
+
+## Mental model
+
+Every test type answers a different question, and they are not interchangeable:
+
+- **Unit:** "Is this piece of logic correct?" — does one cohesive unit behave per its
+  contract, in isolation?
+- **Integration:** "Do these pieces fit together?" — does my code talk correctly to a
+  collaborator (a database, a queue, another module), with the wiring and
+  serialization real?
+- **End-to-end:** "Does the whole system do the job?" — does a real user journey work
+  across all the moving parts?
+- **Contract:** "Do two services still agree on the interface?" — without standing up
+  both at once.
+- **Smoke:** "Is it even alive?" — does the basic happy path respond at all?
+- **Regression:** "Did the bug we already fixed stay fixed?" — a test pinned to a
+  specific past defect.
+
+The crucial move is **drawing the test boundary**: everything inside the boundary is
+exercised for real; everything outside is replaced by a double or a real dependency.
+A unit test draws a tight boundary around one object; an integration test widens it to
+include a real database; an e2e test removes the boundary almost entirely. Most
+arguments about "is this a unit or integration test?" are really arguments about where
+the boundary sits — and the answer that matters is what is *real* versus *faked*.
+
+## Types / Variants
+
+**Unit test.** Smallest scope: one function/class/module, collaborators replaced by
+doubles, runs in milliseconds with no I/O. *Catches:* logic errors, edge cases,
+boundary conditions, algorithmic mistakes. *Misses:* anything about how units connect
+— wrong SQL, mismatched serialization, misconfigured wiring, real network behaviour.
+A suite of green units can sit atop a completely broken system.
+
+**Integration test.** Two or more components together, with at least one real
+collaborator (a real database in a container, a real message broker, the real HTTP
+client). *Catches:* schema/SQL bugs, serialization mismatches, transaction behaviour,
+framework wiring, config errors. *Misses:* full cross-service journeys; behaviour
+under real production scale/latency. The trophy's centre of gravity.
+
+**End-to-end (e2e / system / UI) test.** The whole deployed system driven through its
+real entry point (browser, public API). *Catches:* broken user journeys, integration
+across *all* services, environment/config drift. *Misses:* nothing in scope — but at
+the cost of being slow (seconds to minutes), flaky (timing, environment), and vague
+(a red e2e rarely tells you *which* component broke). Keep the set tiny and aimed at
+business-critical paths.
+
+**Contract test.** Verifies that a provider and a consumer agree on an interface,
+*without* running both together. A **consumer-driven contract** (CDC) records the
+exact requests a consumer makes and the responses it expects; the provider replays
+those expectations in its own pipeline. *Catches:* breaking API changes before they
+reach a consumer. *Misses:* end-to-end behaviour and anything not captured in the
+contract. (Covered in depth in *Testing distributed systems*.)
+
+**Smoke test.** A handful of shallow checks that the system starts and the critical
+happy path responds — "is the build worth testing further?" Run first in a pipeline or
+right after deploy as a gate. *Catches:* catastrophic, obvious breakage (won't boot,
+500 on the home route). *Misses:* essentially all real bugs; it is a tripwire, not a
+safety net.
+
+**Regression test.** Not a scope but an *intent*: a test written to lock in a fix for
+a specific bug so it can never silently return. Can be a unit, integration, or e2e
+test. *Catches:* the exact defect it was born from (and its close cousins). Every
+fixed production bug should leave a regression test behind.
+
+**The pyramid proportions.** A healthy distribution is heavily bottom-weighted:
+roughly **many unit : some integration : few e2e** (often quoted as ~70/20/10, but the
+exact numbers matter far less than the *shape*). Static analysis sits below even the
+units as a free zeroth layer.
+
+**The ice-cream-cone anti-pattern.** The pyramid inverted: a thin sliver of unit
+tests, more integration, and a *bloated* top of slow e2e and manual tests. It emerges
+when lower layers are too hard to write, so people compensate by testing everything
+through the UI. The result is a suite that is slow, chronically flaky, expensive to
+maintain, and gives feedback far too late to be cheap to act on.
+
+## When to use / When NOT
+
+- **Unit — use when:** the logic is rich (rules, calculations, parsing, algorithms)
+  and you want fast, pinpoint feedback on many edge cases. **Avoid when:** the unit is
+  trivial glue with no logic — you would just be testing the mock.
+- **Integration — use when:** the risk lives in the seam (DB queries, queues, external
+  clients, framework wiring); units are thin. **Avoid as your *only* layer when:**
+  rich domain logic deserves cheaper, faster unit coverage of its edge cases.
+- **E2E — use when:** a critical business journey must be guaranteed across the whole
+  system. **Avoid when:** you are using e2e to compensate for untestable lower layers
+  (the ice-cream cone) or to check logic that a unit test could verify faster.
+- **Contract — use when:** independently deployed services must agree on an interface
+  and you cannot or do not want to run full integration across both. **Avoid when:** a
+  single team owns both sides in one repo and a normal integration test is simpler.
+- **Smoke — use when:** you need a fast pre-flight gate in CI/CD or a post-deploy
+  health check. **Avoid as a substitute** for real functional coverage.
+- **Regression — always add one** after fixing a production bug; **avoid** writing
+  brittle regression tests that pin internal details rather than the observed defect.
+
+## Tradeoffs
+
+Scope buys realism and costs speed, stability, and diagnostic precision. The matrix
+makes the trade explicit so you can place each test at the cheapest layer that still
+covers its risk.
+
+<CompareMatrix
+  client:visible
+  caption="Test types by scope, speed, and what they catch"
+  columns={['Unit', 'Integration', 'End-to-end', 'Contract', 'Smoke']}
+  rows={[
+    { criterion: 'Scope', cells: ['One unit, isolated', 'A few real components', 'Whole system', 'One service boundary', 'Shallow happy path'] },
+    { criterion: 'Speed', cells: ['Milliseconds', 'Seconds', 'Seconds–minutes', 'Fast', 'Very fast'] },
+    { criterion: 'Real dependencies', cells: ['None (doubles)', 'Some real (DB, queue)', 'All real', 'None (replayed pact)', 'Minimal'] },
+    { criterion: 'Flakiness risk', cells: ['Very low', 'Low–moderate', 'High', 'Low', 'Low'] },
+    { criterion: 'Failure precision', cells: ['Pinpoint', 'Good', 'Vague', 'Precise to the contract', 'Coarse'] },
+    { criterion: 'Catches', cells: ['Logic & edge cases', 'Wiring, SQL, serialization', 'Full journeys, env drift', 'Breaking API changes', 'Total breakage'] },
+    { criterion: 'Misses', cells: ['All integration bugs', 'Full cross-service flows', 'Which part broke', 'Anything not in contract', 'Almost all real bugs'] },
+    { criterion: 'Pyramid share', cells: ['Many (base)', 'Some (middle)', 'Few (cap)', 'Per service boundary', 'A handful'] },
+  ]}
+/>
+
+## Diagram
+
+A healthy pyramid (left) versus the ice-cream-cone anti-pattern (right): the same
+layers, but the volume is inverted toward slow, flaky tests at the top.
+
+<Mermaid code={`graph TD
+  subgraph Healthy_Pyramid
+    A1[E2E - few] --> A2[Integration - some]
+    A2 --> A3[Unit - many]
+    A3 --> A4[Static analysis]
+  end
+  subgraph Ice_Cream_Cone
+    B1[Manual + E2E - many] --> B2[Integration - some]
+    B2 --> B3[Unit - few]
+  end`} />
+
+## Try it
+
+Start from the bug class you are worried about and let the tree route you to the
+narrowest test type that actually covers it.
+
+<DecisionTree
+  client:visible
+  caption="Which test type fits this risk?"
+  root={{
+    question: 'What kind of failure are you trying to catch?',
+    branches: [
+      {
+        label: 'A logic / calculation / edge-case bug',
+        next: { leaf: { recommendation: 'Unit test', detail: 'Isolate the unit, double its collaborators, enumerate edge cases. Fast, pinpoint, cheap. If the unit is too hard to isolate, that is a design signal — fix the dependencies, do not jump to a slower test.' } },
+      },
+      {
+        label: 'A bug in how my code talks to a DB, queue, or library',
+        next: { leaf: { recommendation: 'Integration test', detail: 'Use a real dependency (a test container or in-memory equivalent) so SQL, serialization, and wiring are exercised for real. Units cannot catch these.' } },
+      },
+      {
+        label: 'Two independently-deployed services disagreeing on an API',
+        next: {
+          question: 'Can you cheaply run both services together in CI?',
+          branches: [
+            { label: 'No — they deploy independently', next: { leaf: { recommendation: 'Consumer-driven contract test', detail: 'The consumer records its expectations as a contract; the provider verifies them in its own pipeline. Catches breaking changes without a shared environment.' } } },
+            { label: 'Yes — one team, one repo', next: { leaf: { recommendation: 'Integration test', detail: 'If running both sides is cheap and you control both, a normal integration test is simpler than maintaining contracts.' } } },
+          ],
+        },
+      },
+      {
+        label: 'A whole critical user journey breaking',
+        next: { leaf: { recommendation: 'End-to-end test (sparingly)', detail: 'Reserve e2e for a small, curated set of business-critical journeys. Accept the slowness and flakiness as the price of whole-system confidence; do not let this set grow into an ice-cream cone.' } },
+      },
+      {
+        label: 'A previously-fixed bug silently returning',
+        next: { leaf: { recommendation: 'Regression test', detail: 'Write a test that reproduces the exact defect, at the cheapest layer that captures it (often a unit test). It locks the fix in permanently.' } },
+      },
+      {
+        label: 'Just "is the deploy alive at all?"',
+        next: { leaf: { recommendation: 'Smoke test', detail: 'A few shallow happy-path checks as a pre-flight or post-deploy gate. A tripwire, not a safety net — pair it with real functional coverage.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google** classifies tests as Small (single process, no I/O — effectively unit),
+  Medium (single machine, may touch localhost services — integration), and Large
+  (multi-machine — e2e), and tunes the proportions toward Small for speed and
+  reliability across the monorepo.
+- **Pact** (and the broader Pactflow ecosystem) is the de-facto tool for
+  consumer-driven contract testing between microservices, letting consumer and
+  provider pipelines verify the interface independently.
+- **Testcontainers** (JVM, Go, Node, Python, …) made real-dependency integration
+  testing mainstream by spinning up disposable Dockerized databases and brokers per
+  test run.
+- **Cypress / Playwright** dominate modern e2e/browser testing; teams that let these
+  suites balloon into the primary safety net are the textbook ice-cream cone — slow
+  CI, flaky runs, and constant maintenance.
+
+## Further reading
+
+- [The Practical Test Pyramid (Ham Vocke)](https://martinfowler.com/articles/practical-test-pyramid.html) — defines the layers and their proportions with concrete examples.
+- [Testing Microservices (Cindy Sridharan)](https://copyconstruct.medium.com/testing-microservices-the-sane-way-9bb31d158c16) — when integration, contract, and e2e tests each pay off in a service world.
+- [TestPyramid (martinfowler.com bliki)](https://martinfowler.com/bliki/TestPyramid.html) — the short canonical definition, including the ice-cream-cone warning.

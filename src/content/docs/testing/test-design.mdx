@@ -1,0 +1,211 @@
+---
+title: Test Design
+description: How to write a good test — AAA / given-when-then structure, the FIRST principles, the test-double taxonomy (dummy, stub, spy, mock, fake), London vs Chicago schools, what to mock and the over-mocking trap, determinism, and fixtures vs builders.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A passing test is not automatically a *good* test. A good test is **readable,
+isolated, deterministic, and coupled to behaviour rather than implementation** — it
+fails for exactly one reason, tells you that reason at a glance, and survives every
+refactor that preserves behaviour. The single biggest lever on test quality is
+**what you replace at the boundary and how**: the discipline of test doubles. Get the
+double taxonomy and the mocking decisions right and your suite stays fast and stable;
+get them wrong and you build a suite that either tests the mocks instead of the code
+or shatters on every internal change. This page is about the craft of an individual
+test.
+
+## Mental model
+
+A test has three jobs, executed in order: **set up a known world, perform one action,
+and assert one outcome.** That is the **Arrange–Act–Assert (AAA)** structure (the same
+shape BDD calls **Given–When–Then**). Keeping these three phases visually distinct is
+the simplest way to make a test readable: a reader should locate the *one* action and
+the *one* assertion instantly. A test that arranges, acts, asserts, acts again, and
+asserts again is really several tests fused together — split it.
+
+The deeper mental model is the **test boundary**. Around the code under test you draw
+a line; collaborators *outside* the line are replaced by **test doubles** — stand-ins
+that let you control inputs and observe outputs. The art of test design is choosing
+*where* to draw that line and *which kind* of double to use at it. Draw the line too
+tight (double everything) and you test interactions, not behaviour; draw it too loose
+(double nothing) and you get slow, flaky, integration-coupled tests. Test doubles are
+the knobs that set that boundary, and using the wrong kind is the most common source
+of brittle suites.
+
+## Types / Variants
+
+**The FIRST principles** — a checklist for a good unit test:
+
+- **Fast** — milliseconds, so the whole suite runs constantly without friction.
+- **Isolated / Independent** — no order dependency, no shared mutable state; each test
+  sets up and tears down its own world.
+- **Repeatable** — same result every run, on any machine, regardless of time, network,
+  or randomness. (This is *determinism*; see below.)
+- **Self-validating** — a clear pass/fail with a real assertion, never "eyeball the
+  log."
+- **Timely / Thorough** — written close to the code (ideally before, per TDD), and
+  covering the meaningful cases.
+
+**The test-double taxonomy** (Gerard Meszaros' precise vocabulary — these words are
+*not* synonyms, and using them loosely causes most "I mocked it" confusion):
+
+- **Dummy** — a value passed only to satisfy a signature; never actually used. (e.g.
+  a `null` or placeholder object handed to a constructor the test does not exercise.)
+- **Stub** — provides **canned answers** to calls. It *feeds* the code under test
+  fixed inputs ("when asked for user 7, return this user"). You assert on the *result*
+  of the code, not on the stub. Used for **state verification**.
+- **Spy** — a stub that *also* **records how it was called** (arguments, call count)
+  so the test can inspect those interactions *after* the fact. Verification is
+  retrospective and selective.
+- **Mock** — a double pre-programmed with **expectations**: it knows in advance which
+  calls it should receive, and the test *fails if those interactions do not happen*.
+  Used for **interaction (behaviour) verification** — you assert on the conversation,
+  not the result.
+- **Fake** — a **working lightweight implementation** with real behaviour, just not
+  production-grade (an in-memory repository, an in-memory SQLite, a hash-map cache).
+  It actually *does the thing*, cheaply.
+
+The decisive distinction: **stub/spy verify state (the outcome); mock verifies
+interaction (the call happened as expected); fake provides real behaviour.** "Mock"
+is widely abused as a catch-all for any double — keep the precise sense when designing
+tests, because *over-using true mocks* (interaction verification on every collaborator)
+is exactly what couples tests to implementation.
+
+**London vs Chicago (Classicist) schools** — two philosophies of *when* to use doubles:
+
+- **London / Mockist / "outside-in":** isolate the unit under test from *all* its
+  collaborators using mocks; verify the **interactions** between objects. Drives design
+  top-down (you discover collaborators by mocking them) and gives pinpoint failures.
+  Risk: tests couple to *how* objects collaborate, so refactors that change the
+  internal conversation break tests even when behaviour is unchanged.
+- **Chicago / Classicist / Detroit / "inside-out":** use **real objects** wherever
+  practical and only double at awkward boundaries (I/O, time, network); verify the
+  **resulting state**. Tests survive internal refactors better and read closer to
+  behaviour. Risk: a single failure can cascade across many tests, and failures are
+  less pinpointed.
+
+In practice most teams blend: classicist by default (real objects, state assertions,
+fakes at I/O boundaries), reaching for mocks/spies only where verifying the
+*interaction itself* is the point (e.g. "we must call the audit log exactly once",
+"we must not hit the payment gateway twice").
+
+**What to mock — and over-mocking.** Mock at **architectural seams you do not own or
+cannot run cheaply**: third-party network calls, the clock, randomness, the
+filesystem, email/SMS gateways. Do **not** mock the types you own and can run for free
+— prefer real objects or fakes. The **over-mocking** failure mode: every collaborator
+replaced by a mock with interaction expectations, so the test becomes a mirror of the
+implementation. Symptom — you cannot refactor the production code without rewriting a
+pile of tests even though behaviour never changed. That is a straitjacket, not a net.
+
+**Determinism.** A test must produce the same verdict every run. The usual enemies are
+**wall-clock time** (inject a clock or freeze time), **randomness** (seed the RNG or
+inject it), **concurrency / ordering** (avoid real sleeps; use deterministic
+scheduling or awaits), **shared state** between tests, and **real network** (double
+it). Non-determinism produces *flaky* tests, which corrode trust in the whole suite —
+see *Testing distributed systems*.
+
+**Fixtures vs builders.** Test data setup has two idioms. A **fixture** is a shared,
+predefined dataset/state used by many tests — concise but can become an opaque
+"mystery guest" (tests depend on fixture details that are not visible in the test). A
+**builder** (a.k.a. Object Mother / test-data builder) constructs objects fluently
+with sensible defaults and only the fields relevant to *this* test made explicit
+(`aUser().withRole("admin").build()`). Builders keep each test self-explanatory and
+resilient to model changes; prefer them as test suites grow.
+
+## When to use / When NOT
+
+- **Use AAA/Given-When-Then structure:** in essentially every test, for readability.
+  **Avoid** multiple act/assert cycles in one test — split into separate cases.
+- **Use a stub:** when the code needs an input you must control (a repository return,
+  an API response) and you assert on the *result*. **Avoid** asserting on the stub's
+  calls — if you need that, you want a spy.
+- **Use a spy:** when you need to *check* that a side-effecting collaborator was called
+  correctly *after* the fact, without pre-declaring strict expectations.
+- **Use a mock:** when the **interaction itself is the behaviour under test** (must
+  send exactly one audit event; must not double-charge). **Avoid** mocking everything
+  — that couples tests to implementation.
+- **Use a fake:** when you want real behaviour cheaply (in-memory DB/repo/cache) and
+  state verification. The best default for owned dependencies.
+- **Lean London (mockist):** for top-down design discovery and pinpoint failures in
+  interaction-heavy code. **Avoid** when refactor-resilience matters more than
+  pinpointing.
+- **Lean Chicago (classicist):** as the everyday default — real objects, state
+  assertions, doubles only at I/O seams. **Avoid** when a collaborator is genuinely
+  expensive or non-deterministic to run.
+- **Use builders over fixtures** as the suite grows and the data model evolves;
+  **avoid** large shared fixtures that hide why a test passes.
+
+## Tradeoffs
+
+The doubles are not ranked best-to-worst — each verifies a different thing and couples
+tests to different concerns. Choosing the right one is the whole game.
+
+<CompareMatrix
+  client:visible
+  caption="Test doubles compared (Meszaros taxonomy)"
+  columns={['Dummy', 'Stub', 'Spy', 'Mock', 'Fake']}
+  rows={[
+    { criterion: 'What it does', cells: ['Fills a parameter slot', 'Returns canned answers', 'Stub + records calls', 'Pre-set call expectations', 'Lightweight real impl'] },
+    { criterion: 'Verifies', cells: ['Nothing', 'State (result)', 'State + selected calls', 'Interaction (the calls)', 'State (real behaviour)'] },
+    { criterion: 'Has real logic?', cells: ['No', 'No', 'No', 'No', 'Yes (simplified)'] },
+    { criterion: 'Fails the test when…', cells: ['Never (just present)', 'Code mishandles input', 'You assert a wrong call', 'Expected call missing/extra', 'Behaviour is wrong'] },
+    { criterion: 'Couples test to', cells: ['Nothing', 'Inputs only', 'Selected interactions', 'Full interaction shape', 'Observable behaviour'] },
+    { criterion: 'Typical use', cells: ['Unused constructor arg', 'Feed a repo/API result', 'Assert audit log called', '"Must send exactly one event"', 'In-memory DB / cache'] },
+    { criterion: 'Refactor resilience', cells: ['High', 'High', 'Medium', 'Low (brittle if overused)', 'High'] },
+  ]}
+/>
+
+## Diagram
+
+Where each double sits relative to the test boundary: stubs feed inputs in, spies and
+mocks observe outputs going out, fakes stand in as a real-but-cheap collaborator.
+
+<Mermaid code={`graph LR
+  T[Test] -->|arrange: canned input| S[Stub]
+  S --> C[Code under test]
+  C -->|side-effect call| SP[Spy / Mock]
+  T -.->|assert interaction| SP
+  C -->|reads / writes| F[Fake - in-memory impl]
+  C -->|act returns result| T2[Assert state]`} />
+
+## Try it
+
+The mockist/classicist choice is not abstract — it changes what breaks when you
+refactor. Walk the three views before reaching for a default.
+
+<WhenWhyTabs
+  client:visible
+  caption="London (mockist) vs Chicago (classicist) test design"
+  tabs={[
+    { label: 'When to use London', content: 'Reach for the mockist style when the interaction between objects IS the behaviour you care about, when you want to design top-down (discovering collaborators by mocking them at each step), or when you need pinpoint failure localisation in a deep call graph. It shines for orchestration-heavy code: "this coordinator must call these services in this way." It also forces small, well-defined interfaces, since every collaborator must be mockable.' },
+    { label: 'When to use Chicago', content: 'Make the classicist style your everyday default: use real objects, assert on resulting state, and only insert doubles at genuine I/O boundaries (clock, network, filesystem, third-party gateways). These tests read like behaviour, survive internal refactors, and rarely test the mock by accident. Use a FAKE (in-memory repo/DB) rather than a mock for owned dependencies so the test exercises real logic cheaply.' },
+    { label: 'Why it matters', content: 'The two schools trade pinpointing against refactor-resilience. Mockist tests fail precisely but couple to HOW objects talk, so they break on refactors that preserve behaviour — the over-mocking straitjacket. Classicist tests couple to outcomes, so they survive refactors but localise failures less sharply and can cascade. Most healthy suites are classicist by default and reach for mocks/spies only where verifying the call itself (audit, no-double-charge, exactly-once side effects) is the actual requirement.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Steve Freeman & Nat Pryce** (*Growing Object-Oriented Software, Guided by Tests*)
+  are the canonical "London school" — outside-in, mock-driven, interaction-verified
+  development.
+- **Kent Beck** (*Test-Driven Development by Example*) embodies the Chicago/classicist
+  style: real objects, state assertions, doubles only where forced.
+- **Gerard Meszaros** (*xUnit Test Patterns*) defined the dummy/stub/spy/mock/fake
+  vocabulary the whole industry now (mostly) uses, plus "mystery guest" and the
+  Object-Mother/builder patterns for test data.
+- **`@testing-library`** is a deliberate classicist tool: it makes asserting on
+  implementation details hard and pushes you toward user-observable state, which is
+  why mockist UI tests there feel like fighting the framework.
+
+## Further reading
+
+- [Mocks Aren't Stubs (Martin Fowler)](https://martinfowler.com/articles/mocksArentStubs.html) — the definitive explanation of the double taxonomy and the London/Chicago split.
+- [Test Double (martinfowler.com bliki)](https://martinfowler.com/bliki/TestDouble.html) — short reference for dummy/stub/spy/mock/fake.
+- [F.I.R.S.T. principles of unit testing](https://github.com/ghsukumar/SFDC_Best_Practices/wiki/F.I.R.S.T-Principles-of-Unit-Testing) — concise checklist for Fast/Isolated/Repeatable/Self-validating/Timely.

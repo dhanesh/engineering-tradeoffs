@@ -1,0 +1,208 @@
+---
+title: TDD, BDD & Beyond
+description: Test-driven development's red-green-refactor loop and its real limits, BDD and specification by example, plus property-based, mutation, and approval/snapshot testing — what each technique buys and when to reach for it.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+The techniques on this page are about *how tests drive development* and *how you
+generate the cases you assert on*. **TDD** uses tests to drive design, one failing
+test at a time. **BDD** reframes tests as shared specifications in domain language so
+non-developers can read them. **Property-based testing** lets a generator invent the
+cases for you. **Mutation testing** tests your tests. **Approval/snapshot testing**
+captures a whole output and alerts on any change. None is a silver bullet; each trades
+effort for a specific kind of confidence, and the skill is matching the technique to
+the problem rather than adopting one as dogma.
+
+## Mental model
+
+**TDD inverts the usual order: you write the test first, watch it fail, then write
+just enough code to pass.** The loop — **red, green, refactor** — uses the test as a
+specification of the next tiny increment of behaviour, and the green bar as a license
+to refactor fearlessly. The point of TDD is *not* primarily the tests it leaves behind;
+it is the **design pressure** it applies. Code written test-first tends to have small
+units, clear dependencies, and seams to inject doubles — because untestable code is
+*painful to write test-first*, you avoid it. The tests are a valuable by-product of a
+design discipline.
+
+The other techniques each automate a different part of "what should I assert?":
+
+- **BDD** moves the *what* up to business language so the spec is the test.
+- **Property-based** asks you to state an *invariant* and lets the machine hunt for
+  counterexamples across thousands of generated inputs.
+- **Mutation** flips the question entirely: instead of "do my tests pass?", it asks
+  "if I deliberately break the code, do my tests *notice*?" — measuring whether your
+  assertions have teeth.
+- **Approval/snapshot** captures a known-good output once and flags any future
+  divergence, trading precise assertions for broad change-detection.
+
+## Types / Variants
+
+**Test-Driven Development (red-green-refactor).** (1) **Red:** write a small failing
+test for the next behaviour. (2) **Green:** write the minimum code to pass — even
+something crude. (3) **Refactor:** clean up with the test holding behaviour steady.
+Repeat in tight cycles. Benefits: emergent testable design, near-100% meaningful
+coverage as a side effect, a regression net built continuously, and clarified
+requirements (you must define "done" before coding). **Limits:** TDD does not design
+your *architecture* — it shapes units, not the system; it struggles when the right
+answer requires exploration/spikes; it can produce over-specified, mock-heavy tests if
+done dogmatically (see *Test design*); and it is awkward for problems where the output
+is hard to assert incrementally (UI layout, ML, rendering) — there, approval testing
+often fits better.
+
+**Behaviour-Driven Development (BDD).** TDD's vocabulary shifted to the **business
+domain**. Scenarios are written **Given–When–Then** in (near-)natural language, often
+with **Gherkin** and tools like Cucumber/SpecFlow, so product owners can read and even
+co-author them. BDD's real value is **collaboration and a shared, executable
+specification**, not the tooling. Risk: the Gherkin layer adds indirection and
+maintenance; if business stakeholders never actually read the scenarios, you have paid
+the cost without the benefit — use plain tests instead.
+
+**Specification by Example.** The discipline underneath BDD: capture requirements as
+concrete, **executable examples** agreed by business and developers, and let those
+examples become living documentation that stays true because CI runs it. The example
+*is* the spec.
+
+**Property-based testing.** Instead of hand-picking example cases, you state a
+**property that must always hold** (e.g. "decode(encode(x)) == x", "the result is
+always sorted", "output length never exceeds input length"), and a framework generates
+hundreds to thousands of random inputs trying to falsify it. On failure it **shrinks**
+the counterexample to a minimal reproducing case. Catches edge cases humans never
+think of (empty, negative, huge, Unicode, boundary). Best for pure logic with clear
+invariants — parsers, serializers, data structures, algorithms. Limits: you must be
+able to *express* a property; some behaviours have no clean invariant.
+
+**Mutation testing.** Measures **how good your tests are**. The tool introduces small
+faults ("mutants") into the production code — flips a `<` to `<=`, negates a
+condition, deletes a statement — and reruns your tests. A mutant **killed** (some test
+fails) is good; a mutant **surviving** means no test noticed that change, exposing a
+weak or missing assertion. The **mutation score** (killed / total) is a far stronger
+quality signal than line coverage, which only proves a line *ran*, not that anything
+*checked* its effect. Cost: slow (many test-suite runs); usually run on critical
+modules or nightly, not on every commit.
+
+**Approval / snapshot testing.** Capture the full output of some operation (a rendered
+component, a serialized object, a generated report) as an approved "golden" artifact;
+later runs **diff against it** and fail on any change, prompting a human to approve or
+reject the new output. Great for large/complex outputs that are tedious to assert
+field-by-field and for locking down legacy behaviour before a refactor. **Danger:**
+*approval blindness* — when snapshots change often, reviewers rubber-stamp updates
+without reading them, and the test silently approves regressions. Keep snapshots small,
+reviewed, and deterministic, or they become noise.
+
+## When to use / When NOT
+
+- **TDD — use when:** building logic with definable increments; you want testable
+  design and a regression net to emerge for free; requirements are clear enough to
+  express as a next failing test. **Avoid / adapt when:** you are exploring an unknown
+  design (spike first, then TDD), the output is hard to assert incrementally, or
+  strict TDD is producing brittle, over-mocked tests.
+- **BDD — use when:** business stakeholders will actually read and shape the scenarios,
+  and shared understanding of behaviour is the bottleneck. **Avoid when:** only
+  developers touch the specs — the Gherkin layer is then pure overhead; write plain
+  tests.
+- **Property-based — use when:** the code has clear invariants (round-trips, ordering,
+  idempotence) and a wide input space where humans miss edge cases. **Avoid when:**
+  behaviour is example-specific with no expressible property.
+- **Mutation — use when:** you need to *trust* a suite on a critical module, or to find
+  assertion-free "coverage theatre." **Avoid running on everything every commit** —
+  it is too slow; target hot spots and nightly runs.
+- **Approval/snapshot — use when:** the output is large/complex (UI, reports,
+  serialized trees) or you must pin legacy behaviour before refactoring. **Avoid when:**
+  snapshots churn so often that reviews become rubber-stamps, or when a precise,
+  intent-revealing assertion would be clearer.
+
+## Tradeoffs
+
+| Technique | Buys you | Main cost / risk | Sweet spot |
+| --------- | -------- | ---------------- | ---------- |
+| TDD | Testable design + regression net, for free | Discipline; can over-specify if dogmatic | Logic with clear increments |
+| BDD | Shared, readable, executable spec | Gherkin indirection; wasted if business never reads it | Cross-functional requirement clarity |
+| Property-based | Machine-found edge cases | Must express an invariant | Parsers, codecs, data structures, algorithms |
+| Mutation | Proof your tests actually assert | Slow (many suite runs) | Critical modules; auditing a suite |
+| Approval / snapshot | Cheap capture of large outputs | Approval blindness; brittle snapshots | UI, reports, legacy pinning |
+
+## Diagram
+
+The TDD loop: a failing test gates new code, a passing test gates refactoring, and the
+cycle repeats in small increments.
+
+<Mermaid code={`graph LR
+  R[Red - write a failing test] --> G[Green - minimum code to pass]
+  G --> RF[Refactor - clean up, stay green]
+  RF --> R
+  RF -->|behaviour complete| D[Done]`} />
+
+## Try it
+
+Each technique answers a different question. Read what each is *for* before choosing,
+then let the tree point you to the right one for your situation.
+
+<WhenWhyTabs
+  client:visible
+  caption="Which discipline answers your question?"
+  tabs={[
+    { label: 'TDD / BDD', content: 'Use these when the question is "how do I drive the design and lock in requirements as I build?" TDD applies design pressure unit by unit and leaves a regression net behind; BDD lifts that into business language so stakeholders share one executable spec. Choose BDD over plain TDD only when non-developers will genuinely read or co-author the scenarios — otherwise the Gherkin layer is cost without payoff.' },
+    { label: 'Property-based', content: 'Use when the question is "what inputs have I NOT thought of?" State an invariant the code must always satisfy (round-trip equality, sortedness, idempotence) and let the generator hunt thousands of inputs for a counterexample, then shrink it to a minimal failing case. Ideal for parsers, codecs, and data structures; useless where behaviour has no expressible property.' },
+    { label: 'Mutation', content: 'Use when the question is "are my tests actually checking anything, or just running the code?" Mutation testing deliberately breaks the production code and verifies a test fails. A surviving mutant is a hole in your assertions that line coverage would never reveal. Run it on critical modules or nightly because it is slow — but trust its score far more than a coverage percentage.' },
+    { label: 'Approval / snapshot', content: 'Use when the question is "did this large output change unexpectedly?" Capture a golden output once and diff future runs against it — perfect for UI trees, generated reports, or pinning legacy behaviour before a refactor. Guard against approval blindness: keep snapshots small and deterministic, and actually read the diff before approving, or it silently waves regressions through.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Pick a testing discipline"
+  root={{
+    question: 'What are you mainly trying to achieve right now?',
+    branches: [
+      {
+        label: 'Drive design and build a regression net as I code',
+        next: {
+          question: 'Will non-developers read or co-author the specs?',
+          branches: [
+            { label: 'Yes — shared business spec matters', next: { leaf: { recommendation: 'BDD / Specification by Example', detail: 'Write Given-When-Then scenarios in domain language so business and developers agree on behaviour, and let CI keep them honest. Only worth the Gherkin overhead if stakeholders genuinely engage.' } } },
+            { label: 'No — just developers', next: { leaf: { recommendation: 'Plain TDD (red-green-refactor)', detail: 'Drive units test-first for testable design and a free regression net. Skip the Gherkin layer; it would be pure indirection.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Find edge cases I would never enumerate by hand',
+        next: { leaf: { recommendation: 'Property-based testing', detail: 'Express an invariant (round-trip, ordering, idempotence) and let the framework generate and shrink counterexamples. Best for parsers, codecs, algorithms, and data structures with clear properties.' } },
+      },
+      {
+        label: 'Find out whether my existing tests actually assert anything',
+        next: { leaf: { recommendation: 'Mutation testing', detail: 'Run a mutation tool on the critical modules: surviving mutants reveal assertions with no teeth that coverage hides. Slow, so target hot spots or nightly runs.' } },
+      },
+      {
+        label: 'Lock down a big/complex output or legacy behaviour',
+        next: { leaf: { recommendation: 'Approval / snapshot testing', detail: 'Capture a golden output and diff against it. Great before refactoring legacy code. Keep snapshots small and deterministic, and read every diff to avoid approval blindness.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Kent Beck** rediscovered and named TDD; his *Test-Driven Development by Example*
+  is the canonical red-green-refactor text.
+- **Dan North** coined BDD to fix the "where do I start, what to call the test"
+  problems of TDD; **Gojko Adzic**'s *Specification by Example* documents teams using
+  executable examples as living documentation.
+- **QuickCheck** (Haskell) originated property-based testing; **Hypothesis** (Python),
+  **fast-check** (JS/TS), and **jqwik** (JVM) brought it mainstream, all with
+  shrinking.
+- **Stryker** (JS/.NET) and **PIT** (JVM) are widely used mutation-testing tools;
+  **Jest** popularised snapshot testing, and the *approval blindness* failure mode it
+  enables is a frequently-cited caution.
+
+## Further reading
+
+- [Test Driven Development (martinfowler.com)](https://martinfowler.com/bliki/TestDrivenDevelopment.html) — concise definition plus the design-pressure rationale and limits.
+- [Introducing BDD (Dan North)](https://dannorth.net/introducing-bdd/) — the origin story and the Given-When-Then framing.
+- [What is Property Based Testing? (Hypothesis / hillelwayne)](https://hypothesis.works/articles/what-is-property-based-testing/) — clear intro to invariants, generation, and shrinking.

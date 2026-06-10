@@ -1,0 +1,195 @@
+---
+title: Quality Practices
+description: The team practices that produce quality beyond tests — code review, static analysis, linting and type checking, CI gates, what coverage and mutation score actually mean, managing tech debt, and a concrete Definition of Done.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+Tests are necessary but not sufficient. Quality is a **team property** produced by a
+*system* of practices: humans reviewing each other's changes, machines enforcing
+standards that never tire, gates that block bad changes before they merge, and a
+shared, explicit agreement about what "done" means. The aim is to move defect
+detection **as early and as automatically as possible** — a linter catches in
+milliseconds what a code reviewer would spend minutes on, freeing the reviewer for the
+judgement only a human can make. This page covers the practices that surround and
+reinforce testing, and how to read the metrics (coverage, mutation score) without
+fooling yourself.
+
+## Mental model
+
+Picture quality as a series of **filters of increasing cost and decreasing
+frequency**, each catching what the previous one cannot:
+
+1. **Type checker / linter** — instant, runs as you type, catches whole *classes* of
+   error mechanically (null refs, wrong shapes, unused code, style).
+2. **Automated tests** — fast, catch behaviour regressions (the rest of this cluster).
+3. **CI gates** — enforce that the above actually ran and passed before code can
+   merge; the machine, not goodwill, is the gatekeeper.
+4. **Code review** — the expensive human filter, reserved for what machines *cannot*
+   judge: design, naming, intent, maintainability, security reasoning, "is this the
+   right change at all?"
+
+The governing principle: **never spend a human on what a machine can check.** Every
+style nit a linter auto-fixes is a review comment that never has to be written, so
+reviewers spend their scarce attention on design and correctness. Quality degrades
+when this ordering inverts — when reviews argue about formatting, or when gates are
+advisory and routinely bypassed.
+
+## Types / Variants
+
+**Code review.** A second person reads a change before it merges. Its real value is
+**design and knowledge-sharing**, not bug-hunting (machines find more bugs, faster).
+Effective review: small PRs (large ones get rubber-stamped), fast turnaround (a
+blocked author is an idle author), reviewing *behaviour and design* not style (let the
+linter own style), and a kind, specific, blocking-vs-nit-distinguished tone. Practices
+range from asynchronous PR review to **pair programming** (continuous review) and
+**mob programming**.
+
+**Static analysis / linting / type checking.** Machine inspection of code *without
+running it*:
+
+- **Linters** flag style violations, bug-prone patterns, and anti-patterns (ESLint,
+  Ruff, Clippy, golangci-lint); auto-fixers remove the human from the loop entirely.
+- **Type checkers** (TypeScript, mypy/pyright, the compiler in typed languages)
+  eliminate an entire bug class — passing the wrong shape — before any test runs. In
+  the testing trophy this is the wide base layer.
+- **Deep static analysis / SAST** (SonarQube, CodeQL, Semgrep) finds security flaws,
+  resource leaks, and complexity hot spots across the codebase.
+
+**CI gates.** The continuous-integration pipeline runs the build, tests, linters, type
+checks, and analysis on every change, and **blocks the merge** if any fails. Gates
+turn "we should run the tests" into "you *cannot* merge with red tests." Tuning is a
+balance: too strict/slow and developers route around them or context-switch waiting;
+too lax and bad changes leak through. Keep gates fast (parallelise, cache) and make the
+*required* set small but non-negotiable.
+
+**Coverage — and what it really means.** Line/branch coverage measures **what code was
+executed** by the tests — nothing more. It is a reliable detector of the *untested*
+(low coverage = definite blind spots) but a **useless proof of quality** (100% coverage
+with assertion-free tests verifies nothing). Treating coverage as a target invokes
+**Goodhart's law**: people write tests that execute lines without checking outcomes to
+hit the number. Use it as a flashlight for gaps, set a sane floor (not 100%), and never
+mistake the number for confidence.
+
+**Mutation score — a stronger signal.** As covered in *TDD & beyond*, mutation testing
+breaks the production code and checks whether tests *notice*. The mutation score
+(killed mutants / total) measures **whether your assertions have teeth** — it catches
+exactly the "covered but not checked" gap that coverage hides. Slower, so run it on
+critical modules or nightly, but trust it far more than coverage as a quality metric.
+
+**Tech debt.** The implied future cost of choosing an easy-now solution over a
+better-but-slower one. Some debt is *deliberate and prudent* (ship now, refactor after
+the deadline); some is *reckless* (sloppiness with no plan). The danger is **invisible,
+compounding** debt that silently slows every future change. Manage it by making it
+**visible** (track it, name it in reviews), paying it down continuously (the
+"boy-scout rule": leave code cleaner than you found it), and budgeting refactoring
+rather than waiting for a mythical "rewrite later."
+
+**Definition of Done (DoD).** A team's *explicit, shared* checklist for when work is
+truly complete — not "code written" but, typically: code reviewed and approved; tests
+written and passing in CI; linters/type checks green; docs updated; meets acceptance
+criteria; deployed or deployable; observability/alerts in place where relevant. A
+written DoD prevents the silent erosion where "done" quietly means "works on my
+machine," and makes quality a *defined gate* rather than individual discretion.
+
+**Quality as a team practice.** None of the above works as an individual heroic effort.
+Quality is sustained by *shared ownership* — agreed standards, gates that apply to
+everyone equally (including the senior engineer in a hurry), blameless handling of
+escaped defects (fix the process, not the person), and treating the test suite and
+tooling as first-class, maintained assets rather than an afterthought.
+
+## When to use / When NOT
+
+- **Code review — use for:** every non-trivial change, focused on design, correctness,
+  security, and maintainability. **Avoid wasting it on:** style and formatting (automate
+  those) or rubber-stamping giant PRs (split them).
+- **Linting / type checking — use everywhere, always:** they are the cheapest filter
+  and run them in the editor *and* in CI. **Avoid:** noisy rule sets nobody respects —
+  curate to high-signal rules and auto-fix the rest.
+- **Deep static analysis (SAST) — use when:** security and large-codebase health
+  matter (most production systems). **Avoid** drowning the team in low-severity
+  findings — triage and gate only on real severity.
+- **CI gates — use to enforce** the build, tests, and lint/type checks as
+  non-negotiable merge blockers. **Avoid** making them so slow or flaky that people
+  bypass them — that destroys the gate's authority.
+- **Coverage — use as** a gap-finder with a modest floor. **Avoid** chasing 100% or
+  treating the number as a quality goal (Goodhart's law).
+- **Mutation score — use on** critical modules or nightly to verify assertion quality.
+  **Avoid** running it on everything every commit (too slow).
+- **Definition of Done — use to** make "done" an explicit, enforced gate. **Avoid**
+  leaving it implicit, where it silently erodes.
+
+## Tradeoffs
+
+Each filter trades cost against the kind of defect it catches and how early. The matrix
+shows where each one earns its keep and where it does not.
+
+<CompareMatrix
+  client:visible
+  caption="Quality filters compared"
+  columns={['Lint / Types', 'Static analysis (SAST)', 'Code review', 'CI gates', 'Coverage', 'Mutation score']}
+  rows={[
+    { criterion: 'Runs', cells: ['As you type', 'On commit / nightly', 'Per PR (human)', 'On every change', 'On every test run', 'Critical modules / nightly'] },
+    { criterion: 'Catches', cells: ['Type/style/bug patterns', 'Security, leaks, complexity', 'Design, intent, judgement', 'That checks actually passed', 'What is untested', 'Weak / missing assertions'] },
+    { criterion: 'Cost', cells: ['Near zero', 'Low (automated)', 'High (human time)', 'Low once set up', 'Free (a number)', 'High (slow runs)'] },
+    { criterion: 'False-positive risk', cells: ['Low if curated', 'Moderate (noise)', 'N/A (human)', 'Flaky gates erode trust', 'Misleads as a target', 'Low'] },
+    { criterion: 'Good as a metric/goal?', cells: ['Pass/fail, yes', 'By severity', 'No (qualitative)', 'Pass/fail, yes', 'No — gap-finder only', 'Yes — real signal'] },
+    { criterion: 'Replaces…', cells: ['Style review comments', 'Manual security audit (partly)', 'Nothing — irreplaceable', 'Manual "did you run it?"', 'Nothing', 'False trust from coverage'] },
+  ]}
+/>
+
+## Diagram
+
+The quality pipeline as cascading filters: cheap automated checks run first and often,
+the expensive human filter runs last, and a CI gate enforces the whole chain before
+merge.
+
+<Mermaid code={`graph LR
+  DEV[Change] --> LINT[Lint + type check]
+  LINT --> TEST[Automated tests]
+  TEST --> SAST[Static analysis]
+  SAST --> REVIEW[Code review - human judgement]
+  REVIEW --> GATE{CI gate - all green?}
+  GATE -->|yes| MERGE[Merge / deploy]
+  GATE -->|no| DEV`} />
+
+## Try it
+
+These practices are not interchangeable — each owns a layer. Read what each is *for*
+and why the ordering matters before deciding where to invest.
+
+<WhenWhyTabs
+  client:visible
+  caption="Where each quality practice earns its keep"
+  tabs={[
+    { label: 'Automate first', content: 'Push everything mechanical to the cheapest filter: type checkers and linters catch whole bug classes (null refs, wrong shapes, dead code, style) as you type, for near-zero cost, and auto-fixers remove the human from the loop entirely. Static analysis (SAST) extends this to security and complexity. The rule: never spend a human on what a machine can check — every nit a linter handles is a review comment nobody has to write.' },
+    { label: 'Reserve humans for judgement', content: 'Code review is the expensive filter, so aim it at what machines cannot judge: design, naming, intent, maintainability, security reasoning, and "is this the right change at all?" Keep PRs small and turnaround fast, distinguish blocking issues from nits, and let the linter own style. Its deepest value is knowledge-sharing and design feedback, not bug-hunting — machines find more bugs, faster.' },
+    { label: 'Gate it, then read the metrics honestly', content: 'CI gates turn "we should run the checks" into "you cannot merge red" — make the required set small but non-negotiable, fast, and non-flaky, or people route around it and the gate loses authority. Read metrics with care: coverage only shows what ran (a gap-finder, never a target — Goodhart\'s law), while mutation score shows whether your assertions actually catch a broken change, which is the signal you really want. Wrap it all in an explicit Definition of Done so "done" is a defined gate, not individual discretion, and treat tech debt as visible and continuously paid down.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google** runs mandatory pre-submit review (every change needs a second
+  approver and "readability" certification), backed by heavy automated analysis
+  (Tricorder) — review for judgement, machines for the rest.
+- **SonarQube, CodeQL, and Semgrep** are widely deployed SAST tools; GitHub's
+  CodeQL gates merges on security findings in countless open-source and enterprise
+  repos.
+- **Ruff, ESLint, Clippy, and golangci-lint** are the standard auto-fixing linters
+  in the Python, JS/TS, Rust, and Go ecosystems, run both in-editor and as CI gates.
+- **Scrum / agile teams** formalise a written **Definition of Done** as a core
+  artifact; its absence is a frequently-cited root cause of "done" silently meaning
+  "works on my machine."
+
+## Further reading
+
+- [Google Engineering Practices — Code Review](https://google.github.io/eng-practices/review/) — how a large org does review, what reviewers should and should not focus on.
+- [TechnicalDebt (Martin Fowler) and the Debt Quadrant](https://martinfowler.com/bliki/TechnicalDebt.html) — deliberate vs reckless, prudent vs inadvertent debt.
+- [Test Coverage (martinfowler.com)](https://martinfowler.com/bliki/TestCoverage.html) — why coverage is a gap-finder, not a target, and how chasing it backfires.

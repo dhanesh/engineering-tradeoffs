@@ -1,0 +1,176 @@
+---
+title: Testing & Quality
+description: Why automated tests exist — confidence to change code — and how the test pyramid, the testing trophy, the cost of bugs over time, and coverage-as-a-tool shape a sane testing strategy.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Tests are not about proving code correct — you cannot prove that with examples.
+Tests exist to give you **confidence to change code without fear**. A codebase with
+a good test suite is one you can refactor, upgrade, and extend at speed because the
+suite catches the regressions you would otherwise discover in production. A codebase
+without one calcifies: every change is risky, so changes slow down, so the design
+rots. The real product of testing is not "bug-free software" but **sustained
+velocity over the life of the system**. Everything else in this cluster — test types,
+test design, TDD, contract testing, quality gates — is in service of that one goal,
+and every technique should be judged by how much durable confidence it buys per unit
+of effort and maintenance.
+
+## Mental model
+
+Think of a test suite as a **regression net stretched under a trapeze**. The net does
+not make you a better acrobat and it does not catch every fall, but it changes how
+boldly you are willing to move. The denser and stronger the net, the more aggressive
+a refactor you will attempt. The key insight that follows: **a test is only worth its
+weight if it catches a failure you actually care about while rarely crying wolf.**
+A test that breaks every time you rename a private method (a false alarm) costs you
+confidence; a test that never breaks even when behaviour changes (a missed catch)
+gives false confidence. Good tests sit at the sweet spot — sensitive to behaviour
+regressions, insensitive to internal refactors.
+
+Two corollaries flow from this model:
+
+- **Test behaviour, not implementation.** Couple tests to what the code *does* (its
+  observable contract), not how it does it. Implementation-coupled tests turn the net
+  into a straitjacket — every refactor rips it.
+- **Testing is design feedback.** Code that is hard to test is usually hard to *use*:
+  too many dependencies, hidden global state, unclear boundaries. The pain of writing
+  a test is a design smell pointing at the production code, not at the test.
+
+## Types / Variants
+
+The strategy debate is really about **where to put your tests** along the
+speed/realism axis. Two canonical shapes dominate:
+
+- **The Test Pyramid (Mike Cohn).** Many fast, isolated **unit** tests at the base; a
+  moderate band of **integration** tests in the middle; a thin cap of slow, brittle
+  **end-to-end** tests at the top. The shape encodes a cost gradient: pushing test
+  volume down toward the cheap, fast, deterministic base keeps the suite fast and
+  stable. It is the right default for systems with substantial in-process logic.
+- **The Testing Trophy (Kent C. Dodds).** A smaller static-analysis base (types +
+  lint), a *wide* **integration** middle as the centre of gravity, a narrower unit
+  band, and a thin e2e cap. The bet: for component-and-glue codebases (typical
+  front-end and thin-service back-ends), integration tests give the best
+  confidence-per-test because they exercise modules *together* the way users do,
+  catching wiring bugs that isolated unit tests miss.
+- **The anti-pattern: the Ice-Cream Cone.** A few unit tests, some integration, and a
+  *huge* pile of slow manual or e2e tests on top — the pyramid inverted. It is slow,
+  flaky, expensive to maintain, and gives feedback far too late. Most legacy suites
+  drift into this shape by accident.
+
+Neither pyramid nor trophy is universally correct. The pyramid optimises for
+**algorithmic depth**; the trophy optimises for **integration breadth**. Choose by
+where your bugs actually live: rich domain logic favours the pyramid, glue-heavy code
+favours the trophy.
+
+## When to use / When NOT
+
+- **Lean pyramid (unit-heavy) — use when:** the system has substantial pure logic,
+  algorithms, business rules, or calculations; you want the fastest possible feedback
+  loop; correctness depends on many edge cases best enumerated in isolation.
+- **Lean trophy (integration-heavy) — use when:** most bugs are in the *wiring*
+  between modules, serialization, or framework integration; units are thin and
+  mostly delegate; mocking everything would test the mocks rather than the system.
+- **Invest heavily in e2e — use when:** a small number of critical user journeys
+  (checkout, login, payment) must never break and span many systems. Keep this set
+  tiny and ruthlessly curated.
+- **Avoid over-testing when:** the code is trivial (a getter, a config object), the
+  test merely restates the implementation, or the cost of a bug is negligible and
+  easily caught downstream. Not all code earns a test.
+- **Avoid the ice-cream cone always:** if you find yourself adding e2e tests because
+  the lower layers are too hard to test, fix the design — do not pile more slow tests
+  on top.
+
+## Tradeoffs
+
+The choice between strategies is a trade of **speed and stability** against
+**realism and confidence-per-test**. Lower layers are fast, deterministic, and
+pinpoint failures but can miss integration bugs; higher layers exercise the real
+system but are slow, flaky, and give vague failure signals.
+
+<CompareMatrix
+  client:visible
+  caption="Test Pyramid vs Testing Trophy"
+  columns={['Test Pyramid', 'Testing Trophy']}
+  rows={[
+    { criterion: 'Centre of gravity', cells: ['Unit tests (wide base)', 'Integration tests (wide middle)'] },
+    { criterion: 'Static analysis', cells: ['Implicit / not emphasised', 'Explicit base layer (types + lint)'] },
+    { criterion: 'Optimises for', cells: ['Algorithmic / domain depth', 'Integration & wiring breadth'] },
+    { criterion: 'Feedback speed', cells: ['Fastest (most tests in-process)', 'Fast, but heavier middle'] },
+    { criterion: 'Confidence per test', cells: ['Lower (isolated units)', 'Higher (modules exercised together)'] },
+    { criterion: 'Best fit', cells: ['Rich business logic, libraries, engines', 'Front-ends, glue-heavy services'] },
+    { criterion: 'Main risk', cells: ['Green units, broken wiring', 'Slower suite, more setup per test'] },
+  ]}
+/>
+
+## Diagram
+
+The two shapes, side by side. Volume flows downward in the pyramid (cheap, fast at
+the base); the trophy widens the integration band and adds an explicit static layer.
+
+<Mermaid code={`graph TD
+  subgraph Pyramid
+    E2E1[E2E - few] --> INT1[Integration - some]
+    INT1 --> UNIT1[Unit - many]
+  end
+  subgraph Trophy
+    E2E2[E2E - few] --> INT2[Integration - most]
+    INT2 --> UNIT2[Unit - some]
+    UNIT2 --> STAT2[Static analysis - types and lint]
+  end`} />
+
+## Try it
+
+Cost of a bug climbs steeply the later it is caught — that gradient is the entire
+economic argument for automated testing. Slide from the cheapest catch point to the
+most expensive.
+
+<TradeoffSlider
+  client:visible
+  caption="Where a bug is caught ↔ what it costs to fix"
+  leftAxis="Caught early (cheap)"
+  rightAxis="Caught late (expensive)"
+  stops={[
+    { label: 'Type checker / lint', description: 'Caught as you type, before the code even runs. Cost: seconds. The cheapest possible feedback — a whole class of bugs (typos, null refs, wrong shapes) never reaches a test.' },
+    { label: 'Unit test', description: 'Caught in milliseconds on save or in CI. Pinpoints the exact function. Cost: minutes of your attention while context is still fresh.' },
+    { label: 'Integration test', description: 'Caught in CI when modules are wired together. Catches contract and serialization bugs units miss. Cost: a slower suite, but still pre-merge.' },
+    { label: 'E2E / staging', description: 'Caught in a full environment before release. Realistic but slow and sometimes flaky; failure points are vaguer. Cost: a debugging session and a delayed deploy.' },
+    { label: 'Production', description: 'Caught by users or on-call. Now it costs an incident, a rollback, possibly data corruption and lost trust — orders of magnitude more than catching it at the type checker.' },
+  ]}
+/>
+
+A note on **coverage**: line/branch coverage is a *tool, not a goal*. It reliably
+tells you what is **definitely untested** (a 30%-covered module has obvious holes),
+but a high number proves nothing — code can be 100% covered with assertions that
+never check anything. Chase confidence; let coverage be a flashlight for blind spots,
+never a target you optimise. (Goodhart's law: the moment coverage becomes the target,
+it stops measuring quality and starts measuring test-writers gaming the metric.)
+
+## Real-world examples
+
+- **Google** popularised the "Small / Medium / Large" test taxonomy (a pyramid by
+  another name) and enforces it at scale across a monorepo; their *Testing on the
+  Toilet* and the book *Software Engineering at Google* codify "test behaviour, not
+  implementation."
+- **Kent C. Dodds** introduced the Testing Trophy and the `@testing-library` family,
+  which deliberately makes implementation-coupled tests *hard* to write, steering
+  developers toward user-facing assertions.
+- **Microsoft / Nagappan et al.** published industry studies showing teams that
+  adopted disciplined testing (including TDD) cut defect density 40–90% for a modest
+  increase in initial development time — the empirical backbone of the cost-of-bugs
+  curve.
+- **NASA / safety-critical software** sits at the extreme end of the cost curve: a
+  production bug can be unrecoverable, which justifies testing investment that would
+  be wildly uneconomical for a typical web app.
+
+## Further reading
+
+- [The Practical Test Pyramid (Ham Vocke, martinfowler.com)](https://martinfowler.com/articles/practical-test-pyramid.html) — the canonical modern treatment of the pyramid and its layers.
+- [Write tests. Not too many. Mostly integration. (Kent C. Dodds)](https://kentcdodds.com/blog/write-tests) — the testing-trophy argument in one essay.
+- [Software Engineering at Google — Testing chapters](https://abseil.io/resources/swe-book/html/ch11.html) — how a large org structures testing and why it favours behaviour over implementation.

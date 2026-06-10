@@ -1,0 +1,239 @@
+---
+title: Testing Distributed Systems
+description: Testing async and concurrent code, consumer-driven contract testing (Pact) vs integration tests, test containers, the causes and cures of flaky tests, chaos and fault injection, testing in production (canary and shadow), and deterministic simulation.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Distributed systems break the comfortable assumptions of unit testing: calls are
+**asynchronous**, components fail **partially and independently**, the network is
+**unreliable and reordering**, and you can rarely stand up the whole system
+faithfully. The hard problems shift from "is this function correct?" to "do these
+services still agree on their interface?", "does the system survive a dependency
+falling over?", and "why does this test pass nine times and fail the tenth?" This page
+covers the techniques built specifically for those problems: contract testing,
+realistic dependencies via containers, conquering flakiness, fault injection, testing
+in production, and deterministic simulation.
+
+## Mental model
+
+You cannot test a distributed system the way you test a function, because **you cannot
+reproduce the whole environment and its failure modes in a single deterministic run.**
+Three coping strategies follow, and a mature programme uses all three:
+
+- **Shrink the question.** Instead of "do all services work together?", verify each
+  *boundary* in isolation — the **contract** between a consumer and a provider — so
+  each team tests its side independently without a shared mega-environment.
+- **Make the untestable deterministic.** Replace real time, randomness, network, and
+  thread scheduling with controllable substitutes so async/concurrent behaviour
+  becomes repeatable (the extreme form is **deterministic simulation**).
+- **Test where the truth lives.** Some failures (real traffic patterns, real
+  dependency latency, emergent overload) only appear in production, so you
+  deliberately and safely test *there* — canaries, shadow traffic, chaos experiments.
+
+The throughline: trade the impossible goal of "fully reproduce production" for
+**controlled slices of realism**, each cheap and deterministic enough to run, that
+together cover the failure space.
+
+## Types / Variants
+
+**Testing async / concurrent code.** The enemy is non-determinism. Techniques:
+**inject the clock** so timeouts/retries are advanced explicitly instead of slept on;
+**await conditions, never sleep** (polling with a deadline, not `sleep(2)`); make
+units deterministic by passing in schedulers/executors; use **synchronization points**
+(latches, barriers) to coordinate; and where ordering is the bug, prefer
+**deterministic schedulers** over hoping the race shows up. Real `sleep` calls and
+"run it and see" assertions are the leading cause of flaky concurrency tests.
+
+**Integration vs contract testing for services.** An **integration test** stands up
+your service plus a *real* dependency (often via a container) and exercises the
+boundary for real — high fidelity, but you need the dependency running and it couples
+your pipeline to it. A **consumer-driven contract (CDC)** test decouples the two:
+
+- The **consumer** writes a test against a *mock provider*; the framework records the
+  exact requests it makes and responses it expects into a **contract (pact)**.
+- The **provider** later replays that contract against its real implementation in its
+  *own* pipeline; if it can no longer satisfy a recorded expectation, the build fails
+  — catching a breaking change **before** it reaches the consumer.
+
+CDC's power is that the two services are **never run together**, yet both are
+protected, and *the consumer's real needs drive the contract* (not a provider's guess
+at what consumers use). It catches interface-shape breakage; it does **not** verify
+end-to-end behaviour, performance, or anything outside the recorded interactions —
+pair it with a thin layer of true e2e for critical journeys. **Pact** is the standard
+tool; a **broker** (e.g. Pactflow) shares contracts and gates deploys via
+"can-i-deploy" checks.
+
+**Test containers.** Libraries (Testcontainers and kin) spin up **disposable, real
+dependencies in Docker** — Postgres, Kafka, Redis, even cloud emulators — per test
+run, then tear them down. They make integration tests *realistic* (the real SQL
+dialect, the real broker semantics) without a shared, drifting staging database.
+Trade-off: slower than in-memory fakes and needs Docker available in CI.
+
+**Flaky tests — causes and fixes.** A flaky test passes and fails without code
+changes; it is corrosive because it trains the team to ignore red. Common causes and
+their fixes:
+
+- **Real time / sleeps** → inject a clock; await conditions with deadlines.
+- **Test order / shared state** → isolate state; randomise order to *surface* the
+  coupling, then fix it.
+- **Async races / missing awaits** → await the actual completion signal, not a timer.
+- **Real network / external services** → stub them or use a container you control.
+- **Non-deterministic data** (random IDs, map iteration order, locale, timezone) →
+  seed/freeze/sort; pin TZ and locale.
+- **Resource leaks / port conflicts** between tests → clean up; allocate fresh ports.
+
+The discipline: **quarantine** a flaky test immediately (so it stops eroding trust),
+then **fix or delete** it — never leave a known-flaky test gating the pipeline, and
+never paper over it with a blind retry, which just hides a real race.
+
+**Chaos engineering / fault injection.** Deliberately inject failures — kill
+instances, add latency, drop packets, exhaust CPU/disk, partition the network — to
+verify the system degrades gracefully and your resilience patterns (timeouts, retries,
+circuit breakers, fallbacks) actually work. Run as controlled **experiments** with a
+hypothesis and a blast-radius limit, ideally starting in staging and graduating to
+production. It tests the failure paths that normal tests never exercise.
+
+**Testing in production.** Some truths only exist in prod, so test there safely:
+
+- **Canary release:** route a small slice of real traffic to the new version, watch
+  its metrics, and roll back automatically if they regress before exposing everyone.
+- **Shadow / mirror traffic (dark launch):** duplicate real production requests to the
+  new version *without* using its responses — compare behaviour against the live
+  system with zero user impact.
+- Both rely on strong **observability** (you must detect the regression) and
+  feature-flag/traffic-routing infrastructure.
+
+**Deterministic simulation testing (DST).** The most powerful technique for distributed
+correctness: run the *entire* system on a simulated, **deterministic** runtime where
+time, the network, message ordering, scheduling, and faults are all controlled by a
+single seed. The simulator injects partitions, reorderings, crashes, and clock skew,
+and because everything is deterministic, **any failure replays exactly from its seed**.
+It explores enormous failure spaces reproducibly — but requires building the system
+against an abstracted runtime from the start, so it is a heavy architectural
+commitment.
+
+## When to use / When NOT
+
+- **Contract testing — use when:** services deploy independently and you need to catch
+  breaking interface changes without a shared environment; many consumers depend on
+  one provider. **Avoid when:** one team owns both sides in one repo (a plain
+  integration test is simpler), or you need to verify end-to-end behaviour (contracts
+  don't).
+- **Test containers — use when:** you want realistic integration tests with the *real*
+  database/broker semantics and Docker is available in CI. **Avoid when:** an
+  in-memory fake gives enough fidelity and you need maximum speed, or CI cannot run
+  containers.
+- **Clock/scheduler injection — use whenever** time, timeouts, retries, or thread
+  ordering appear in a test. **Avoid real `sleep`** as a synchronization mechanism,
+  always.
+- **Chaos / fault injection — use when:** the system claims resilience properties you
+  need to *prove* and you can bound the blast radius. **Avoid when:** you have no
+  observability to detect the induced failure, or no rollback — you would just cause an
+  outage.
+- **Canary / shadow — use when:** changes are risky, you have real traffic, strong
+  metrics, and automated rollback/flags. **Avoid when:** you cannot detect a regression
+  quickly or cannot safely isolate the new version's side effects.
+- **Deterministic simulation — use when:** correctness under partition/reorder/crash is
+  critical (databases, consensus, financial ledgers) and you can build against an
+  abstracted runtime. **Avoid when:** the system is not architected for it and the
+  retrofit cost outweighs the benefit.
+
+## Tradeoffs
+
+| Technique | Catches | Cost / requirement | Misses |
+| --------- | ------- | ------------------ | ------ |
+| Integration (containers) | Real wiring, SQL, broker semantics | Docker in CI; slower | Cross-service journeys, scale |
+| Consumer-driven contract | Breaking interface changes, decoupled | Contract + broker upkeep | Behaviour outside the contract; e2e, perf |
+| Clock/scheduler injection | Async/timeout/ordering bugs | Code must accept injected deps | Bugs not driven by time/order |
+| Chaos / fault injection | Resilience-pattern failures | Observability + blast-radius control | Pure logic correctness |
+| Canary / shadow (prod) | Real-traffic-only regressions | Metrics, flags, safe isolation | Anything before deploy |
+| Deterministic simulation | Partition/reorder/crash correctness | Heavy architectural commitment | Real-world perf/hardware quirks |
+
+## Diagram
+
+Consumer-driven contract flow: the consumer's expectations become a contract that the
+provider must satisfy in its own pipeline — the two services are never run together.
+
+<Mermaid code={`graph LR
+  C[Consumer test vs mock provider] -->|records expectations| PACT[Contract / pact]
+  PACT --> B[(Broker)]
+  B --> P[Provider verifies contract in its own pipeline]
+  P -->|all expectations met| OK[Safe to deploy]
+  P -->|expectation broken| FAIL[Build fails - breaking change caught]`} />
+
+## Try it
+
+Start from what you are trying to protect against and let the tree route you to the
+technique built for that failure mode.
+
+<DecisionTree
+  client:visible
+  caption="How should I test this distributed concern?"
+  root={{
+    question: 'What are you trying to verify or protect against?',
+    branches: [
+      {
+        label: 'Two services still agree on their API',
+        next: {
+          question: 'Do the services deploy independently / owned by different teams?',
+          branches: [
+            { label: 'Yes — independent deploys', next: { leaf: { recommendation: 'Consumer-driven contract testing (Pact)', detail: 'Consumer records expectations into a contract; provider verifies it in its own pipeline via a broker. Catches breaking changes before they reach consumers, with the services never run together. Add a thin e2e layer for behaviour.' } } },
+            { label: 'No — one team, one repo', next: { leaf: { recommendation: 'Integration test with a real dependency', detail: 'Use test containers to run the real collaborator. Simpler than maintaining contracts when you control and can cheaply run both sides.' } } },
+          ],
+        },
+      },
+      {
+        label: 'My async / timeout / concurrent code is correct',
+        next: { leaf: { recommendation: 'Inject the clock and scheduler; await, never sleep', detail: 'Make time and ordering controllable so the test is deterministic. Real sleeps and "run and see" assertions are the top cause of flakiness.' } },
+      },
+      {
+        label: 'A test passes and fails without code changes',
+        next: { leaf: { recommendation: 'Quarantine, then root-cause the flake', detail: 'Isolate it immediately so it stops eroding trust, then fix the cause (real time, shared state, async race, real network, non-deterministic data). Never mask it with a blind retry.' } },
+      },
+      {
+        label: 'The system survives a dependency or node failing',
+        next: { leaf: { recommendation: 'Chaos engineering / fault injection', detail: 'Inject latency, kill nodes, partition the network as bounded experiments to prove timeouts, retries, and circuit breakers work. Requires observability and a rollback path.' } },
+      },
+      {
+        label: 'A risky change behaves under real production traffic',
+        next: {
+          question: 'Can the new version safely run without using its responses?',
+          branches: [
+            { label: 'Yes — mirror traffic, ignore its output', next: { leaf: { recommendation: 'Shadow / mirror traffic', detail: 'Duplicate real requests to the new version and compare behaviour against live, with zero user impact. Needs strong observability to spot divergence.' } } },
+            { label: 'No — it must actually serve users', next: { leaf: { recommendation: 'Canary release', detail: 'Route a small slice of real traffic to the new version, watch its metrics, and auto-roll-back on regression before exposing everyone.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Correctness under partitions, reordering, and crashes',
+        next: { leaf: { recommendation: 'Deterministic simulation testing', detail: 'Run the whole system on a seeded deterministic runtime that injects faults reproducibly, so every failure replays exactly. Powerful but requires building against an abstracted runtime from the start.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Pact / Pactflow** is the de-facto consumer-driven contract ecosystem; the
+  "can-i-deploy" broker check gates deploys on contract compatibility across many
+  services.
+- **Netflix** pioneered chaos engineering with **Chaos Monkey** and the Simian Army,
+  later **ChAP** for controlled production experiments; the practice is now codified in
+  tools like Gremlin and LitmusChaos.
+- **FoundationDB** built its reputation on **deterministic simulation testing** —
+  running the database in a simulated network/clock and injecting faults by seed; the
+  approach inspired **Antithesis** and **TigerBeetle**'s simulator.
+- **Testcontainers** is the standard for container-backed integration tests across the
+  JVM, Go, Node, Python, and .NET ecosystems.
+
+## Further reading
+
+- [Pact — consumer-driven contract testing](https://docs.pact.io/) — how consumer and provider verify a contract independently, with the broker and can-i-deploy.
+- [Principles of Chaos Engineering](https://principlesofchaos.org/) — the hypothesis-driven, blast-radius-bounded definition of chaos experiments.
+- [Testing Distributed Systems (Caitie McCaffrey, curated list)](https://asatarin.github.io/testing-distributed-systems/) — a deep reading list covering deterministic simulation, fault injection, and verification.

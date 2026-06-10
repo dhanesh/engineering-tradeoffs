@@ -186,6 +186,17 @@ export default defineConfig({
             { label: 'Runtime & memory management', slug: 'systems-fundamentals/runtime-memory' },
           ],
         },
+        {
+          label: 'Testing & Quality',
+          items: [
+            { label: 'Overview', slug: 'testing' },
+            { label: 'Test types', slug: 'testing/test-types' },
+            { label: 'Test design', slug: 'testing/test-design' },
+            { label: 'TDD, BDD & beyond', slug: 'testing/tdd-bdd' },
+            { label: 'Testing distributed systems', slug: 'testing/testing-distributed-systems' },
+            { label: 'Quality practices', slug: 'testing/quality-practices' },
+          ],
+        },
       ],
     }),
   ],
