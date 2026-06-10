@@ -12,10 +12,38 @@ export default defineConfig({
       title: 'System Design Primer',
       description:
         'Interactive, decision-oriented system design documentation.',
+      // Bring the active topic into focus in the sidebar on load: scroll the
+      // sidebar's own scroll-pane (never the window) so the current page —
+      // inside its auto-expanded, collapsed group — is centred and visible.
+      head: [
+        {
+          tag: 'script',
+          content: `
+            (function () {
+              function focusActive() {
+                try {
+                  var link = document.querySelector('nav[aria-label="Main"] a[aria-current="page"]');
+                  if (!link) return;
+                  var pane = link.closest('.sidebar-pane');
+                  if (!pane) { link.scrollIntoView({ block: 'center' }); return; }
+                  var lr = link.getBoundingClientRect();
+                  var pr = pane.getBoundingClientRect();
+                  if (lr.top < pr.top || lr.bottom > pr.bottom) {
+                    pane.scrollTop += (lr.top - pr.top) - pane.clientHeight / 2 + link.offsetHeight / 2;
+                  }
+                } catch (e) {}
+              }
+              document.addEventListener('DOMContentLoaded', focusActive);
+              document.addEventListener('astro:page-load', focusActive);
+            })();
+          `,
+        },
+      ],
       // U4 / RT-2: five top-level clusters, fixed order, each with an overview page.
       sidebar: [
         {
           label: 'Design Patterns',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'design-patterns' },
             { label: 'Creational patterns', slug: 'design-patterns/creational-patterns' },
@@ -26,6 +54,7 @@ export default defineConfig({
         },
         {
           label: 'Event-Driven Architecture',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'event-driven' },
             { label: 'Message brokers', slug: 'event-driven/message-brokers' },
@@ -36,6 +65,7 @@ export default defineConfig({
         },
         {
           label: 'Databases & CAP',
+          collapsed: true,
           items: [
             { label: 'CAP theorem', slug: 'databases-cap' },
             { label: 'Consistency models', slug: 'databases-cap/consistency-models' },
@@ -46,6 +76,7 @@ export default defineConfig({
         },
         {
           label: 'Caching & Performance',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'caching' },
             { label: 'Caching strategies', slug: 'caching/caching-strategies' },
@@ -57,6 +88,7 @@ export default defineConfig({
         },
         {
           label: 'Search Indexes',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'search' },
             { label: 'Inverted index', slug: 'search/inverted-index' },
@@ -67,6 +99,7 @@ export default defineConfig({
         },
         {
           label: 'Networking & Protocols',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'networking' },
             { label: 'TCP vs UDP', slug: 'networking/tcp-udp' },
@@ -78,6 +111,7 @@ export default defineConfig({
         },
         {
           label: 'APIs & Service Communication',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'apis' },
             { label: 'REST APIs', slug: 'apis/rest' },
@@ -89,6 +123,7 @@ export default defineConfig({
         },
         {
           label: 'Concurrency & Parallelism',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'concurrency' },
             { label: 'Threads, event loops & async', slug: 'concurrency/threads-async' },
@@ -100,6 +135,7 @@ export default defineConfig({
         },
         {
           label: 'Distributed Systems',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'distributed-systems' },
             { label: 'Consensus', slug: 'distributed-systems/consensus' },
@@ -111,6 +147,7 @@ export default defineConfig({
         },
         {
           label: 'Scalability & System Design',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'scalability' },
             { label: 'Back-of-the-envelope estimation', slug: 'scalability/back-of-envelope' },
@@ -122,6 +159,7 @@ export default defineConfig({
         },
         {
           label: 'Reliability & Resilience',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'reliability' },
             { label: 'Resilience patterns', slug: 'reliability/resilience-patterns' },
@@ -133,6 +171,7 @@ export default defineConfig({
         },
         {
           label: 'Observability',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'observability' },
             { label: 'Metrics', slug: 'observability/metrics' },
@@ -144,6 +183,7 @@ export default defineConfig({
         },
         {
           label: 'Security & Auth',
+          collapsed: true,
           items: [
             { label: 'Security foundations', slug: 'security' },
             { label: 'Authentication', slug: 'security/authentication' },
@@ -155,6 +195,7 @@ export default defineConfig({
         },
         {
           label: 'Software Architecture',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'architecture' },
             { label: 'Monolith to microservices', slug: 'architecture/monolith-microservices' },
@@ -166,6 +207,7 @@ export default defineConfig({
         },
         {
           label: 'Data Structures & Algorithms',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'algorithms' },
             { label: 'Complexity analysis', slug: 'algorithms/complexity' },
@@ -177,6 +219,7 @@ export default defineConfig({
         },
         {
           label: 'OS & Computer Architecture',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'systems-fundamentals' },
             { label: 'Processes, threads & scheduling', slug: 'systems-fundamentals/processes-threads-scheduling' },
@@ -188,6 +231,7 @@ export default defineConfig({
         },
         {
           label: 'Testing & Quality',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'testing' },
             { label: 'Test types', slug: 'testing/test-types' },
@@ -199,6 +243,7 @@ export default defineConfig({
         },
         {
           label: 'Delivery & Operations',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'delivery' },
             { label: 'CI/CD pipelines', slug: 'delivery/ci-cd-pipelines' },
@@ -210,6 +255,7 @@ export default defineConfig({
         },
         {
           label: 'Frontend Fundamentals',
+          collapsed: true,
           items: [
             { label: 'The browser as a platform', slug: 'frontend' },
             { label: 'Rendering strategies', slug: 'frontend/rendering-strategies' },
@@ -221,6 +267,7 @@ export default defineConfig({
         },
         {
           label: 'Mobile Development',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'mobile' },
             { label: 'Native vs cross-platform', slug: 'mobile/native-vs-crossplatform' },
@@ -232,6 +279,7 @@ export default defineConfig({
         },
         {
           label: 'Data Engineering & Pipelines',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'data-engineering' },
             { label: 'Batch vs streaming', slug: 'data-engineering/batch-vs-streaming' },
@@ -243,6 +291,7 @@ export default defineConfig({
         },
         {
           label: 'ML / AI Systems',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'ml-systems' },
             { label: 'The ML lifecycle & data', slug: 'ml-systems/ml-lifecycle-data' },
@@ -254,6 +303,7 @@ export default defineConfig({
         },
         {
           label: 'Programming Language Concepts',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'languages' },
             { label: 'Type systems', slug: 'languages/type-systems' },
@@ -265,6 +315,7 @@ export default defineConfig({
         },
         {
           label: 'Code Quality & Craft',
+          collapsed: true,
           items: [
             { label: 'Overview', slug: 'craft' },
             { label: 'Clean code principles', slug: 'craft/clean-code-principles' },
