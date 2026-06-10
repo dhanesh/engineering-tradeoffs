@@ -3,6 +3,35 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
 
+// Single source of truth for the deploy base path. Used for `base` AND to
+// rewrite in-content absolute links (see rehypeBaseLinks below).
+const BASE = '/engineering-tradeoffs';
+
+// rehype plugin: prefix the deploy base onto absolute, in-content internal links.
+// Markdown/MDX links written as `/cluster/page/` are NOT base-prefixed by Astro,
+// so under a project-page base they 404. This rewrites them at build time, so
+// authors keep writing clean `/cluster/page/` links and they resolve everywhere.
+// Dependency-free walk over the HTML AST (no unist-util-visit needed).
+function rehypeBaseLinks({ base } = {}) {
+  const prefix = (base || '').replace(/\/$/, '');
+  const fix = (node) => {
+    if (
+      node.type === 'element' &&
+      node.tagName === 'a' &&
+      node.properties &&
+      typeof node.properties.href === 'string'
+    ) {
+      const h = node.properties.href;
+      // only internal absolute links not already under the base
+      if (h.startsWith('/') && !h.startsWith('//') && h !== prefix && !h.startsWith(prefix + '/')) {
+        node.properties.href = prefix + h;
+      }
+    }
+    if (node.children) for (const child of node.children) fix(child);
+  };
+  return (tree) => fix(tree);
+}
+
 // Engineering Tradeoffs — Astro + Starlight static docs site (T1, T4).
 // React integration enables interactive islands later (U3 / RT-3).
 export default defineConfig({
@@ -10,7 +39,10 @@ export default defineConfig({
   // `dhanesh/engineering-tradeoffs` publishes to dhanesh.github.io/engineering-tradeoffs/.
   // `base` must match the repo name so internal links/assets resolve.
   site: 'https://dhanesh.github.io',
-  base: '/engineering-tradeoffs',
+  base: BASE,
+  markdown: {
+    rehypePlugins: [[rehypeBaseLinks, { base: BASE }]],
+  },
   integrations: [
     react(),
     starlight({

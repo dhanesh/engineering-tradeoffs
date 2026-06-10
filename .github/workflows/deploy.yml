@@ -30,8 +30,10 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
-      - name: Build
-        run: npm run build
+      # Build AND run all verify gates (incl. internal-link integrity); produces
+      # ./dist. A broken link / failed gate fails the deploy before publishing.
+      - name: Build & verify
+        run: npm run verify
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

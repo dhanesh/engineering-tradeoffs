@@ -61,6 +61,11 @@ jobs:
       - name: Content hygiene
         run: npm run verify:artifacts
 
+      # Every internal link resolves to a built file (base-aware) — catches
+      # broken hrefs, base-path mistakes, typo'd slugs.
+      - name: Internal links
+        run: npm run verify:links
+
       - name: Upload static site
         uses: actions/upload-artifact@v4
         with:
