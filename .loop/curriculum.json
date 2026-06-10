@@ -15,7 +15,7 @@
     "note": "Loop STOPS on whichever trips first: curriculum fully covered + dry_streak>=2, OR max_clusters_absolute reached, OR max_rounds reached. Safe state on any uncertainty = stopped."
   },
   "dry_streak": 0,
-  "round": 13,
+  "round": 14,
   "clusters": [
     {
       "slug": "design-patterns",
@@ -146,8 +146,9 @@
     {
       "slug": "frontend",
       "title": "Frontend Fundamentals",
-      "status": "uncovered",
-      "tier": "fullstack"
+      "status": "covered",
+      "tier": "fullstack",
+      "pages": 6
     },
     {
       "slug": "mobile",
