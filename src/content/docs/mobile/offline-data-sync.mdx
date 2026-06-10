@@ -1,0 +1,200 @@
+---
+title: Offline Data & Sync
+description: Offline-first design — local storage (SQLite/Realm/key-value), caching, the sync problem, conflict resolution (LWW vs CRDT), optimistic UI, background sync, queue and retry, and delta sync.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Because the mobile network is *absent, slow, or expensive* by default, the highest-quality
+apps treat the **local store as the source of truth** and the server as something they
+*sync with*, not something they *depend on per interaction*. This is **offline-first**: the
+UI always reads and writes locally and renders instantly; a background process reconciles
+local and remote state when connectivity allows. The hard part is not storing data locally
+— it is **sync**: two replicas (device and server) diverge while disconnected, and you must
+merge their changes correctly without losing data or showing the user a spinner. Getting
+sync wrong produces the worst class of mobile bugs: silently lost edits and data that
+disagrees between devices.
+
+## Mental model
+
+**Offline-first is distributed-systems engineering in your pocket: the device is a replica
+that diverges from the server and must converge.** Read it through three sub-problems:
+
+- **Local persistence** — every read serves from a local store first (instant, offline-safe);
+  the network only *refreshes* it. The store is the cache *and* the truth.
+- **Write propagation** — every write applies locally and optimistically, then enters an
+  **outbox / sync queue** that durably retries until the server acknowledges it. The UI
+  never blocks on the network.
+- **Convergence** — when device and server have both changed the same data, a
+  **conflict-resolution** rule decides the winner so all replicas converge to the same
+  state. This is the genuinely hard part and the one you must design deliberately.
+
+The mantra: *write local, queue remote, reconcile on connect, resolve conflicts by rule.*
+
+## Types / Variants
+
+**Local storage engines.**
+
+- **SQLite** (via Room on Android, Core Data/GRDB/SQLite.swift on iOS) — the workhorse:
+  relational, queryable, transactional, durable. Best for structured, relational, queryable
+  data. More setup than a blob store.
+- **Realm / object databases** — object-graph stores with live, reactive objects and
+  built-in sync options (e.g. Realm Sync, formerly Atlas Device Sync). Ergonomic for
+  object models and reactive UIs; less standard than SQL, vendor-shaped.
+- **Key-value stores** (UserDefaults/SharedPreferences, MMKV, DataStore) — tiny, fast,
+  for settings, flags, tokens (sensitive values belong in the Keychain/Keystore, not here).
+  Not for large or relational data.
+
+**Caching.** Read-through caching of API responses with TTLs and a stale-while-revalidate
+policy: render the cached value immediately, refresh in the background, swap when fresh.
+Bound it with an eviction policy (see *Eviction policies*) so the store doesn't grow
+unbounded.
+
+**Optimistic UI.** Apply the user's change to local state *immediately* (assume success),
+show it, and reconcile when the server responds — rolling back and surfacing an error only
+on failure. Makes the app feel instant on slow links; requires careful rollback and
+conflict handling.
+
+**Sync strategies.**
+
+- **Full sync** — fetch everything each time. Simple, wasteful; fine for tiny datasets.
+- **Delta sync** — exchange only what changed since a cursor/version/timestamp
+  (`updated_since` or a server change-token). Essential at scale to save battery, bandwidth,
+  and time. Requires server-side change tracking and tombstones for deletes.
+- **Background sync** — reconcile during OS-granted background windows (Android WorkManager,
+  iOS BGTaskScheduler / background fetch), opportunistically on Wi-Fi/charging, and on push
+  wake-ups — never with a tight foreground poll.
+
+**Conflict resolution.**
+
+- **Last-write-wins (LWW)** — the change with the latest timestamp/version wins. Trivial,
+  but *silently discards* the loser's edit and is clock-sensitive. Acceptable when one
+  field's freshness is all that matters (a status, a setting).
+- **Field-level / domain merge** — merge non-overlapping fields, apply domain rules to true
+  conflicts (e.g. sum counters, union sets). More work, far less data loss.
+- **CRDTs (Conflict-free Replicated Data Types)** — data structures (counters, sets,
+  sequences, text) that mathematically *always converge* without coordination, regardless of
+  order. The gold standard for collaborative/concurrent editing; more complex and larger in
+  metadata. (See the *Distributed Systems* cluster — convergence.)
+- **Manual / user-mediated** — surface the conflict and let the user choose. Last resort for
+  high-stakes data where no automatic rule is safe.
+
+## When to use / When NOT
+
+- **Offline-first — use when:** the app must work on flaky/no networks, instant interaction
+  matters, or users create content disconnected (notes, messaging, field/ops apps, transit).
+  **Avoid when:** data is inherently server-authoritative and must never be stale (live
+  prices, balances, payment authorization) — there, read from the server and fail loudly.
+- **LWW — use when:** conflicts are rare and a single latest value is correct; you want
+  simplicity. **Avoid when:** concurrent edits to the same record are common and losing one
+  is unacceptable.
+- **CRDTs — use when:** real-time collaboration or frequent concurrent edits where no edit
+  may be lost (shared docs, multiplayer, offline note merge). **Avoid when:** the data model
+  is simple and the metadata/complexity cost isn't justified.
+- **Optimistic UI — use when:** the operation almost always succeeds and instant feedback
+  matters (likes, sends, edits). **Avoid when:** the action is irreversible or high-stakes
+  (a payment) — confirm with the server first.
+- **Delta sync — use when:** datasets are non-trivial and bandwidth/battery matter (almost
+  always). **Avoid when:** the dataset is tiny and full sync is simpler.
+
+## Tradeoffs
+
+| Choice | Pros | Cons |
+| ------ | ---- | ---- |
+| SQLite/Room | Relational, queryable, transactional, standard | More setup than KV |
+| Realm/object DB | Reactive, ergonomic, built-in sync option | Less standard, vendor-shaped |
+| Key-value | Tiny, fast, trivial | Not relational; not for large/secret data |
+| Optimistic UI | Feels instant offline | Rollback + conflict complexity |
+| LWW | Trivial to implement | Silently loses concurrent edits, clock-sensitive |
+| Field merge | Less data loss | Domain rules per type |
+| CRDT | Always converges, no lost edits | Complexity, metadata size |
+| Full sync | Simple | Wasteful (battery/bandwidth) |
+| Delta sync | Efficient at scale | Needs change tracking + tombstones |
+
+## Diagram
+
+The offline-first write path: local-first, queued, retried, reconciled, conflict-resolved.
+
+<Mermaid code={`sequenceDiagram
+  participant U as User
+  participant App as App (UI + ViewModel)
+  participant L as Local store (SQLite)
+  participant Q as Outbox / sync queue
+  participant S as Server
+  U->>App: edit / create
+  App->>L: write locally (optimistic)
+  App-->>U: render instantly
+  App->>Q: enqueue mutation
+  Note over Q,S: when connectivity returns / background window
+  Q->>S: push mutation (with base version)
+  alt no conflict
+    S-->>Q: ack + new version
+    Q->>L: mark synced
+  else conflict (server changed too)
+    S-->>Q: conflict (server state)
+    Q->>App: resolve by rule (LWW / merge / CRDT)
+    App->>L: write converged state
+  end
+  S-->>App: delta sync (changes since cursor)
+  App->>L: apply remote changes`} />
+
+## Try it
+
+<DecisionTree
+  client:visible
+  caption="How should you handle offline data and conflicts?"
+  root={{
+    question: 'Must the data be server-authoritative and never stale (live balance, price, payment)?',
+    branches: [
+      {
+        label: 'Yes — must be fresh and authoritative',
+        next: { leaf: { recommendation: 'Online read, no optimistic write', detail: 'Read from the server, show a clear offline/error state, and confirm high-stakes writes server-side before showing success. Do not cache as truth or apply optimistically.' } },
+      },
+      {
+        label: 'No — local-first is acceptable',
+        next: {
+          question: 'Do multiple users/devices concurrently edit the SAME records while offline?',
+          branches: [
+            {
+              label: 'Yes — frequent concurrent edits, no edit may be lost',
+              next: {
+                question: 'Is it free-form collaborative content (text, lists, shared docs)?',
+                branches: [
+                  { label: 'Yes — collaborative editing', next: { leaf: { recommendation: 'CRDTs', detail: 'Use convergent data types so all replicas merge to the same state regardless of order, with no lost edits. Accept the metadata/complexity cost.' } } },
+                  { label: 'No — structured records', next: { leaf: { recommendation: 'Field-level / domain merge', detail: 'Merge non-overlapping fields and apply domain rules (sum counters, union sets) to true conflicts. Far less data loss than LWW.' } } },
+                ],
+              },
+            },
+            {
+              label: 'No — conflicts are rare, one latest value is fine',
+              next: { leaf: { recommendation: 'Offline-first + LWW + optimistic UI', detail: 'Local store as truth, optimistic writes, an outbox queue with retry, delta sync, and last-write-wins for the rare conflict. The pragmatic default for single-user offline apps.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Notion, Bear, Apple Notes** apply edits locally and sync in the background; notes are
+  usable and editable fully offline.
+- **WhatsApp / Signal / Telegram** queue messages locally and retry delivery, with
+  per-message state (sent/delivered/read) reconciled when the radio returns.
+- **Figma and collaborative editors** use CRDT/OT-style convergence so concurrent edits
+  merge without lost work.
+- **Google Docs offline and Trello** cache locally and reconcile on reconnect; Realm and
+  Couchbase/PouchDB power many offline-first apps with built-in delta sync and conflict
+  handling.
+
+## Further reading
+
+- [Martin Kleppmann — CRDTs and the quest for distributed consistency](https://www.youtube.com/watch?v=B5NULPSiOGw) — why convergent types beat LWW for concurrent edits.
+- [Android — Offline-first app architecture (WorkManager, sync)](https://developer.android.com/topic/architecture/data-layer/offline-first) — the canonical local-as-truth + background-sync reference.
+- [PouchDB / CouchDB replication & conflicts](https://docs.couchdb.org/en/stable/replication/conflicts.html) — a battle-tested model of bidirectional sync and conflict resolution.

@@ -219,6 +219,17 @@ export default defineConfig({
             { label: 'Frontend architecture', slug: 'frontend/frontend-architecture' },
           ],
         },
+        {
+          label: 'Mobile Development',
+          items: [
+            { label: 'Overview', slug: 'mobile' },
+            { label: 'Native vs cross-platform', slug: 'mobile/native-vs-crossplatform' },
+            { label: 'Mobile app architecture', slug: 'mobile/mobile-architecture' },
+            { label: 'Offline data & sync', slug: 'mobile/offline-data-sync' },
+            { label: 'Mobile networking & performance', slug: 'mobile/mobile-networking-perf' },
+            { label: 'Mobile platform concerns', slug: 'mobile/mobile-platform-concerns' },
+          ],
+        },
       ],
     }),
   ],

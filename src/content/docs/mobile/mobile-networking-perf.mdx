@@ -1,0 +1,173 @@
+---
+title: Mobile Networking & Performance
+description: Radio and battery cost, request batching and coalescing, payload and image optimization, connection reuse, push notifications (APNs/FCM), GraphQL/gRPC for mobile, flaky-network handling, and startup/jank/frame budgets.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Mobile performance is governed by two budgets the server never has: **battery** and the
+**frame deadline**. On the network side, the cellular radio is the most power-hungry thing
+the app touches, and waking it carries a *tail-energy* cost — it stays in a high-power
+state for seconds after a single request. On the UI side, you have ~16ms per frame at 60Hz
+(~8ms at 120Hz) to do everything, or the user sees jank. So mobile performance work is two
+disciplines: **spend the radio as rarely and efficiently as possible** (batch, coalesce,
+shrink payloads, reuse connections, prefer push over poll), and **keep work off the main
+thread** so frames ship on time and the app starts fast. This page covers both, plus the
+backend choices (push, GraphQL/gRPC) that serve mobile clients well.
+
+## Mental model
+
+**Treat the radio like an expensive, slow-to-warm engine and the main thread like a
+real-time deadline you must never miss.** Two rules cover most of it:
+
+- **Network: minimize round trips and radio wake-ups, not just bytes.** Tail energy means
+  ten requests bundled into one cost far less than ten spread out. So *batch* (combine
+  requests), *coalesce* (dedupe in-flight identical requests), *prefetch* on Wi-Fi/charging,
+  *piggyback* on radio that's already awake, *reuse connections* (HTTP/2 multiplexing, keep
+  TLS/QUIC sessions warm), and *push instead of poll*. Every avoided wake-up is battery
+  saved.
+- **UI: nothing blocks the frame.** The main/UI thread must only render; move I/O,
+  decoding, parsing, and computation off it. Budget the frame (~16ms), measure jank
+  (dropped frames), trim startup work to first meaningful paint, and lazy-load the rest.
+
+The user feels two things: *does it respond instantly* (frame budget) and *does it kill my
+battery/data* (radio budget). Optimize for both, not raw throughput.
+
+## Types / Variants
+
+**Network efficiency techniques.**
+
+- **Batching** — combine multiple logical requests into one round trip (a batch endpoint,
+  a single GraphQL query, or coalesced REST calls). Fewer radio wake-ups, less tail energy.
+- **Coalescing / dedup** — collapse identical in-flight requests into one shared response
+  (request-level dedup, single-flight).
+- **Payload minimization** — request only needed fields (GraphQL, sparse fieldsets),
+  compress (gzip/Brotli), use compact formats (Protobuf over JSON for hot paths), paginate.
+- **Image/asset optimization** — serve right-sized, modern-format images (WebP/AVIF, HEIC),
+  responsive variants by screen density, progressive/lazy loading, and an on-device image
+  cache (Coil/Glide on Android, SDWebImage/Kingfisher/Nuke on iOS). Images dominate most
+  apps' bytes.
+- **Connection reuse** — HTTP/2 multiplexing and **HTTP/3 (QUIC)**, which survives network
+  changes (Wi-Fi↔cellular) without a full re-handshake and reduces head-of-line blocking —
+  a real win on flaky mobile links. Keep TLS sessions resumable.
+
+**Push notifications.** **APNs** (Apple) and **FCM** (Firebase Cloud Messaging, Android and
+cross-platform) let the server *wake the app* instead of the app polling. Use them for
+real-time updates and to trigger background sync (data/silent push). Far cheaper than
+polling and the only battery-sane way to get timely server-initiated updates.
+
+**API styles for mobile.** **GraphQL** lets a constrained client fetch *exactly* the fields
+a screen needs in one round trip — directly attacking over/under-fetching, the mobile pain
+point (see *GraphQL*). **gRPC** offers compact Protobuf payloads, HTTP/2 multiplexing, and
+streaming — great where the client and backend are co-designed and payload size/latency
+matter (see *gRPC & RPC*). REST stays the simple, cacheable default at the edge.
+
+**Flaky-network handling.** Retries with exponential backoff and jitter, idempotency keys so
+retries don't double-execute, timeouts tuned for cellular RTTs, circuit-breaking, and
+graceful degradation to cached/offline state (see *Offline data & sync*).
+
+**Startup and rendering.** Cold-start budget (minimize work before first frame; defer/lazy-init),
+frame budget (~16ms@60Hz), jank measurement, list virtualization/recycling, off-main-thread
+decoding and layout, and avoiding overdraw.
+
+## When to use / When NOT
+
+- **Batch/coalesce — use when:** the app makes many small requests, especially on launch.
+  **Avoid when:** it adds latency to a single user-blocking critical request that needs to
+  fire immediately.
+- **Push (APNs/FCM) — use when:** the server must notify the client or trigger sync timely.
+  **Avoid when:** updates are user-driven and a foreground fetch suffices (don't add push
+  infra you don't need). Never poll on a tight timer to fake real-time.
+- **GraphQL — use when:** heterogeneous screens need precise, aggregated data in one trip.
+  **Avoid when:** simple CRUD where REST caching and simplicity win.
+- **gRPC — use when:** you control client and backend and want compact, streaming, low-latency
+  calls. **Avoid when:** you need browser-native or simple curl-able APIs.
+- **HTTP/3 (QUIC) — use when:** clients roam across networks and links are lossy (most
+  mobile). **Avoid when:** your stack/CDN doesn't support it yet — fall back to HTTP/2.
+
+## Tradeoffs
+
+| Lever | Saves | Costs |
+| ----- | ----- | ----- |
+| Batching | Radio wake-ups, tail energy | Per-request latency, complexity |
+| Payload minimization | Bandwidth, battery, time | Schema/field discipline |
+| Image optimization | Most of the app's bytes | Encoding/variant pipeline |
+| HTTP/3 (QUIC) | Reconnect cost on roam, HOL blocking | Stack/CDN support |
+| Push over poll | Battery, latency | Push infra, token mgmt |
+| GraphQL | Over/under-fetching | N+1, caching, server complexity |
+| gRPC | Latency, payload size | No browser, less debuggable |
+| Off-main-thread work | Jank, dropped frames | Concurrency complexity |
+
+## Diagram
+
+Spend the radio rarely; keep the main thread free for frames.
+
+<Mermaid code={`graph TD
+  subgraph Net[Network budget - the radio is expensive]
+    REQ[Many small requests] --> BATCH[Batch + coalesce]
+    BATCH --> H[HTTP/2 or HTTP/3 reuse]
+    PUSH[APNs / FCM push] -->|wake instead of poll| SYNC[Background sync window]
+  end
+  subgraph UI[Frame budget - 16ms @ 60Hz]
+    MAIN[Main / UI thread] -->|render only| FRAME[Ship frame on time]
+    WORK[I/O, decode, parse] -->|off-main-thread| BG[Background threads]
+    BG --> MAIN
+  end
+  H --> BG`} />
+
+## Try it
+
+Slide from "respond instantly, spend more" to "save battery/data, accept some delay," then
+compare API styles for mobile.
+
+<TradeoffSlider
+  client:visible
+  caption="Freshness/instant ↔ battery & data savings"
+  leftAxis="Always fresh, instant"
+  rightAxis="Save battery & data"
+  stops={[
+    { label: 'Foreground per-action requests', description: 'Hit the server on every interaction for maximum freshness. Most responsive and current, but the most radio wake-ups, the most battery and data, and broken on flaky networks.' },
+    { label: 'Connection reuse + small payloads', description: 'Keep HTTP/2 or HTTP/3 connections warm and request only needed fields. Still fresh, far cheaper per call. The baseline every app should hit.' },
+    { label: 'Batch + coalesce + prefetch', description: 'Bundle requests, dedupe in-flight ones, and prefetch on Wi-Fi/charging. Fewer radio wake-ups and tail energy at the cost of slightly staler data and added complexity.' },
+    { label: 'Push-driven + background sync', description: 'Let the server wake the app via APNs/FCM and reconcile in OS-granted background windows. Minimal polling, very battery-friendly, but updates arrive on the OS/push schedule, not instantly.' },
+    { label: 'Offline-first cache', description: 'Serve everything from the local store, refresh opportunistically. Most battery- and network-frugal and works offline, but the user may see stale data until the next sync.' },
+  ]}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="API styles for mobile clients"
+  columns={['REST', 'GraphQL', 'gRPC']}
+  rows={[
+    { criterion: 'Payload format', cells: ['JSON (text)', 'JSON', 'Protobuf (binary, compact)'] },
+    { criterion: 'Over/under-fetching', cells: ['Common (fixed endpoints)', 'Solved (client picks fields)', 'Fixed per method'] },
+    { criterion: 'Round trips per screen', cells: ['Often many', 'One aggregated query', 'One per call (streaming avail.)'] },
+    { criterion: 'Caching', cells: ['Excellent (HTTP)', 'Hard (single POST)', 'N/A (app-level)'] },
+    { criterion: 'Streaming', cells: ['No (SSE/WS bolt-on)', 'Subscriptions', 'First-class'] },
+    { criterion: 'Battery/bandwidth fit', cells: ['Moderate', 'Good (no overfetch)', 'Best (compact + multiplexed)'] },
+    { criterion: 'Best mobile fit', cells: ['Simple CRUD, public edge', 'Aggregating screens', 'Co-designed client+backend'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Facebook/Instagram** created GraphQL specifically to let mobile clients fetch exactly a
+  screen's data in one round trip and stop over-fetching on cellular.
+- **Google services** use gRPC and QUIC/HTTP/3 extensively for compact, multiplexed,
+  roam-tolerant mobile traffic.
+- **Coil/Glide (Android) and Kingfisher/Nuke/SDWebImage (iOS)** handle right-sizing, modern
+  formats, and on-device image caching — the single biggest byte and memory lever in most apps.
+- **APNs and FCM** wake apps for chat, news, and silent background-sync triggers instead of
+  battery-draining polling across essentially every major app.
+
+## Further reading
+
+- [Apple — Optimizing networking and energy (radio tail, batching)](https://developer.apple.com/documentation/foundation/url_loading_system) — how URLSession and the radio interact, and batching guidance.
+- [web.dev — Rendering performance and the frame budget](https://web.dev/articles/rendering-performance) — the 16ms frame budget and keeping work off the main thread (applies to native too).
+- [HTTP/3 explained (QUIC)](https://http3-explained.haxx.se/) — why QUIC's connection migration and HOL-blocking fixes matter on mobile links.

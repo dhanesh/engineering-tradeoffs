@@ -1,0 +1,201 @@
+---
+title: Mobile Platform Concerns
+description: App-store review and phased rollout, code push for JS, permissions and privacy, security (Keychain/Keystore, cert pinning, jailbreak/root), deep linking, analytics and crash reporting, accessibility, and versioning and forced upgrades.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A mobile app does not run on infrastructure you control. It is a frozen binary, gatekept by
+a store, running on an untrusted device, used by people on a long tail of OS and app
+versions. That reality creates a cluster of concerns the web never forces on you all at
+once: **you cannot hotfix native code on demand** (a store review stands between you and
+every fix), **you must ask the OS and user for every capability** (permissions/privacy),
+**the binary can be inspected and tampered with** (security), and **a large fraction of
+users will be on old versions for months** (versioning/forced upgrade). Handling these well
+is the difference between an app you can operate safely and one bug away from a multi-week
+fire you can't put out. This page covers the release, security, privacy, and lifecycle
+concerns that are unique to shipping on a platform you don't own.
+
+## Mental model
+
+**You ship to a gatekept store, an untrusted device, and a version-fragmented user base —
+so build for slow rollback, zero device trust, and version skew from day one.** Three
+durable consequences:
+
+- **You can't take it back instantly.** A native bug is frozen until a new build clears
+  review and users update. Therefore: roll out in *phases* (catch issues at 1–5% before
+  100%), keep risky behavior behind *server-side flags* you can flip without a release, and
+  push JS/bundle fixes *over the air* where the platform allows it.
+- **The device is the adversary's lab.** Anyone can decompile your binary, inspect traffic,
+  and run on a jailbroken/rooted device. Therefore: *the server is always the authority*, no
+  secrets live in the app, sensitive data goes in the *Keychain/Keystore*, and you *pin
+  certificates* and detect tampering as defense-in-depth — never as your only line.
+- **Users are scattered across versions.** Your newest API and oldest client must coexist.
+  Therefore: version your APIs, gate breaking changes behind *forced upgrade*, and degrade
+  gracefully on old clients.
+
+## Types / Variants
+
+**Release and rollout.**
+
+- **App-store review** — Apple's App Store and Google Play review each submission against
+  policy; approval takes hours to days and can be rejected. Plan lead time; you cannot ship
+  on a whim.
+- **Phased / staged rollout** — release to a growing percentage (e.g. Play's staged
+  rollout, App Store phased release) so you can halt before a bug reaches everyone.
+- **Code push / OTA (JS only)** — React Native / Expo Updates (and the now-retired
+  Microsoft CodePush) can replace the *JS bundle* over the air *without store review* — but
+  **only JS/assets, never native code**, and within store policy limits. Native changes still
+  require a store release.
+- **Server-side feature flags / kill switches** — flip behavior without any release; the
+  single most important operational lever on mobile, since the binary itself can't be patched
+  fast.
+
+**Permissions & privacy.** Runtime permission prompts (camera, location, contacts,
+notifications, tracking), the principle of least privilege (ask only when needed, in
+context), Apple's **App Tracking Transparency (ATT)** and privacy "nutrition labels," Android
+runtime permissions and scoped storage, and data-minimization/consent obligations
+(GDPR/DPDP-style — directly relevant to fintech/lending data).
+
+**Security.** Secure storage in the **Keychain (iOS)** / **Keystore (Android, hardware-backed
+where available)** for tokens and keys; **certificate / public-key pinning** to resist MITM;
+**jailbreak/root detection** and tamper/integrity checks (App Attest, Play Integrity) as
+defense-in-depth; biometric gating (Face ID / fingerprint) for sensitive actions; never
+embedding secrets in the binary. The server enforces authorization regardless of client
+claims.
+
+**Deep linking.** URL schemes and **Universal Links (iOS) / App Links (Android)** that open
+a specific screen with the right back stack, supporting marketing, sharing, and OS-level
+navigation; deferred deep links route a not-yet-installed user through install to the
+intended screen.
+
+**Observability.** Crash reporting and stability (Crashlytics, Sentry, Bugsnag, Xcode
+Organizer), product analytics (events, funnels — e.g. Mixpanel/Amplitude), and performance
+monitoring (cold start, jank, ANRs). Because you can't watch logs on a million devices, you
+*instrument* and aggregate.
+
+**Accessibility.** Screen readers (VoiceOver/TalkBack), Dynamic Type / font scaling,
+sufficient contrast, touch-target sizing, and semantic labeling — both an ethical/legal
+requirement and a quality bar.
+
+**Versioning & forced upgrade.** API versioning, minimum-supported-version policy, *forced
+upgrade* gates that block clients too old to run safely (essential for security or breaking
+changes), and "soft" nudges for recommended updates.
+
+## When to use / When NOT
+
+- **Phased rollout — use when:** any release with real risk (most). **Avoid skipping it**
+  except for trivial, reversible changes — it's the cheapest safety net you have.
+- **Code push (OTA) — use when:** you must fix a *JS-level* bug fast or ship a config/asset
+  change without waiting on review. **Avoid for:** native changes (impossible) and anything
+  that violates store policy on materially changing the app outside review.
+- **Certificate pinning — use when:** the app handles sensitive data (auth, payments,
+  finance) and you can operate a pin-rotation process. **Avoid when:** you can't manage pin
+  rotation — a stale pin bricks the app for everyone until they update.
+- **Forced upgrade — use when:** an old client is insecure, broken against a new API, or a
+  legal/compliance risk. **Avoid for:** routine updates — gratuitous forced upgrades anger
+  users; reserve it for genuine must-upgrade cases.
+- **Jailbreak/root detection — use when:** as one layer of defense-in-depth for high-stakes
+  apps. **Avoid relying on it** as a real security boundary — it's bypassable; the server
+  must still enforce everything.
+
+## Tradeoffs
+
+| Concern | Lever | Tradeoff |
+| ------- | ----- | -------- |
+| Slow native rollback | Phased rollout + flags | Slower full ship; needs flag discipline |
+| Native can't hotfix | Code push (JS only) | JS-only; store-policy limits |
+| Untrusted device | Keychain/Keystore, pinning | Pin rotation risk; server still authoritative |
+| MITM | Cert/key pinning | Stale pin can brick app; rotation ops |
+| Version skew | API versioning + forced upgrade | Forced upgrades annoy users; reserve them |
+| Privacy/consent | Least-privilege, ATT, labels | Friction; lower opt-in; compliance work |
+| Can't watch devices | Crash + analytics instrumentation | Data/privacy cost; instrumentation effort |
+
+## Diagram
+
+The release reality: native can't be hotfixed, so derisk before and route around it.
+
+<Mermaid code={`graph TD
+  DEV[Build] --> SUB[Submit to store]
+  SUB --> REV{Store review}
+  REV -->|rejected| DEV
+  REV -->|approved| ROLL[Phased rollout 1 to 5 percent]
+  ROLL -->|healthy| FULL[100 percent]
+  ROLL -->|crash spike| HALT[Halt rollout]
+  FLAG[Server-side flag / kill switch] -.->|flip without release| FULL
+  OTA[Code push - JS only] -.->|patch JS without review| FULL
+  HALT --> FLAG`} />
+
+## Try it
+
+<WhenWhyTabs
+  client:visible
+  caption="Operating an app you can't hotfix"
+  tabs={[
+    { label: 'Release & rollback', content: 'Assume you cannot pull a native bug back quickly: store review takes hours to days and users update slowly. Defend with three layers — phased rollout (catch issues at 1 to 5 percent before everyone), server-side feature flags and kill switches (flip behavior with no release), and OTA code push for JS-level fixes within store policy. Native changes always require a new build, so keep as much risky behavior as possible behind flags you control from the server.' },
+    { label: 'Permissions & privacy', content: 'Ask for the least you need, in context, at the moment of use, not all up front. iOS App Tracking Transparency and privacy nutrition labels, Android runtime permissions and scoped storage, and consent/data-minimization regimes (GDPR, India DPDP) all push the same way: collect less, justify each prompt, and degrade gracefully when denied. For lending/fintech data, treat every permission and data field as a compliance liability, not a convenience.' },
+    { label: 'Security', content: 'The device is untrusted and the binary is inspectable. Keep zero secrets in the app, store tokens and keys in the Keychain (iOS) or hardware-backed Keystore (Android), pin certificates/public keys to resist MITM (with a rotation plan so a stale pin does not brick clients), gate sensitive actions behind biometrics, and use App Attest / Play Integrity plus jailbreak/root detection as defense-in-depth. Crucially, the server enforces all authorization regardless of what the client claims — client checks are UX, not security.' },
+    { label: 'Deep linking', content: 'Universal Links (iOS) and App Links (Android) open a specific screen with a correct back stack from a normal https URL, powering sharing, marketing, and OS navigation; custom URL schemes are the older, less secure mechanism. Deferred deep links carry a not-yet-installed user through install to the intended destination. Get the back stack and authentication state right so a link never drops the user into a broken or unauthorized screen.' },
+    { label: 'Observability & a11y', content: 'You cannot tail logs on a million devices, so instrument: crash reporting (Crashlytics, Sentry) for stability, product analytics for funnels, and performance monitoring for cold start, jank, and ANRs. Pair this with accessibility as a first-class quality bar — VoiceOver/TalkBack labels, Dynamic Type scaling, contrast, and touch-target sizing — which is both a legal requirement in many markets and a usability win for everyone.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="A bug is live in production — how do you respond?"
+  root={{
+    question: 'Is the broken behavior controlled by code that runs on the device, or by something you control server-side?',
+    branches: [
+      {
+        label: 'Server-side (API, config, feature flag)',
+        next: { leaf: { recommendation: 'Flip the flag / fix the server', detail: 'Disable the feature via kill switch or fix the API. No release needed — the fastest path, which is exactly why risky behavior should live behind server-controlled flags.' } },
+      },
+      {
+        label: 'On the device (in the app binary)',
+        next: {
+          question: 'Is the buggy code native, or JS/bundle (React Native / Expo)?',
+          branches: [
+            {
+              label: 'JS / bundle',
+              next: { leaf: { recommendation: 'Ship an OTA code-push update', detail: 'Replace the JS bundle over the air within store policy — no review wait. Only works for JS/assets, never native code.' } },
+            },
+            {
+              label: 'Native code',
+              next: {
+                question: 'Is the bug severe enough that old versions must be blocked?',
+                branches: [
+                  { label: 'Yes — insecure or fully broken', next: { leaf: { recommendation: 'Expedited release + forced-upgrade gate', detail: 'Submit a fix (request expedited review), roll out in phases, and gate the broken version behind a forced-upgrade screen so unsafe clients cannot continue. Halt the rollout if the fix misbehaves.' } } },
+                  { label: 'No — degrade gracefully', next: { leaf: { recommendation: 'Phased fix + server-side mitigation', detail: 'Mitigate server-side or via a flag if possible, then ship the native fix on a staged rollout. Avoid a forced upgrade unless truly necessary.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google Play staged rollout and App Store phased release** are standard practice — teams
+  ship to a small percentage, watch crash-free rates, and halt on regressions.
+- **React Native / Expo OTA updates** let teams patch JS-level bugs in hours instead of a
+  multi-day review cycle.
+- **Banking and fintech apps** (the GrayQuest domain) pin certificates, store tokens in the
+  Keychain/Keystore, gate actions behind biometrics, use Play Integrity / App Attest, and
+  force-upgrade insecure clients — with the server as the sole authorization authority.
+- **Uber, Instagram, and most large apps** run feature flags and kill switches so behavior
+  can change without a release, and instrument heavily with Crashlytics/Sentry-style tooling.
+
+## Further reading
+
+- [Apple — Distributing your app and phased release](https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-in-phases/) — staged rollout and review realities on iOS.
+- [Android — App security best practices (Keystore, network security config)](https://developer.android.com/topic/security/best-practices) — secure storage, pinning, and integrity on Android.
+- [OWASP Mobile Application Security (MASVS/MASTG)](https://owasp.org/www-project-mobile-app-security/) — the standard for mobile security verification and testing.

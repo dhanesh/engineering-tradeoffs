@@ -1,0 +1,137 @@
+---
+title: Mobile Development
+description: What makes mobile engineering different — constrained devices, intermittent networks, battery as a budget, app-store gatekeeping, OS lifecycles — and the mental model and backend concerns a full-stack engineer needs.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Mobile is not "the web on a small screen." It is a distinct execution environment
+with constraints the server and the desktop browser never impose: the device is
+**battery-powered**, the network is **intermittent and metered**, the OS can **kill
+your process at any moment** to reclaim memory, and you cannot ship a fix without a
+**third party (Apple or Google) gatekeeping the release**. Every architectural choice
+on mobile — where state lives, when you talk to the network, how much you fetch, how
+you degrade offline — is shaped by those constraints. A full-stack engineer who treats
+a phone like a thin HTTP client ships an app that drains batteries, hangs on the subway,
+and gets one-star reviews. This cluster covers the client-side engineering *and* the
+backend concerns that are specific to serving mobile clients.
+
+## Mental model
+
+**The phone is a hostile, resource-starved, sometimes-disconnected client you do not
+control and cannot patch on demand.** Hold four scarce budgets in your head, and design
+every feature to spend them deliberately:
+
+- **Battery** — every radio wake, GPS fix, and CPU spin drains a budget the user
+  watches. The network radio is the single most expensive thing you can touch; keeping
+  it awake costs orders of magnitude more than computing locally.
+- **Network** — assume it is *absent, slow, or expensive* by default, not present.
+  Latency is high and variable (cellular RTTs of hundreds of ms), bandwidth is metered,
+  and connectivity flickers. Offline is a first-class state, not an error.
+- **Memory / process lifecycle** — the OS suspends and kills backgrounded apps freely.
+  Your process is not durable; only persisted state survives. You must be able to
+  reconstruct the UI from disk at any time (state restoration).
+- **Trust / release** — the binary runs on a device you do not own, can be inspected
+  and tampered with, and a native bug is frozen until users update through a store that
+  may take days to approve and weeks for users to adopt.
+
+Design backward from those budgets: do work once and cache it, talk to the network in
+batches at opportune moments, persist enough to survive a kill, and never assume the
+user is online or on the latest version.
+
+## Types / Variants
+
+The mobile landscape splits along a few orthogonal axes you choose independently:
+
+- **Platform reach.** iOS, Android, or both. Two OSes with different languages
+  (Swift/Objective-C vs Kotlin/Java), UI toolkits (SwiftUI/UIKit vs Jetpack
+  Compose/Views), lifecycles, design languages, and store rules.
+- **Build approach.** Fully native per platform, a cross-platform framework
+  (React Native, Flutter, Kotlin Multiplatform), or a web-based wrapper (PWA, Capacitor).
+  See *Native vs cross-platform*.
+- **Connectivity model.** Online-required (thin client, every action hits the server),
+  offline-tolerant (caches reads, queues writes), or offline-first (local store is the
+  source of truth and syncs in the background). See *Offline data & sync*.
+- **Native capabilities.** Camera, GPS/location, biometrics (Face ID / fingerprint),
+  secure keystore (Keychain / Keystore), push notifications, background tasks, sensors,
+  NFC, Bluetooth — the platform APIs that distinguish an app from a website and that
+  carry permission and privacy obligations.
+
+## When to use / When NOT
+
+- **Build a native/cross-platform app when:** you need offline use, device capabilities
+  (camera, biometrics, sensors, push), home-screen presence, smooth 60/120fps
+  interaction, or store-driven distribution and monetization.
+- **Reach for a mobile web app / PWA when:** the experience is content- or
+  form-centric, discoverability via URL matters, you want zero install friction and a
+  single deploy with instant updates, and you can live without deep device integration.
+- **Avoid a native app when:** the surface is trivial, your team has no mobile skills,
+  and a responsive web page would serve users without the store, review, and per-OS
+  maintenance overhead. A native app is a *standing operational commitment* (two
+  codebases or one cross-platform one, store accounts, release pipelines, OS-version
+  churn), not a one-time build.
+
+## Tradeoffs
+
+| Concern | Mobile reality | Consequence for design |
+| ------- | -------------- | ---------------------- |
+| Battery | Radio/GPS/CPU drain a visible budget | Batch network, cache, compute locally, defer work |
+| Network | Intermittent, high-latency, metered | Offline-first, optimistic UI, retry/queue, small payloads |
+| Process | OS kills backgrounded apps | Persist state; restore UI from disk; no in-memory durability |
+| Release | Store review; users lag versions | Phased rollout, forced-upgrade gates, server-side flags |
+| Trust | Untrusted device, inspectable binary | Server is the authority; cert pinning, secure storage, no secrets in app |
+| Fragmentation | Many OS versions, screen sizes, chips | Test matrix, minimum-OS policy, graceful capability fallback |
+
+## Diagram
+
+A mobile client is a stateful, offline-capable peer talking to a backend tuned for
+high-latency, intermittent links — not a stateless page fetch.
+
+<Mermaid code={`graph TD
+  subgraph Device[Mobile device - constrained, untrusted]
+    UI[UI layer] --> VM[State / view-model]
+    VM --> LS[(Local store - SQLite / KV)]
+    VM --> SQ[Outbox / sync queue]
+    SEC[Secure storage - Keychain / Keystore] --> VM
+    CAP[Native capabilities - camera, GPS, biometrics] --> VM
+  end
+  SQ -->|batched, retried sync| API[Mobile API / BFF]
+  LS -->|delta sync| API
+  API --> SVC[Backend services + DB]
+  PUSH[APNs / FCM] -->|wake / notify| UI`} />
+
+## Try it
+
+<WhenWhyTabs
+  client:visible
+  caption="Thinking in mobile constraints"
+  tabs={[
+    { label: 'Battery', content: 'The cellular radio is the dominant power cost. Waking it for a single small request keeps it in a high-power state for seconds afterward (the "tail energy" problem). Coalesce requests, piggyback on radio that is already awake (e.g. when a push arrives or the user is active), prefetch on Wi-Fi/charging, and never poll on a tight timer. Local computation is almost always cheaper than a network round trip.' },
+    { label: 'Network', content: 'Treat absent/slow/metered as the default. Design every read to serve from a local cache first and refresh in the background; design every write to apply optimistically and reconcile when connectivity returns. Cellular RTTs are hundreds of milliseconds and connectivity flickers on transit, in elevators, and at cell-tower handoffs. An app that blocks the UI on the network is broken on a real commute.' },
+    { label: 'Lifecycle', content: 'iOS and Android suspend backgrounded apps and reclaim their memory under pressure, terminating your process without warning. In-memory state is not durable. Persist any state the user would be upset to lose, and be able to rebuild the visible screen from disk on a cold start (state restoration). Background execution is rationed: you get short, scheduled windows, not free-running threads.' },
+    { label: 'Release & trust', content: 'You ship a frozen binary to a device you do not control, through a store that reviews and gates your release, to users who upgrade on their own schedule (a long tail stays on old versions for months). A native bug cannot be hotfixed instantly. So: roll out in phases, keep behavior behind server-side flags, support forced upgrades for breaking changes, and treat the client as untrusted — the server is always the authority.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Instagram / Twitter feeds** render instantly from a local cache on launch, then
+  refresh in the background — the network is never on the critical path to first paint.
+- **Spotify / Netflix** download content for offline playback and reconcile playback
+  state and recommendations opportunistically when connectivity returns.
+- **Google Maps** caches map tiles and last-known location so the app is usable in a
+  tunnel or on a plane, syncing when the radio comes back.
+- **Banking apps** (the GrayQuest-style domain) keep no secrets in the binary, store
+  tokens in the Keychain/Keystore, pin certificates, and gate sensitive actions behind
+  biometrics and server-side authorization — because the device is untrusted.
+
+## Further reading
+
+- [Apple — Energy Efficiency Guide for iOS Apps](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS/) — how the radio, location, and CPU spend battery, and how to budget them.
+- [Android — App startup and process lifecycle](https://developer.android.com/guide/components/activities/process-lifecycle) — when and why the OS kills your process, and what survives.
+- [Offline-first by Google](https://web.dev/learn/pwa/offline-data/) — the offline-first mindset that applies to native and web mobile alike.

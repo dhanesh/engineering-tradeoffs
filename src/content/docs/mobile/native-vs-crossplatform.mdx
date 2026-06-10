@@ -1,0 +1,202 @@
+---
+title: Native vs Cross-Platform
+description: Native (Swift/Kotlin), React Native, Flutter, Kotlin Multiplatform, and PWA — the rendering approaches (native widgets, JS bridge vs JSI, Skia), performance, team and skills tradeoffs, and a decision tree for which fits.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+The single biggest architectural decision in a mobile project is **how the app is
+built across iOS and Android**: fully native per platform, or share code through a
+cross-platform framework, or wrap the web. The choice is rarely about which can
+*technically* build your app — almost all of them can — and almost always about
+**who is on the team, how much UI fidelity and platform integration you need, and how
+much shared code is worth to you**. Get this wrong and you either burn double the
+engineers on two native codebases you didn't need, or fight a cross-platform framework's
+limits on the one screen that has to be perfect. This page maps the real options, how
+they render, and where each one fits.
+
+## Mental model
+
+**Every framework is answering one question: how do pixels get on screen and how does
+your code talk to the OS?** Three rendering strategies, and the bridge cost between
+your code and the platform, explain almost all the tradeoffs:
+
+- **Native widgets, native code** (Swift/Kotlin): your code *is* platform code; it calls
+  UIKit/SwiftUI or Compose/Views directly. No bridge, full fidelity, full API access —
+  but written twice.
+- **Native widgets, foreign runtime** (React Native, KMP + native UI): your logic runs
+  in a JS engine or shared Kotlin, but the *UI is real native widgets*. Something must
+  ferry calls across the language boundary — historically an async **bridge**
+  (serialize JSON over a queue, the classic RN bottleneck), now increasingly a
+  synchronous **JSI** (direct C++ binding, no serialization) or compiled shared code.
+- **Self-drawn UI** (Flutter): the framework ships its own rendering engine
+  (**Skia/Impeller**) and paints every pixel itself onto a canvas, ignoring native
+  widgets entirely. Consistent across platforms, fast, but it *re-implements* the UI
+  rather than using the OS's — so it must chase each OS's look and new controls.
+- **Web in a shell** (PWA, Capacitor/Cordova): your app is a website running in a
+  system WebView (or the browser), bridged to a few native APIs. Maximum code reuse and
+  instant updates; weakest fidelity and device integration.
+
+The further you get from "native widgets, native code," the more you trade **fidelity
+and capability** for **shared code and velocity**.
+
+## Types / Variants
+
+**Native (Swift/Kotlin).** Separate iOS and Android codebases using the platform SDKs.
+Best performance, best fidelity, immediate access to every new OS API and design update,
+the smoothest animations. Cost: two codebases, two skill sets, roughly double the UI
+work. The default for apps where the experience *is* the product (flagship consumer apps,
+games, anything pushing 120fps or deep hardware use).
+
+**React Native.** JavaScript/TypeScript (usually React) driving **real native widgets**.
+The new architecture replaces the old async bridge with **JSI** (synchronous JS↔C++),
+**Fabric** (a new renderer), and **TurboModules**, sharply reducing the historic
+bridge-serialization tax. Huge ecosystem, web-skill reuse, hot reload, and **CodePush-style
+over-the-air updates of the JS bundle**. Weak spots: heavy/janky list and animation
+edge cases, dependency on third-party native modules, and debugging across the language
+boundary.
+
+**Flutter.** Dart compiled to native ARM, rendering its own UI via **Skia/Impeller**.
+Excellent, consistent performance and pixel-identical UI across platforms; one codebase;
+strong tooling and hot reload. Costs: Dart (a less common language), larger binaries, UI
+that doesn't automatically match each OS's native controls and must track platform design
+changes, and a smaller (though large) ecosystem than native.
+
+**Kotlin Multiplatform (KMP).** Shares **business logic, networking, and data** in
+Kotlin across iOS/Android (and more), while leaving **UI native** on each platform
+(SwiftUI on iOS, Compose on Android) — or sharing UI too via **Compose Multiplatform**.
+The pragmatic "share the hard logic, keep native UX" option; lets native teams keep their
+UI craft while killing duplicated logic. Cost: iOS interop friction, smaller talent pool,
+younger ecosystem (especially Compose on iOS).
+
+**PWA / web wrapper (Capacitor, Cordova).** A web app, installable to the home screen
+(PWA) or packaged in a WebView shell (Capacitor) with plugins for native APIs. One
+codebase shared with the web, instant updates, no store needed for a pure PWA. Weakest
+fidelity, limited/inconsistent device APIs (especially on iOS, where PWA support and
+push have historically lagged), and WebView performance ceilings.
+
+## When to use / When NOT
+
+- **Native — use when:** UI fidelity, 120fps smoothness, deep hardware/OS integration,
+  or day-one adoption of new OS features is core to the product; you can staff iOS and
+  Android. **Avoid when:** a small team must ship both platforms fast and the UI is
+  mostly standard.
+- **React Native — use when:** you have web/React talent, want one codebase with native
+  widgets, value OTA JS updates, and your UI is mostly standard components. **Avoid when:**
+  the app is animation/graphics-heavy or leans on many bespoke native modules.
+- **Flutter — use when:** you want one codebase with consistent, custom-branded UI and
+  reliable performance, and Dart is acceptable. **Avoid when:** you need the UI to track
+  each OS's native look exactly, or binary size is critical.
+- **KMP — use when:** you have strong native iOS/Android teams and want to kill
+  duplicated business logic while keeping native UX. **Avoid when:** you have no native
+  skills and want a single full-stack team owning the whole UI.
+- **PWA/wrapper — use when:** content/form-centric experience, web code reuse and instant
+  updates matter more than fidelity, and device integration is light. **Avoid when:** you
+  need offline-deep, smooth, or hardware-rich native experiences (esp. on iOS).
+
+## Tradeoffs
+
+| Option | Language | UI rendering | Bridge cost | Code share | Fidelity | OTA updates |
+| ------ | -------- | ------------ | ----------- | ---------- | -------- | ----------- |
+| Native | Swift / Kotlin | Native widgets | None | 0% (two apps) | Highest | No (store only) |
+| React Native | JS/TS | Native widgets | JSI (new) / bridge (old) | High | High | Yes (JS bundle) |
+| Flutter | Dart | Self-drawn (Skia/Impeller) | None (own engine) | High | High, non-native look | Limited |
+| KMP | Kotlin | Native (or Compose MP) | Compiled interop | Logic-high, UI varies | Native UI: highest | No |
+| PWA / wrapper | JS/TS | WebView / browser | WebView bridge | Highest (incl. web) | Lowest | Yes (instant) |
+
+## Diagram
+
+Where your code runs and how it reaches the screen — the root of every tradeoff.
+
+<Mermaid code={`graph TD
+  Code[Your app code] --> Q{Rendering strategy}
+  Q -->|Native code| N[Swift / Kotlin -> native widgets]
+  Q -->|Foreign runtime, native UI| R[RN: JS engine -> JSI -> native widgets]
+  Q -->|Self-drawn| F[Flutter: Dart -> Skia/Impeller canvas]
+  Q -->|Shared logic only| K[KMP: shared Kotlin -> native SwiftUI/Compose UI]
+  Q -->|Web in a shell| W[PWA/Capacitor: HTML/JS -> WebView]
+  N --> OS[OS APIs and GPU]
+  R --> OS
+  F --> OS
+  K --> OS
+  W --> OS`} />
+
+## Try it
+
+Compare the options across what actually drives the choice, then walk the decision tree.
+
+<CompareMatrix
+  client:visible
+  caption="Native vs React Native vs Flutter vs KMP vs PWA"
+  columns={['Native', 'React Native', 'Flutter', 'KMP', 'PWA/wrapper']}
+  rows={[
+    { criterion: 'Primary language', cells: ['Swift / Kotlin', 'JS / TypeScript', 'Dart', 'Kotlin', 'JS / TypeScript'] },
+    { criterion: 'How UI is drawn', cells: ['Native widgets', 'Native widgets via JSI', 'Self-drawn (Skia/Impeller)', 'Native (or Compose MP)', 'WebView / browser'] },
+    { criterion: 'Code reuse', cells: ['None (two apps)', 'High', 'High', 'Logic high, UI varies', 'Highest (with web)'] },
+    { criterion: 'Performance ceiling', cells: ['Highest', 'High (new arch)', 'High', 'Native UI = highest', 'Lowest'] },
+    { criterion: 'UI fidelity / native feel', cells: ['Perfect', 'High', 'Custom, non-native', 'Native', 'Variable, weakest'] },
+    { criterion: 'Day-one new-OS APIs', cells: ['Immediate', 'Wait for module', 'Wait for plugin', 'Native: immediate', 'WebView-limited'] },
+    { criterion: 'OTA / hotfix', cells: ['No (store)', 'Yes (JS bundle)', 'Limited', 'No', 'Instant'] },
+    { criterion: 'Team fit', cells: ['Native iOS + Android', 'Web/React teams', 'Single full-stack', 'Native teams + shared logic', 'Web teams'] },
+    { criterion: 'Main weakness', cells: ['2x UI cost', 'Native modules, heavy animation', 'Non-native look, size', 'iOS interop, young ecosystem', 'Fidelity, iOS limits'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which build approach?"
+  root={{
+    question: 'Does the experience need deep native fidelity (120fps, custom gestures, heavy hardware/OS integration, day-one new-OS features)?',
+    branches: [
+      {
+        label: 'Yes — fidelity is core to the product',
+        next: {
+          question: 'Do you have (or can you staff) dedicated native iOS and Android engineers?',
+          branches: [
+            { label: 'Yes — strong native teams', next: { question: 'Is duplicated business logic across the two apps a real pain?', branches: [
+              { label: 'Yes — kill the duplication', next: { leaf: { recommendation: 'Native UI + Kotlin Multiplatform', detail: 'Keep native SwiftUI/Compose UI for best fidelity, share networking/business logic in Kotlin. Best of both for mature native teams.' } } },
+              { label: 'No — duplication is tolerable', next: { leaf: { recommendation: 'Fully native (Swift + Kotlin)', detail: 'Two codebases, maximum fidelity and capability. The right call for flagship consumer apps and games.' } } },
+            ] } },
+            { label: 'No — small team, both platforms', next: { leaf: { recommendation: 'Flutter', detail: 'One codebase, consistent custom UI, reliable performance approaching native. Accept a non-native look and Dart.' } } },
+          ],
+        },
+      },
+      {
+        label: 'No — mostly standard UI',
+        next: {
+          question: 'What skills does your team already have?',
+          branches: [
+            { label: 'Web / React / TypeScript', next: { leaf: { recommendation: 'React Native', detail: 'Reuse web skills, ship native widgets from one codebase, and push OTA JS updates. Watch out for heavy animation and bespoke native modules.' } } },
+            { label: 'Content/forms; want instant updates, light device use', next: { leaf: { recommendation: 'PWA or Capacitor wrapper', detail: 'Maximum reuse with the web, no store gatekeeping (pure PWA), instant updates. Accept weaker fidelity and limited device APIs (especially on iOS).' } } },
+            { label: 'Want one consistent codebase, no strong web bias', next: { leaf: { recommendation: 'Flutter', detail: 'Single codebase, strong tooling, consistent UI and performance for standard apps too.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Native:** Instagram-grade camera/filters, most AAA mobile games, and apps leaning on
+  ARKit/CoreML or the latest OS features ship native for fidelity and day-one APIs.
+- **React Native:** Shopify, Discord, and Microsoft adopted RN to share UI across
+  platforms with web talent; Meta drives the new JSI/Fabric architecture.
+- **Flutter:** Google Pay, BMW, and Alibaba use Flutter for branded, consistent UI from
+  one codebase across iOS and Android.
+- **KMP:** Netflix, McDonald's, and Cash App share Kotlin business logic while keeping
+  native UI; the pragmatic choice for established native teams.
+- **PWA:** Twitter Lite and Starbucks's PWA reach low-end devices and flaky networks with
+  one web codebase and instant deploys.
+
+## Further reading
+
+- [React Native — the New Architecture (JSI, Fabric, TurboModules)](https://reactnative.dev/architecture/landing-page) — how RN removed the async-bridge bottleneck.
+- [Flutter architectural overview (rendering with Skia/Impeller)](https://docs.flutter.dev/resources/architectural-overview) — why Flutter draws its own pixels and what that buys and costs.
+- [Kotlin Multiplatform overview](https://www.jetbrains.com/help/kotlin-multiplatform-dev/multiplatform-discover-project.html) — sharing logic while keeping native UI.

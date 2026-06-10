@@ -1,0 +1,158 @@
+---
+title: Mobile App Architecture
+description: MVVM, MVI, TCA, and Clean architecture for mobile — navigation, dependency injection, modularization, unidirectional data flow, lifecycle management, and state restoration across process death.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Mobile app architecture answers one recurring question: **where does state live, who is
+allowed to change it, and how does the UI stay in sync with it as the OS pauses, kills,
+and recreates your process?** A phone app is an event-soaked, asynchronous, interruptible
+program — taps, network responses, sensor updates, lifecycle callbacks, and OS kills all
+race to mutate shared state. Without a disciplined architecture you get the classic
+mobile failure mode: stale screens, lost edits, crashes on rotation, and bugs that only
+reproduce after backgrounding. The patterns here (MVVM, MVI, TCA, Clean) all exist to
+tame that chaos by making **state flow predictable** and **logic testable apart from the
+UI**.
+
+## Mental model
+
+**Separate what the user sees from what is true, and make state flow in one direction.**
+Three layers, and one dominant principle:
+
+- **UI layer** — renders a *view state* and emits *user intents/events*. Dumb and
+  replaceable; holds no business logic.
+- **Presentation layer** (ViewModel / Store / Reducer) — holds the screen's state, turns
+  intents into state changes, and survives configuration changes. This is the testable
+  heart of the app.
+- **Domain + data layer** — use cases, repositories, local stores, and network. Knows
+  nothing about the UI.
+
+The dominant principle is **unidirectional data flow (UDF)**: *state flows down* (a single
+observable state object renders the UI) and *events flow up* (the UI emits intents that
+produce a new state). State is the single source of truth; the UI is a pure function of
+it. This is what makes the screen trivially restorable and the logic trivially testable —
+you can replay a sequence of events and assert on the resulting state with no UI at all.
+
+## Types / Variants
+
+**MVVM (Model–View–ViewModel).** The platform default (Android's ViewModel + StateFlow;
+iOS SwiftUI's `@Observable`/`ObservableObject`). The ViewModel exposes observable state
+and methods; the View binds to it. Pragmatic and well-supported, but plain MVVM can drift
+toward multiple mutable properties and ad-hoc mutations — discipline (or MVI) keeps it
+unidirectional.
+
+**MVI (Model–View–Intent).** Strict UDF: a *single immutable state object* per screen,
+and all changes flow through explicit *intents* reduced into a new state. Maximally
+predictable and testable, excellent for complex screens; costs more boilerplate and a
+single-state-object mindset. (Android's recommended pattern with Compose +
+StateFlow leans MVI-ish.)
+
+**TCA (The Composable Architecture).** A Swift/SwiftUI framework formalizing UDF with
+explicit **State, Action, Reducer, and Effect** types, composable feature stores, and
+first-class side-effect and dependency handling. Superb testability and composition;
+opinionated, with a learning curve and runtime overhead. The "Redux for SwiftUI."
+
+**Clean Architecture.** Orthogonal to the above: concentric layers (entities → use cases
+→ interface adapters → frameworks) with the **dependency rule** — dependencies point
+inward, the domain knows nothing of UI or frameworks. Often combined with MVVM/MVI for
+the presentation layer. Great for large apps and testability; over-engineered for small
+ones (layer/boilerplate tax).
+
+These compose: a typical large app is *Clean layering + MVVM or MVI presentation +
+UDF*, with **navigation**, **dependency injection** (Hilt/Koin on Android, manual or
+Swinject/Factory on iOS), and **modularization** (feature modules with clear boundaries
+for build speed, ownership, and reuse) as cross-cutting concerns.
+
+## When to use / When NOT
+
+- **MVVM — use when:** standard screens, platform-default tooling, a team that wants
+  low ceremony. **Avoid when:** screens get complex enough that scattered mutable state
+  causes bugs — tighten to MVI.
+- **MVI — use when:** complex, stateful screens where predictability and replayable,
+  testable state matter. **Avoid when:** the screen is trivial and the boilerplate isn't
+  worth it.
+- **TCA — use when:** a SwiftUI app wants rigorous UDF, composition, and exhaustive
+  testing of state and effects. **Avoid when:** the team is small/new to the paradigm or
+  the app is simple.
+- **Clean — use when:** a large, long-lived, multi-team app needs strict boundaries and
+  framework independence. **Avoid when:** a small app — the layers add cost without payoff.
+- **Modularization — use when:** build times, team boundaries, and reuse justify it
+  (most apps past a few features). **Avoid when:** a single small app — premature module
+  splitting just adds friction.
+
+## Tradeoffs
+
+| Pattern | State shape | Predictability | Boilerplate | Testability | Best fit |
+| ------- | ----------- | -------------- | ----------- | ----------- | -------- |
+| MVVM | Observable props | Medium | Low | Good | Standard screens, platform default |
+| MVI | Single immutable state | High | Medium–high | Excellent | Complex stateful screens |
+| TCA | State + Action + Reducer | High | Medium–high | Excellent | Rigorous SwiftUI apps |
+| Clean | Layered (orthogonal) | High (boundaries) | High | Excellent | Large, long-lived apps |
+
+## Diagram
+
+Unidirectional data flow with a single source of truth — state down, intents up.
+
+<Mermaid code={`graph TD
+  UI[UI layer - renders view state] -->|intent / event up| VM[ViewModel / Store / Reducer]
+  VM -->|new immutable state down| UI
+  VM --> UC[Use cases / domain]
+  UC --> REPO[Repository]
+  REPO --> LOCAL[(Local store)]
+  REPO --> NET[Network]
+  VM -. saved-state handle .-> SS[(Persisted UI state)]
+  SS -. restore on cold start .-> VM`} />
+
+## Try it
+
+<CompareMatrix
+  client:visible
+  caption="MVVM vs MVI vs TCA vs Clean"
+  columns={['MVVM', 'MVI', 'TCA', 'Clean']}
+  rows={[
+    { criterion: 'Core unit', cells: ['ViewModel + observables', 'State + Intent + Reducer', 'State + Action + Reducer + Effect', 'Concentric layers']  },
+    { criterion: 'Data flow', cells: ['Bindings (often UDF)', 'Strict unidirectional', 'Strict unidirectional', 'Inward dependency rule'] },
+    { criterion: 'State object', cells: ['Multiple observable props', 'Single immutable state', 'Single immutable state', 'Per-layer'] },
+    { criterion: 'Side effects', cells: ['Ad hoc in ViewModel', 'Modeled explicitly', 'First-class Effect type', 'Use cases'] },
+    { criterion: 'Boilerplate', cells: ['Low', 'Medium–high', 'Medium–high', 'High'] },
+    { criterion: 'Testability', cells: ['Good', 'Excellent', 'Excellent', 'Excellent'] },
+    { criterion: 'Platform fit', cells: ['Android + iOS default', 'Android/Compose, KMP', 'SwiftUI', 'Any (orthogonal)'] },
+    { criterion: 'Best for', cells: ['Standard screens', 'Complex screens', 'Rigorous SwiftUI', 'Large multi-team apps'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="The cross-cutting concerns every app architecture must solve"
+  tabs={[
+    { label: 'Navigation', content: 'Navigation is state, not a side effect. Type-safe, declarative navigation (Jetpack Navigation/Compose, SwiftUI NavigationStack, or a coordinator pattern) lets the back stack be serialized and restored after process death and makes deep links land on the right screen with the right back stack. Imperative push/pop scattered through views is the classic source of restoration and deep-link bugs.' },
+    { label: 'Dependency injection', content: 'DI decouples construction from use so layers stay testable and swappable (fake the repository in tests, swap the network client per environment). Android commonly uses Hilt or Koin; iOS uses manual injection, Swinject, or Factory; TCA has built-in dependency management. The goal is the same: the domain depends on interfaces, not concrete frameworks, honoring the dependency rule.' },
+    { label: 'Modularization', content: 'Splitting the app into feature and core modules with explicit public APIs improves build times (only changed modules recompile), enforces ownership boundaries between teams, and enables reuse and dynamic feature delivery. The cost is up-front wiring and the risk of premature or wrong boundaries. Modularize when build time, team scale, or reuse justifies it — not on day one of a small app.' },
+    { label: 'Lifecycle & state restoration', content: 'The OS pauses, backgrounds, and kills your process; on relaunch the user expects their screen back. ViewModels survive configuration changes (rotation), but NOT process death — only persisted state does. Use saved-state handles (Android SavedStateHandle, SwiftUI SceneStorage/@AppStorage) to persist the minimal UI state, and reconstruct the rest from the local store. An app that loses the user’s scroll position, form input, or screen after a background kill is the hallmark of architecture that ignored lifecycle.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Android's official guidance** prescribes UDF with a `ViewModel` exposing a single
+  `StateFlow<UiState>`, repositories behind the domain, and Hilt for DI — effectively
+  MVVM/MVI + Clean.
+- **Point-Free's TCA** powers many production SwiftUI apps that want exhaustive testing
+  of state and effects.
+- **Large apps (Uber, Airbnb, Spotify)** are heavily modularized with feature modules and
+  strict layer boundaries for build speed and team autonomy.
+- **Banking/fintech apps** lean on Clean layering and DI so the security-sensitive domain
+  is framework-independent and exhaustively unit-tested apart from the UI.
+
+## Further reading
+
+- [Android — Guide to app architecture (UDF, layers)](https://developer.android.com/topic/architecture) — the canonical UDF + layered reference.
+- [The Composable Architecture (Point-Free)](https://github.com/pointfreeco/swift-composable-architecture) — State/Action/Reducer/Effect for SwiftUI.
+- [Clean Architecture (Robert C. Martin) — the dependency rule](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html) — the layering principle these patterns build on.
