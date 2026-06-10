@@ -1,0 +1,230 @@
+---
+title: Processes, Threads & Scheduling
+description: Processes versus threads, address spaces and isolation, the real cost of a context switch, how the preemptive scheduler time-slices the CPU (priorities, CFS), CPU-bound versus IO-bound, fork/exec, signals, and zombies/orphans.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Your machine has a handful of CPU cores but runs thousands of executable units at
+once. The operating system creates that illusion with two primitives — **processes**
+and **threads** — and a **scheduler** that rapidly switches the cores between them.
+Getting the process/thread choice and the concurrency level right is one of the
+highest-leverage decisions in systems work: pick wrong and you pay in memory
+(processes are heavy), in safety (threads share everything, including bugs), or in
+throughput (too many runnable threads drowns the CPU in context-switch overhead).
+This page is about the OS mechanics. For *how to coordinate* threads safely — locks,
+atomics, async — see the **Concurrency & Parallelism** cluster; here we cover what a
+thread *is* and how the kernel runs it.
+
+## Mental model
+
+Think of a **process as a company** and **threads as its employees**. The process
+owns the resources: a private **virtual address space** (its memory), open file
+descriptors, sockets. Threads are the workers who actually *do* things — and crucially
+they all share the company's resources. Two threads in one process see the *same*
+memory, so they can collaborate at the speed of a memory write; two *processes* are
+separate companies that must mail letters (IPC: pipes, sockets, shared-memory
+segments) to communicate.
+
+This single fact drives everything:
+
+- **Sharing is the threads' superpower and their curse.** Fast communication, but a
+  bug in one thread can corrupt another's data — hence locks, and the whole
+  concurrency cluster.
+- **Isolation is the processes' superpower and their cost.** A crash or memory
+  corruption in one process cannot touch another (the kernel enforces it via separate
+  page tables), but every cross-process interaction must cross a boundary.
+
+The scheduler is the **dispatcher** handing out turns on the cores. Each runnable
+thread gets a short **time slice**; when it expires (or the thread blocks on I/O), the
+kernel saves its state and switches to another. That save/restore is the **context
+switch** — and it is never free.
+
+## Types / Variants
+
+**Process.** An instance of a running program with its own virtual address space,
+file-descriptor table, and one or more threads. Created on Unix with **`fork()`**
+(which clones the calling process, copy-on-write, into a near-identical child) usually
+followed by **`exec()`** (which replaces the child's image with a new program). The
+heavy isolation is the point: browsers, for example, run each tab in its own process
+so one crash doesn't take down the rest.
+
+**Thread.** An independent execution context (its own stack, registers, and program
+counter) *inside* a process, sharing the process's address space and resources. Far
+cheaper to create than a process and able to communicate through shared memory. Two
+kinds exist:
+
+- **Kernel threads** — scheduled directly by the OS; a 1:1 mapping where each
+  language thread is an OS thread (Java, C/C++ `std::thread`, Rust, modern Go's
+  underlying M's). Real parallelism across cores; context switches go through the
+  kernel.
+- **User-space / green threads** — many lightweight threads multiplexed onto a few
+  kernel threads by a runtime scheduler (goroutines, Erlang processes, Java virtual
+  threads, async tasks). Switching between them avoids a kernel crossing, so you can
+  have millions of them — see the concurrency cluster for the M:N model.
+
+**Thread states.** A thread cycles through **new → ready (runnable) → running →
+blocked/waiting → ready → … → terminated**. It leaves *running* either because it was
+**preempted** (time slice expired) or because it **blocked** (waiting on I/O, a lock,
+or a signal). Distinguishing "runnable but waiting for a core" from "blocked on I/O"
+is the heart of diagnosing whether you are CPU-bound or I/O-bound.
+
+**CPU-bound vs I/O-bound.** A **CPU-bound** task spends its time computing and is
+limited by core count — more threads than cores just adds context-switch overhead, so
+the sweet spot is roughly *one runnable thread per core*. An **I/O-bound** task spends
+most of its time *blocked* waiting for disk/network, leaving the CPU idle — here many
+more threads (or async) than cores improves throughput because while one waits,
+another runs. The diagnosis dictates the design.
+
+**Signals.** Asynchronous notifications the kernel delivers to a process — `SIGTERM`
+(please exit), `SIGKILL` (die now, uncatchable), `SIGSEGV` (you touched invalid
+memory), `SIGCHLD` (a child changed state). Signal handlers run at awkward moments and
+must be async-signal-safe; mishandling them is a classic source of subtle bugs.
+
+**Zombies and orphans.** When a process exits, the kernel keeps a tiny record (exit
+status) until the **parent** collects it with `wait()`. Until then the dead child is a
+**zombie** — using no resources but holding a PID-table slot. A parent that never
+`wait()`s leaks zombies. Conversely, if a parent dies first, its still-running children
+become **orphans** and are *reparented* to `init`/`systemd` (PID 1), which reaps them.
+Leaking zombies (the classic "PID exhaustion" outage in poorly-written supervisors) is
+a real production failure mode.
+
+## When to use / When NOT
+
+- **Separate processes — use when:** you need strong fault and security isolation (a
+  crash or exploit must not spread), you are running untrusted code, or you want to
+  scale across machines later (process boundaries generalize to network boundaries).
+  **Avoid when:** the parties must share large mutable state cheaply and frequently —
+  IPC overhead and serialization will dominate.
+- **Threads (shared memory) — use when:** tasks within one program must collaborate on
+  shared data with low latency, and you can manage synchronization correctly. **Avoid
+  when:** the work is embarrassingly parallel and isolated (processes are safer), or
+  when the shared-mutable-state bugs would outweigh the speed.
+- **Many threads (high concurrency) — use when:** the workload is **I/O-bound** so most
+  threads are blocked and the CPU has room. **Avoid when:** the workload is
+  **CPU-bound** — past one runnable thread per core, more threads only burn cycles on
+  context switches and cache thrash, *lowering* throughput.
+- **Async / green threads instead of OS threads — use when:** you need very high
+  concurrency on I/O-bound work (tens of thousands of connections) and OS-thread
+  memory/switch cost is the bottleneck. See the concurrency cluster.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Process vs thread"
+  columns={['Process', 'Thread (same process)']}
+  rows={[
+    { criterion: 'Address space', cells: ['Private (isolated page tables)', 'Shared with sibling threads'] },
+    { criterion: 'Communication', cells: ['IPC: pipes, sockets, shared mem (slow, explicit)', 'Shared memory (fast, implicit)'] },
+    { criterion: 'Creation cost', cells: ['High (new page tables, fork copy-on-write)', 'Low (just a new stack + registers)'] },
+    { criterion: 'Context-switch cost', cells: ['Higher (TLB flush, cache cold)', 'Lower (same address space, TLB mostly warm)'] },
+    { criterion: 'Fault isolation', cells: ['Strong — a crash is contained', 'None — one thread can corrupt all'] },
+    { criterion: 'Memory footprint', cells: ['Large (full address space per process)', 'Small (shares the process image)'] },
+    { criterion: 'Failure of one unit', cells: ['Others survive', 'Often takes the whole process down'] },
+    { criterion: 'Best for', cells: ['Isolation, security, fault containment', 'Tight low-latency collaboration on shared data'] },
+  ]}
+/>
+
+The deep cost most people underestimate is the **context switch**. A switch saves and
+restores registers (cheap, tens of nanoseconds) but, more importantly, *pollutes the
+caches and (across processes) flushes the TLB*. The thread resumes on a cold cache and
+spends thousands of cycles refilling it — the true cost is often **microseconds**, not
+nanoseconds, once cache effects are counted. This is why "just add more threads" stops
+helping and starts hurting once you exceed the cores' capacity to keep them all
+genuinely runnable.
+
+## Diagram
+
+The lifecycle of a thread (or process) as the scheduler moves it on and off the CPU.
+
+<Mermaid code={`stateDiagram-v2
+  [*] --> New: created
+  New --> Ready: admitted
+  Ready --> Running: scheduler dispatch
+  Running --> Ready: preempted (time slice expires)
+  Running --> Blocked: wait on I/O / lock / signal
+  Blocked --> Ready: I/O completes / lock acquired
+  Running --> Terminated: exit
+  Terminated --> [*]: parent wait() reaps it`} />
+
+## Try it
+
+Walk the decision tree to choose an execution model for a new workload.
+
+<DecisionTree
+  client:visible
+  caption="Processes, threads, or async?"
+  root={{
+    question: 'Do the units of work need strong fault/security isolation (a crash or exploit must not spread)?',
+    branches: [
+      {
+        label: 'Yes — isolation is required',
+        next: {
+          leaf: {
+            recommendation: 'Separate processes',
+            detail: 'Private address spaces mean a crash, memory corruption, or exploit is contained by the kernel. Pay the IPC and memory cost for the safety. This is what browsers and process-per-request servers do.',
+          },
+        },
+      },
+      {
+        label: 'No — they cooperate and trust each other',
+        next: {
+          question: 'Is the workload mostly waiting on I/O (network, disk) rather than computing?',
+          branches: [
+            {
+              label: 'I/O-bound (mostly waiting)',
+              next: {
+                question: 'How much concurrency — thousands of connections, or dozens?',
+                branches: [
+                  {
+                    label: 'Very high (10k+ concurrent)',
+                    next: { leaf: { recommendation: 'Async / green threads (M:N)', detail: 'Multiplex many lightweight tasks onto few OS threads so switching avoids a kernel crossing and memory per task is tiny. Goroutines, virtual threads, async/await. See the concurrency cluster.' } },
+                  },
+                  {
+                    label: 'Moderate (dozens–hundreds)',
+                    next: { leaf: { recommendation: 'A thread pool', detail: 'A bounded pool of OS threads handles blocking I/O simply; while some block, others run. Bound the pool so you do not over-subscribe the CPU.' } },
+                  },
+                ],
+              },
+            },
+            {
+              label: 'CPU-bound (mostly computing)',
+              next: { leaf: { recommendation: 'One runnable thread per core', detail: 'Parallelism is capped by core count; more runnable threads than cores only adds context-switch and cache-thrash overhead. Size the pool to the number of cores.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Chrome / Firefox** use a **process-per-site** (or per-tab) model so a crash or
+  exploit in one page cannot read or corrupt another — isolation bought with memory.
+- **Nginx** runs a small number of single-threaded worker *processes*, each handling
+  thousands of connections with an event loop (epoll) rather than a thread per
+  connection — the I/O-bound, high-concurrency pattern done right.
+- **PostgreSQL** is process-per-connection (a backend process per client), trading
+  memory for robust isolation; **MySQL** is thread-per-connection, trading isolation
+  for lower per-connection cost.
+- **The Linux CFS (Completely Fair Scheduler)** — and its successor **EEVDF** (default
+  since kernel 6.6) — schedule threads by tracking a per-thread *virtual runtime* and
+  always running the one that has had the least CPU time, weighted by `nice` priority,
+  approximating fair sharing rather than fixed time slices.
+- **Container runtimes** rely on `fork`/`exec` plus namespaces and cgroups; a PID-1
+  process inside a container that fails to reap children produces the well-known
+  "zombie pile-up" requiring an init shim like `tini`.
+
+## Further reading
+
+- [*Operating Systems: Three Easy Pieces* — Processes & Scheduling chapters](https://pages.cs.wisc.edu/~remzi/OSTEP/) — the clearest free textbook treatment of processes, the API (`fork`/`exec`/`wait`), and scheduling.
+- [Linux `man 2 fork`, `man 7 signal`, `man 2 wait`](https://man7.org/linux/man-pages/man2/fork.2.html) — the authoritative API semantics, including zombie/orphan reaping rules.
+- [Brendan Gregg — CPU scheduling & `nice`/CFS internals](https://www.brendangregg.com/linuxperf.html) — how the scheduler behaves under real load and how to observe context-switch overhead.

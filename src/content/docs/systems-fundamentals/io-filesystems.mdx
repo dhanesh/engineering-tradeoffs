@@ -1,0 +1,243 @@
+---
+title: I/O & Filesystems
+description: System calls and their cost, blocking versus non-blocking versus asynchronous I/O, the readiness models (select/poll/epoll/io_uring), buffering and the page cache, filesystem internals (inodes, journaling), fsync and durability, and zero-copy.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Every byte your program reads from a disk or sends over a network crosses the
+**user/kernel boundary** through a **system call** — and how you cross it determines
+whether a server handles a hundred connections or a hundred thousand. I/O is where
+software meets the slowest parts of the machine (disk: ~milliseconds; network:
+sub-millisecond to seconds), so the dominant question is never raw throughput of the
+CPU but *how you wait*: does a thread block idle while the disk seeks, or does it go do
+useful work and get notified when the data is ready? This page covers the cost of
+syscalls, the I/O models that determine your concurrency ceiling, the page cache that
+makes most reads free, and the `fsync`/durability question that decides whether your
+"saved" data actually survives a crash.
+
+## Mental model
+
+Two ideas unlock all of I/O.
+
+**A syscall is a boundary crossing, and crossings cost.** Calling `read()` is not a
+function call — it traps into the kernel, switches privilege level, copies data across
+the boundary, and returns. A single syscall is ~hundreds of nanoseconds to a few
+microseconds; that's cheap once but ruinous in a tight loop (reading a file one byte at
+a time is thousands of crossings). The first rule of fast I/O: **make fewer, bigger
+syscalls** — buffer.
+
+**"Blocking" means your thread parks; "async" means your thread keeps working.** When
+you issue a blocking `read()` and the data isn't ready, the kernel puts your thread to
+*sleep* and runs someone else — simple, but that thread is now useless until the I/O
+completes. The whole evolution of I/O models is variations on *not* wasting a thread per
+in-flight operation: instead of one blocked thread per connection, have *one* thread
+ask the kernel "which of these thousand connections is ready *now*?" and service only
+those. That question — readiness multiplexing — is what `select`/`poll`/`epoll`/`io_uring`
+answer, each more efficiently than the last.
+
+## Types / Variants
+
+**Blocking I/O.** The thread issues `read()`/`write()` and sleeps until it completes.
+Dead simple to reason about; the model behind thread-per-connection servers. The cost is
+one OS thread parked per in-flight operation — fine for dozens, fatal for tens of
+thousands (memory and context-switch overhead).
+
+**Non-blocking I/O.** The file descriptor is set `O_NONBLOCK`; a `read()` with no data
+ready returns immediately with `EAGAIN` instead of sleeping. The thread can do other
+work and retry — but naive polling ("keep retrying everything") burns CPU. Non-blocking
+descriptors are the *building block* under the readiness models, not usually used by
+spinning directly.
+
+**Readiness (I/O multiplexing) models.** One thread watches many descriptors and the
+kernel tells it which are ready, so a single thread services thousands of connections:
+
+- **`select` / `poll`** — pass the kernel the *entire* set of descriptors every call;
+  the kernel scans all of them and returns those ready. **O(n) per call** in the number
+  watched (`select` also caps out at ~1024 fds). Portable but doesn't scale to large
+  connection counts.
+- **`epoll` (Linux) / `kqueue` (BSD/macOS)** — you *register* descriptors once with the
+  kernel, then each call returns only the ready ones — **O(ready)**, not O(watched).
+  This is what makes C10K+ servers possible; the readiness-notification model.
+- **`io_uring` (modern Linux)** — a step beyond readiness to true *async completion*:
+  shared submission/completion ring buffers let you queue many I/O operations and reap
+  results with *almost no syscalls at all*, batching submissions and completions.
+  Highest throughput, lowest syscall overhead, and works for disk I/O (where `epoll`
+  historically did not).
+
+**Asynchronous I/O (completion model).** You submit an operation and are notified when
+it *completes* (the data is already in your buffer), versus readiness models that tell
+you when you *can* start it without blocking. `io_uring` and Windows IOCP are completion
+models; POSIX `aio` was the older, weaker attempt. Completion models are the most
+efficient because the kernel does the work and hands back the result.
+
+**Buffering.** Standard library I/O (`stdio`, `BufferedReader`) inserts a user-space
+buffer so many small logical reads/writes coalesce into few large syscalls. Crucial: an
+unbuffered byte-at-a-time loop makes one syscall per byte; the same loop buffered makes
+one syscall per buffer-full. Buffering is the cheapest I/O win there is.
+
+**The page cache.** The kernel caches recently-used file pages in otherwise-free RAM. A
+`read()` of a file already in the page cache is served from memory — *no disk access at
+all* — which is why a second read of the same file is so much faster than the first.
+Writes go to the page cache first and are flushed to disk later ("write-back"). The page
+cache is why "free" RAM on a busy server is nearly zero (it's all cache) and that's
+healthy, not a leak.
+
+**Filesystem internals.** A filesystem maps file *names* to data on disk:
+
+- **Inodes** — each file is an **inode** holding its metadata (size, permissions,
+  timestamps, owner) and pointers to its data blocks. A directory is just a table mapping
+  names to inode numbers; a *hard link* is a second name pointing at the same inode. This
+  is why `mv` within a filesystem is instant (rename the entry) and why an open file you
+  delete keeps working until closed (the inode survives while a reference exists).
+- **Journaling** — to survive a crash mid-write (which could otherwise corrupt the
+  filesystem), modern filesystems (ext4, XFS) first write the *intended* changes to a
+  **journal**, then apply them. On reboot the journal is replayed, so the filesystem is
+  always consistent. Tradeoff: extra writes for crash safety.
+
+**`fsync` and durability.** A successful `write()` only puts data in the *page cache* —
+it is **not yet on disk** and a power loss loses it. **`fsync(fd)`** forces the file's
+data (and `fdatasync`, just the data, not metadata) physically to the storage device and
+returns only when durable. This is *the* durability primitive: databases call `fsync`
+(or O_DIRECT + explicit flush) at commit to honor the "D" in ACID. `fsync` is expensive
+(it waits on the device and defeats write-back batching), which is exactly why grouping
+commits and write-ahead logging exist — to amortize it.
+
+**Zero-copy.** Normally sending a file over a socket copies it disk → page cache →
+user buffer → socket buffer → NIC: multiple copies and boundary crossings. **Zero-copy**
+syscalls (`sendfile`, `splice`) tell the kernel to move the data from the page cache
+straight to the socket without ever copying it into user space — eliminating copies and
+crossings. This is how web servers and CDNs serve static files at line rate.
+
+## When to use / When NOT
+
+- **Blocking I/O + thread pool — use when:** concurrency is modest (dozens–low
+  hundreds), and simplicity matters. **Avoid when:** you need tens of thousands of
+  concurrent connections — the per-thread cost dominates.
+- **`epoll`/`kqueue` (readiness) — use when:** building a high-concurrency network server
+  on Linux/BSD (the C10K problem). **Avoid when:** your runtime already gives you async
+  (Go, Node, Tokio) — they use `epoll`/`io_uring` *under the hood*; don't reinvent it.
+- **`io_uring` — use when:** you need maximum I/O throughput with minimal syscall
+  overhead, especially for *disk* I/O at scale, on a recent Linux kernel. **Avoid when:**
+  you need portability (Linux-only) or kernel version is old/locked; its API is complex
+  and has had security-hardening churn.
+- **Buffering — always**, unless you specifically need each write to hit the OS
+  immediately (then flush explicitly).
+- **`fsync` on every write — use when:** durability of *that specific* write is
+  non-negotiable (financial commit). **Avoid (batch instead) when:** you can group commits
+  or tolerate losing the last few milliseconds — per-write `fsync` murders throughput.
+- **Zero-copy (`sendfile`) — use when:** serving large static files/streams unchanged.
+  **Avoid when:** you must transform the data in user space (you need it copied in anyway).
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="I/O models compared"
+  columns={['Blocking + threads', 'select / poll', 'epoll / kqueue', 'io_uring (async completion)']}
+  rows={[
+    { criterion: 'Model', cells: ['One thread parks per op', 'Readiness, O(n) scan', 'Readiness, O(ready)', 'Completion, batched'] },
+    { criterion: 'Scales to many conns?', cells: ['Poorly (thread per conn)', 'Limited (~1024 / O(n))', 'Yes (C10K+)', 'Yes (highest)'] },
+    { criterion: 'Syscalls per op', cells: ['1+ (and a parked thread)', 'High (re-scan each call)', 'Low', 'Lowest (batched, near-zero)'] },
+    { criterion: 'Works for disk I/O?', cells: ['Yes', 'No (always "ready")', 'No (regular files)', 'Yes'] },
+    { criterion: 'Complexity', cells: ['Lowest', 'Low', 'Moderate', 'High'] },
+    { criterion: 'Portability', cells: ['Universal', 'Universal (POSIX)', 'Linux / BSD specific', 'Recent Linux only'] },
+    { criterion: 'Typical user', cells: ['Simple servers, scripts', 'Legacy / portable code', 'Nginx, Redis, Node, Go', 'High-perf storage / DBs'] },
+  ]}
+/>
+
+The deepest tradeoff is **durability versus throughput**, governed by `fsync`. Write-back
+caching makes writes appear instant by deferring the disk hit; `fsync` reclaims certainty
+at the cost of the wait. Every storage system lives somewhere on this axis: lose-on-crash
+fast caches at one end, `fsync`-per-commit ledgers at the other, and group-commit
+write-ahead logs in the pragmatic middle.
+
+## Diagram
+
+A `read()` and the layers it may or may not have to descend — most reads stop at the page
+cache.
+
+<Mermaid code={`graph TD
+  APP[App calls read] -->|syscall: cross to kernel| PC{In page cache?}
+  PC -->|yes hit| COPY[Copy page to user buffer]
+  PC -->|no miss| FS[Filesystem: inode to data blocks]
+  FS --> DISK[Read from disk ~ms]
+  DISK --> FILL[Fill page cache]
+  FILL --> COPY
+  COPY --> APP2[Data in app buffer]
+  WR[App calls write] --> WB[Lands in page cache write-back]
+  WB -.->|fsync forces durable| DURABLE[Physically on disk]`} />
+
+## Try it
+
+Choose an I/O strategy for a new service.
+
+<DecisionTree
+  client:visible
+  caption="Which I/O model?"
+  root={{
+    question: 'Are you building the I/O layer yourself, or using a runtime/framework that already provides async I/O (Go, Node, Tokio, Netty)?',
+    branches: [
+      {
+        label: 'Using an async runtime',
+        next: { leaf: { recommendation: 'Use the runtime as-is', detail: 'Go, Node, Tokio, Netty already multiplex on epoll/kqueue/io_uring under the hood. Write idiomatic async code; do not hand-roll select/epoll. Just avoid making blocking syscalls on the event-loop thread.' } },
+      },
+      {
+        label: 'Building the I/O layer directly',
+        next: {
+          question: 'How many concurrent connections / operations must one process handle?',
+          branches: [
+            {
+              label: 'Dozens to low hundreds',
+              next: { leaf: { recommendation: 'Blocking I/O + a bounded thread pool', detail: 'Simplest to write and reason about. One thread blocks per in-flight op; a bounded pool keeps it sane. Perfectly fine until per-thread cost dominates.' } },
+            },
+            {
+              label: 'Thousands to hundreds of thousands',
+              next: {
+                question: 'Is the bottleneck network sockets, or high-throughput disk I/O on a recent Linux kernel?',
+                branches: [
+                  {
+                    label: 'Network sockets (C10K)',
+                    next: { leaf: { recommendation: 'epoll (Linux) / kqueue (BSD)', detail: 'Register once, get only ready descriptors back — O(ready). The proven readiness model behind every high-concurrency network server.' } },
+                  },
+                  {
+                    label: 'High-throughput disk I/O, modern kernel',
+                    next: { leaf: { recommendation: 'io_uring', detail: 'Batched async completion with near-zero syscall overhead, and it works for disk I/O where epoll does not. Accept the Linux-only, higher-complexity cost for maximum throughput.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Nginx, Redis, HAProxy** are built on `epoll`/`kqueue`: a few single-threaded event
+  loops each handle tens of thousands of connections — the readiness model in production.
+- **Node.js** (via libuv) and **Go**'s runtime hide `epoll`/`kqueue`/`io_uring` behind
+  callbacks/promises and goroutines, so application code writes "blocking-looking" code
+  that is actually async underneath.
+- **`io_uring`** is increasingly adopted by storage-heavy systems (ScyllaDB, parts of the
+  Linux storage stack) for its batched, low-syscall disk I/O.
+- **Databases** (PostgreSQL, MySQL/InnoDB, SQLite) revolve around `fsync` durability: WAL
+  + group commit amortize the `fsync` cost, and the infamous "fsyncgate" (2018) revealed
+  that Linux could silently drop `fsync` errors — a durability bug that reshaped how
+  databases handle fsync failures.
+- **Web servers and Netflix-scale CDNs** use `sendfile`/zero-copy to push static content
+  from the page cache straight to the NIC, saving copies and CPU at line rate.
+
+## Further reading
+
+- [Dan Kegel — "The C10K problem"](http://www.kegel.com/c10k.html) — the foundational survey of I/O models and why readiness multiplexing replaced thread-per-connection.
+- [Lord of the io_uring](https://unixism.net/loti/) — a thorough, practical guide to `io_uring`'s submission/completion model.
+- [LWN — "Ensuring data reaches disk" / the fsync discussions](https://lwn.net/Articles/457667/) — what `write`, `fsync`, and the page cache actually guarantee, and the durability pitfalls.

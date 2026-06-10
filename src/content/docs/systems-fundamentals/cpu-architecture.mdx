@@ -1,0 +1,206 @@
+---
+title: CPU Architecture
+description: Inside a single core — the pipeline, caches and cache lines and locality, branch prediction, speculative and out-of-order execution, SIMD, NUMA, and false sharing; why data layout beats algorithmic cleverness, anchored by the latency-numbers table.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A modern CPU core is not a simple machine that executes one instruction, then the next.
+It is a deeply pipelined, out-of-order, speculative engine that may have *hundreds* of
+instructions in flight at once, guesses which way branches will go, and reorders work to
+keep its execution units busy. It does all this transparently — your code looks
+sequential — but the *performance* it delivers depends entirely on whether you feed it
+the way it likes: predictable branches and, above all, **data that is already in
+cache**. The single most important fact in this whole cluster bears repeating here: a
+main-memory access costs ~100 ns (hundreds of stalled cycles) while an L1 hit costs ~1
+ns. That ~100× gap means **how you lay out and traverse data routinely matters more than
+your algorithm's cleverness**. This page is why an array beats a linked list, why a
+mispredicted branch hurts, and why two threads touching nearby variables can quietly
+destroy throughput.
+
+## Mental model
+
+Picture the core as a **factory assembly line** (the pipeline) fed by a small fast
+stockroom (L1 cache) restocked from a larger slower warehouse (L2/L3), itself restocked
+from a distant supplier (RAM). The line runs fast *only while parts keep arriving*. The
+core works hard to never stall: it **prefetches** data it predicts you'll need, **guesses
+branch outcomes** so the line doesn't halt waiting to know which way to go, and executes
+independent instructions **out of order** so a stall on one doesn't idle the rest.
+
+Two consequences define cache-friendly code:
+
+1. **Memory moves in cache lines, not bytes.** When you touch one byte, the CPU pulls the
+   whole **64-byte cache line** containing it into cache. So touching adjacent data is
+   nearly free (it came along for the ride), while jumping randomly around memory pays a
+   ~100 ns RAM trip *per* jump. **Spatial locality** (use neighbors) and **temporal
+   locality** (reuse recent data) are the levers.
+2. **The branch predictor is betting, and a wrong bet is expensive.** A predictable branch
+   (a loop that runs 1000 times) is essentially free; an unpredictable one (data-dependent,
+   50/50) causes a **misprediction** that flushes the ~15-stage pipeline of speculatively-
+   executed work — ~15–20 wasted cycles. Sorted/predictable data can run *several times
+   faster* than random data through the identical code.
+
+The mental shorthand for the whole page: **the CPU is fast; memory is slow; the CPU's job
+is to hide the slowness — help it by keeping data local and branches predictable.**
+
+## Types / Variants
+
+**The pipeline.** Instructions flow through stages — fetch, decode, execute, memory
+access, write-back — like an assembly line, so multiple instructions are in different
+stages simultaneously (instruction-level parallelism). Deeper pipelines allow higher
+clock speeds but make a misprediction costlier (more in-flight work to throw away).
+
+**Caches and cache lines.** The L1/L2/L3 hierarchy (see *Memory management* for the
+latency table) is organized in **64-byte lines**. A **cache hit** is ~1–20 ns; a **miss**
+falls to RAM at ~100 ns. The whole art of cache-friendly code is maximizing hits:
+contiguous traversal, hot data packed together, cold data separated out.
+
+**Branch prediction.** The core predicts the outcome of each conditional branch and
+speculatively runs down that path. Correct prediction (>95% for typical code): no stall.
+Misprediction: pipeline flush. This is why **branchless** techniques (replacing `if` with
+arithmetic or `cmov`) can win in hot, unpredictable loops, and why sorting data before a
+data-dependent branch can dramatically speed up the same code.
+
+**Speculative & out-of-order execution.** The core executes instructions as soon as their
+inputs are ready, not in program order, and *speculatively* runs past unresolved branches
+— then retires results in order so the program still appears sequential. This hides
+latency superbly. Its dark side: **Spectre/Meltdown** — speculation left
+micro-architectural traces (cache state) that leaked secret data across security
+boundaries, a whole class of CPU vulnerabilities born from this very mechanism.
+
+**SIMD (Single Instruction, Multiple Data).** Vector instructions (SSE, AVX on x86; NEON
+on ARM) apply one operation to *many* data elements at once — add 8 floats in one
+instruction. Huge wins for data-parallel work (media, math, ML inference) *if* data is
+laid out contiguously so it can be loaded into vector registers. Another reason layout
+beats cleverness: SIMD needs arrays-of-values, not arrays-of-pointers.
+
+**NUMA (Non-Uniform Memory Access).** On multi-socket servers, each CPU socket has its own
+attached RAM. Accessing *your* socket's local RAM is fast; reaching across the interconnect
+to *another* socket's RAM is slower. So *where a thread runs relative to where its memory
+lives* matters — pinning threads and allocating memory on the same NUMA node avoids the
+remote-access penalty. Invisible on a laptop, decisive on a big database server.
+
+**False sharing.** Two threads writing two *different* variables that happen to sit on the
+*same 64-byte cache line* force the line to ping-pong between cores via the coherence
+protocol (MESI) — each write invalidates the other core's copy — and throughput collapses
+even though the variables are logically independent. The fix is **padding/aligning** hot
+per-thread data onto separate cache lines. (This is a *performance* trap built on cache
+coherence, fully covered in the concurrency cluster's *Memory models & visibility* page;
+referenced here because it is fundamentally a CPU-architecture phenomenon.)
+
+## When to use / When NOT
+
+These are optimization *techniques*; the "when" is about whether the hot path justifies
+them.
+
+- **Cache-friendly data layout (arrays, struct-of-arrays, packing hot fields) — use when:**
+  you have a measured hot loop over many elements. **Avoid when:** the code is cold —
+  contorting data layout hurts readability for no gain off the hot path.
+- **Branchless / branch-prediction-friendly code — use when:** a hot loop has an
+  unpredictable, data-dependent branch that profiling shows is mispredicting. **Avoid
+  when:** the branch is predictable (the predictor handles it for free) or the code is
+  cold — branchless tricks obscure intent.
+- **SIMD / vectorization — use when:** doing the same arithmetic over large contiguous
+  arrays (math, media, ML). **Avoid when:** the work is irregular/branchy or the data
+  isn't laid out contiguously — you'll fight the hardware. Often the compiler
+  auto-vectorizes; check before hand-writing intrinsics.
+- **NUMA-aware placement (thread pinning, local allocation) — use when:** running a
+  large, latency-sensitive process on multi-socket hardware and profiling shows remote
+  memory traffic. **Avoid when:** single-socket or not memory-bound — it adds complexity
+  for nothing.
+- **Cache-line padding (false-sharing fix) — use when:** profiling shows a hot per-thread
+  counter/struct ping-ponging between cores. **Avoid prematurely** — padding wastes memory
+  and only helps a measured hotspot.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="What each CPU mechanism gives you — and the trap it sets"
+  columns={['Caches / cache lines', 'Branch prediction', 'Out-of-order + speculation', 'SIMD', 'NUMA']}
+  rows={[
+    { criterion: 'What it speeds up', cells: ['Local, reused data', 'Predictable control flow', 'Latency hiding, ILP', 'Data-parallel arithmetic', 'Local memory access'] },
+    { criterion: 'Cost of the slow path', cells: ['Miss → ~100 ns to RAM', 'Mispredict → ~15–20 cycle flush', 'Wasted speculative work', 'No win on irregular data', 'Remote node access penalty'] },
+    { criterion: 'How you help it', cells: ['Contiguous layout, locality', 'Predictable / branchless code', '(automatic)', 'Contiguous arrays of values', 'Pin threads + local alloc'] },
+    { criterion: 'The trap', cells: ['False sharing; pointer chasing', 'Data-dependent 50/50 branches', 'Spectre/Meltdown leaks', 'Array-of-pointers defeats it', 'Cross-socket traffic'] },
+    { criterion: 'Mostly automatic?', cells: ['Yes (you control layout)', 'Yes (you control predictability)', 'Yes (fully)', 'Partly (auto-vectorize)', 'No (you must place)'] },
+  ]}
+/>
+
+The overarching tradeoff is **portability and simplicity versus squeezing the hardware**.
+Cache-, branch-, and NUMA-aware code is faster but more fragile: it bakes in assumptions
+about line size, core topology, and access patterns that differ across CPUs (x86 vs ARM,
+one socket vs four). Reach for it only where measurement proves the hot path dominates;
+everywhere else, clear code that the compiler and hardware optimize automatically wins.
+
+## Diagram
+
+Why data layout beats cleverness: the same traversal, two layouts, two very different
+cache behaviors.
+
+<Mermaid code={`graph TD
+  subgraph ARR[Contiguous array - cache friendly]
+    A1[elem 0] --- A2[elem 1] --- A3[elem 2] --- A4[elem 3]
+    AN[One cache line brings several elements: next access is an L1 hit ~1 ns]
+  end
+  subgraph LL[Linked list - pointer chasing]
+    L1[node] -->|ptr| L2[node far away]
+    L2 -->|ptr| L3[node far away]
+    LN[Each next is a fresh RAM trip ~100 ns: ~100x slower, same Big-O]
+  end`} />
+
+## Try it
+
+The tabs frame *when* mechanical sympathy at the CPU level pays off — and when it is a
+trap.
+
+<WhenWhyTabs
+  client:visible
+  caption="Reasoning about the core"
+  tabs={[
+    {
+      label: 'When layout beats cleverness',
+      content:
+        'On any hot loop over many elements. An array of structs traversed in order keeps the next items in the same cache lines (~1 ns hits); a linked list or array-of-pointers scatters them across RAM (~100 ns per hop) for identical Big-O. Packing hot fields together, separating cold ones, and choosing contiguous structures routinely yields 2–10x with no algorithmic change. The latency table (registers→L1→RAM→disk) is the reason: locality is the dominant performance lever.',
+    },
+    {
+      label: 'Why branches and SIMD matter',
+      content:
+        'A predictable branch is free; an unpredictable, data-dependent one flushes ~15–20 cycles of speculative work per miss — sorting the data first can make the same loop several times faster. SIMD multiplies throughput by operating on 4–16 elements per instruction, but only if data is contiguous arrays of values. Both reward the same discipline: regular, predictable, contiguous data flow that the hardware can prefetch, predict, and vectorize.',
+    },
+    {
+      label: 'Why NOT to micro-optimize blindly',
+      content:
+        'These techniques are fragile and CPU-specific: cache-line size, branch behavior, and NUMA topology differ across x86/ARM and 1- vs 4-socket boxes, and speculation gave us Spectre/Meltdown. Hand-written branchless/SIMD/padded code is harder to read and easy to get wrong. Apply it only where a profiler proves the hot path dominates; for the 95% of code that is cold, clear code the compiler and hardware optimize for free is the right call.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **The LMAX Disruptor** achieved millions of ops/sec on one thread by designing for the
+  cache line and branch predictor and by padding off false sharing — the origin of
+  "mechanical sympathy."
+- **Data-oriented design** in game engines (and high-performance C++ generally) restructures
+  arrays-of-structs into structs-of-arrays specifically so hot loops stay in cache and
+  vectorize — a direct application of "layout beats cleverness."
+- **Spectre and Meltdown** (2018) were industry-shaking vulnerabilities caused *by*
+  speculative/out-of-order execution leaking data through cache timing — mitigations cost
+  measurable performance across every cloud.
+- **Numerical and ML libraries** (BLAS, NumPy, oneDNN, GEMM kernels) are hand-tuned for SIMD
+  and cache blocking; the speed of modern ML inference rests on these CPU-architecture
+  techniques.
+- **Large databases (SAP HANA, Oracle, big PostgreSQL/MySQL instances)** run NUMA-aware,
+  pinning threads and allocating buffers on local nodes to avoid the cross-socket penalty.
+
+## Further reading
+
+- [Ulrich Drepper — "What Every Programmer Should Know About Memory"](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf) — caches, cache lines, prefetching, NUMA, and false sharing from the ground up.
+- [Igor Ostrovsky — "Gallery of Processor Cache Effects"](https://igoro.com/archive/gallery-of-processor-cache-effects/) — short, vivid experiments that make cache lines, locality, and false sharing tangible.
+- [Agner Fog — microarchitecture & optimization manuals](https://www.agner.org/optimize/) — the deep reference on pipelines, branch prediction, out-of-order execution, and SIMD across real CPUs.

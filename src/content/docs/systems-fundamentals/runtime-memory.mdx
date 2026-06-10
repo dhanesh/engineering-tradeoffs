@@ -1,0 +1,260 @@
+---
+title: Runtime & Memory Management
+description: Compilation versus interpretation versus JIT, the call stack and heap allocation, garbage collection (tracing versus refcount, generational, stop-the-world versus concurrent), manual versus automatic memory, memory leaks, and allocators.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Between your source code and the bare hardware sits the **language runtime** — the layer
+that decides how your program becomes machine instructions and how its memory is managed.
+Two choices made by the runtime dominate how you must reason about latency and throughput:
+**how code is executed** (compiled ahead of time, interpreted, or JIT-compiled at runtime)
+and **how memory is reclaimed** (manually by you, or automatically by a garbage collector).
+These aren't academic distinctions: a stop-the-world GC pause is the reason a P99 latency
+spikes to seconds while the average stays at milliseconds; manual memory is the reason a
+use-after-free becomes a CVE; JIT warm-up is the reason a freshly-started JVM is slow for
+the first minute. This page connects your language's abstractions to the stack/heap/cache
+realities of the pages before it.
+
+## Mental model
+
+**Execution is a spectrum from "translate everything first" to "translate as you go."**
+Compilation does all the translation *before* running (fast steady-state, slow to build,
+no runtime flexibility). Interpretation translates each instruction *every time* it runs
+(instant startup, no build step, but slow). JIT starts interpreting, *watches* which code
+is hot, and compiles those paths to native code on the fly — getting interpreter
+flexibility plus compiled speed, at the cost of warm-up time and memory.
+
+**Memory management is about reclaiming what you no longer need — and someone has to do
+it.** Either *you* free memory explicitly (manual: maximum control, but forget and you
+leak, free twice and you corrupt) or a *garbage collector* finds unreachable objects and
+reclaims them automatically (no use-after-free, but you pay in CPU and — critically —
+*pauses*). The deep question every GC answers differently: **how do I find garbage without
+stopping the program for too long?** Stack memory, recall from *Memory management*, needs
+none of this — it's reclaimed automatically when a function returns. GC is the heap's
+problem.
+
+## Types / Variants
+
+### Execution models
+
+**Ahead-of-time compiled (C, C++, Rust, Go).** Source → native machine code before
+running. Best steady-state performance, no runtime translation overhead, predictable, but
+platform-specific binaries and no runtime adaptation.
+
+**Interpreted (CPython, Ruby MRI, classic JavaScript).** A runtime reads and executes the
+program (often via bytecode) instruction by instruction. Instant startup, trivial
+portability, dynamic, but typically far slower per operation.
+
+**JIT-compiled (JVM/HotSpot, V8, .NET CLR, PyPy).** Starts by interpreting, profiles to
+find "hot" methods/loops, then compiles those to optimized native code at runtime —
+sometimes out-optimizing AOT because it can specialize on *observed* runtime behavior
+(actual types, actual branch frequencies). Costs **warm-up** (slow until hot code
+compiles) and memory; can **deoptimize** back to the interpreter if an assumption breaks.
+
+### Memory: stack and heap (recap, then the heap's problem)
+
+The **call stack** holds one frame per active function call — locals, arguments, return
+address — and is reclaimed automatically on return (just move the stack pointer). Cheap,
+cache-friendly, but small and call-scoped. The **heap** holds dynamically-sized,
+longer-lived objects; allocation finds a free block (slower, fragments) and *freeing* is
+the hard part — which is what manual management and GC are about.
+
+### Manual memory management (C, C++, Rust)
+
+You explicitly `free`/`delete` (or in Rust, ownership/borrowing frees deterministically at
+scope end with no GC). Zero GC overhead, fully predictable timing, minimal memory
+footprint — but the classic failure modes: **memory leak** (forget to free), **use-after-
+free** and **double-free** (free too early/twice → corruption, the source of countless
+security vulnerabilities), and **dangling pointers**. Rust's borrow checker is the modern
+answer: manual-grade performance with compile-time guarantees against these bugs.
+
+### Garbage collection
+
+The runtime automatically reclaims unreachable objects. Two foundational strategies:
+
+- **Reference counting (CPython, Swift ARC, `shared_ptr`).** Each object tracks how many
+  references point to it; when the count hits zero it's freed *immediately*. Pro:
+  prompt, incremental, no big pauses. Cons: per-pointer counter overhead, and it
+  **cannot reclaim reference cycles** (A→B→A keeps both alive forever) without a backup
+  cycle-collector.
+- **Tracing GC (JVM, Go, .NET, V8).** Periodically start from the **roots** (stack
+  variables, globals) and mark everything reachable; whatever isn't marked is garbage and
+  swept. Handles cycles naturally. The cost is the trace itself, and the dreaded pause.
+
+Tracing collectors refine this with key ideas:
+
+- **Generational GC** exploits the **weak generational hypothesis**: *most objects die
+  young*. Allocate into a small "young" nursery collected frequently and cheaply; promote
+  survivors to an "old" generation collected rarely. Dramatically reduces total GC work —
+  the standard for JVM, .NET, V8.
+- **Stop-the-world (STW) vs concurrent/parallel.** A naive collector **pauses all
+  application threads** while it works — fine if pauses are sub-millisecond, catastrophic
+  if they're seconds. **Concurrent** collectors do most marking/sweeping *while the app
+  runs* (with brief STW points), trading throughput and complexity for low pause times.
+  Modern low-latency collectors (JVM **ZGC**/**Shenandoah**, Go's concurrent collector)
+  target sub-millisecond pauses even on huge heaps.
+
+### Memory leaks (yes, in GC languages too)
+
+A leak isn't only "forgot to free." In a GC language you leak by keeping objects
+*reachable* that you no longer need — the classic **unbounded cache or collection that
+grows forever**, a listener never unregistered, a static map accumulating entries. The GC
+can't collect what's still referenced, so the heap grows until OOM. Profiling *reachability*
+(heap dumps, dominator trees) is how you find these.
+
+### Allocators
+
+The **allocator** (`malloc`/`free` implementation, or the GC's bump-pointer nursery)
+decides how heap requests map to memory. General-purpose allocators (glibc malloc,
+**jemalloc**, **tcmalloc**, **mimalloc**) balance speed, fragmentation, and multi-thread
+scalability (per-thread caches to avoid lock contention). On a hot path, **object pools**
+and **arena/bump allocators** (allocate from a contiguous region, free the whole region at
+once) sidestep general allocation entirely — a common high-performance pattern.
+
+## When to use / When NOT
+
+- **AOT-compiled, manual/ownership memory (C/C++/Rust) — use when:** you need predictable
+  low latency with *no* GC pauses, tight memory, or systems-level control (kernels,
+  embedded, HFT, game engines, databases). **Avoid when:** development speed and safety
+  matter more and the workload tolerates GC — the manual-memory bug surface is real (use
+  Rust to mitigate).
+- **Garbage-collected runtime (JVM/Go/.NET/Node) — use when:** developer productivity and
+  memory safety dominate and you can tolerate (or tune away) GC pauses — the vast majority
+  of server software. **Avoid when:** hard real-time or sub-millisecond tail latency on
+  large heaps is non-negotiable and even concurrent GC can't meet it.
+- **Generational GC — use as the default** in GC languages; it matches how real programs
+  allocate (most objects die young). **Tune toward concurrent/low-pause collectors when:**
+  P99/P999 latency, not throughput, is your SLO.
+- **Reference counting — fine when:** prompt deterministic cleanup matters (Swift/ARC for
+  UI, RAII smart pointers). **Watch for:** reference cycles — use weak references to break
+  them.
+- **Custom allocators / object pools — use when:** profiling shows allocation or GC
+  pressure on a hot path. **Avoid prematurely** — they add complexity and bug surface; the
+  default allocator/GC is fine for most code.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Memory-reclamation strategies compared"
+  columns={['Manual / ownership', 'Reference counting', 'Tracing GC (generational)', 'Concurrent low-pause GC']}
+  rows={[
+    { criterion: 'Who reclaims', cells: ['You / compiler (Rust)', 'Runtime, at refcount 0', 'Runtime, periodic trace', 'Runtime, mostly while running'] },
+    { criterion: 'Pause behavior', cells: ['None', 'None (incremental)', 'Stop-the-world pauses', 'Sub-ms pauses'] },
+    { criterion: 'Handles cycles?', cells: ['N/A (explicit)', 'No (needs cycle collector)', 'Yes', 'Yes'] },
+    { criterion: 'Runtime overhead', cells: ['Lowest', 'Per-pointer counter ops', 'Periodic CPU + pauses', 'Higher CPU, low pauses'] },
+    { criterion: 'Memory footprint', cells: ['Tightest', 'Low', 'Higher (headroom for nursery)', 'Higher still'] },
+    { criterion: 'Main failure mode', cells: ['Leak / use-after-free / double-free', 'Leaked cycles', 'Pause spikes; reachable-but-unused leaks', 'Throughput cost, complexity'] },
+    { criterion: 'Typical use', cells: ['Kernels, embedded, HFT, Rust apps', 'CPython, Swift UI, smart pointers', 'JVM/Go/.NET server apps', 'Large-heap low-latency services'] },
+  ]}
+/>
+
+The master tradeoff is **control versus safety, paid in pauses**. Manual memory gives you
+the tightest, most predictable behavior and the sharpest footguns. GC gives you safety and
+productivity and takes back control of *when* reclamation happens — and that "when" is the
+pause that wrecks tail latency. Every collector design (generational, concurrent) is an
+attempt to shrink that pause without giving back too much throughput.
+
+## Diagram
+
+How a JIT runtime decides whether to interpret or compile a piece of code — the warm-up
+path that AOT skips and interpreters never take.
+
+<Mermaid code={`graph TD
+  SRC[Source / bytecode] --> INT[Interpreter executes]
+  INT --> PROF{Method hot? profile counters}
+  PROF -->|no, run rarely| INT
+  PROF -->|yes, run often| JIT[JIT compiles to native, specialized on observed types]
+  JIT --> NAT[Run optimized native code]
+  NAT --> ASSUME{Assumption still holds?}
+  ASSUME -->|yes| NAT
+  ASSUME -->|no, e.g. new type seen| DEOPT[Deoptimize back to interpreter]
+  DEOPT --> INT`} />
+
+## Try it
+
+Choose a runtime/memory strategy for a new service.
+
+<DecisionTree
+  client:visible
+  caption="Compiled or GC'd? Which memory model?"
+  root={{
+    question: 'Is sub-millisecond, jitter-free tail latency (no GC pauses) a hard requirement?',
+    branches: [
+      {
+        label: 'Yes — pauses are unacceptable',
+        next: {
+          question: 'Do you need memory safety without sacrificing that control?',
+          branches: [
+            {
+              label: 'Yes — want safety + control',
+              next: { leaf: { recommendation: 'Rust (AOT, ownership)', detail: 'Manual-grade performance and zero GC pauses, with the borrow checker eliminating use-after-free/double-free at compile time. The modern default for safe systems code.' } },
+            },
+            {
+              label: 'Maximum control, accept the footguns',
+              next: { leaf: { recommendation: 'C / C++ (AOT, manual)', detail: 'Tightest footprint and fully predictable timing for kernels, embedded, HFT, engines. You own every free — and every use-after-free. Mitigate with discipline, smart pointers, sanitizers.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — GC pauses are tolerable / tunable',
+        next: {
+          question: 'What dominates: raw startup/portability, or balanced server throughput?',
+          branches: [
+            {
+              label: 'Fast startup, scripting, glue, portability',
+              next: { leaf: { recommendation: 'Interpreted (Python/Ruby/Node)', detail: 'Instant startup, no build step, huge ecosystems. Accept slower per-operation speed; reach for native extensions or PyPy if a hot path bites.' } },
+            },
+            {
+              label: 'Long-running server, throughput matters',
+              next: {
+                question: 'Is your SLO about throughput, or about P99/P999 tail latency on a large heap?',
+                branches: [
+                  {
+                    label: 'Throughput',
+                    next: { leaf: { recommendation: 'JIT + generational GC (JVM, Go, .NET)', detail: 'JIT reaches near-native steady-state speed; generational GC matches "most objects die young." The productive default for server software. Accept warm-up.' } },
+                  },
+                  {
+                    label: 'Tail latency on a big heap',
+                    next: { leaf: { recommendation: 'Concurrent low-pause GC (ZGC/Shenandoah, Go)', detail: 'Sub-millisecond pauses even on large heaps by doing most collection concurrently. Pay some throughput and memory headroom to flatten the P99/P999.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **The JVM (HotSpot)** is the canonical JIT + generational GC: tiered compilation warms up
+  to native speed, and a menu of collectors (G1 default, **ZGC**/**Shenandoah** for
+  sub-millisecond pauses) lets you tune throughput-vs-pause per workload.
+- **Go** ships a concurrent, low-pause tracing GC tuned for server tail latency, plus
+  escape analysis that stack-allocates where it can to cut heap/GC pressure.
+- **CPython** uses reference counting *plus* a backup cyclic garbage collector to reclaim
+  the cycles refcounting alone can't — and the GIL/refcount design is central to its
+  concurrency story.
+- **Rust** delivers C-level performance with no GC by enforcing ownership and borrowing at
+  compile time — eliminating the use-after-free/double-free class that plagues C/C++ and
+  causes a large share of memory-safety CVEs.
+- **jemalloc / tcmalloc / mimalloc** are the production allocators behind Facebook,
+  Google, and high-throughput services — chosen specifically to cut fragmentation and
+  per-thread lock contention that the default `malloc` suffers under concurrency.
+
+## Further reading
+
+- [*The Garbage Collection Handbook* (Jones, Hosking, Moss)](https://gchandbook.org/) — the comprehensive reference on tracing, reference counting, generational, and concurrent collection.
+- [Aleksey Shipilëv — JVM Anatomy Quarks & GC writings](https://shipilev.net/) — rigorous, measured deep-dives into JIT compilation, allocation, and modern low-pause garbage collectors.
+- [Rust Book — "Understanding Ownership"](https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html) — how compile-time ownership replaces both manual `free` and the garbage collector.

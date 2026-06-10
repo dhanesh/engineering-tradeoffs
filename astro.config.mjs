@@ -175,6 +175,17 @@ export default defineConfig({
             { label: 'Sorting & searching', slug: 'algorithms/sorting-searching' },
           ],
         },
+        {
+          label: 'OS & Computer Architecture',
+          items: [
+            { label: 'Overview', slug: 'systems-fundamentals' },
+            { label: 'Processes, threads & scheduling', slug: 'systems-fundamentals/processes-threads-scheduling' },
+            { label: 'Memory management', slug: 'systems-fundamentals/memory-management' },
+            { label: 'I/O & filesystems', slug: 'systems-fundamentals/io-filesystems' },
+            { label: 'CPU architecture', slug: 'systems-fundamentals/cpu-architecture' },
+            { label: 'Runtime & memory management', slug: 'systems-fundamentals/runtime-memory' },
+          ],
+        },
       ],
     }),
   ],

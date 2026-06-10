@@ -1,0 +1,210 @@
+---
+title: Memory Management
+description: Virtual memory and why every process sees its own address space, paging, page tables and the TLB, page faults and swapping, the memory hierarchy (registers → L1/L2/L3 → RAM → disk) with real latency numbers, stack versus heap, mmap, and the OOM killer.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Your program believes it owns a vast, private, contiguous block of memory starting at
+address zero. It is a lie the operating system tells on purpose. Real RAM is a shared,
+fragmented, finite resource, and the OS uses **virtual memory** to give every process
+the comforting illusion of its own clean address space — while behind the scenes
+mapping those virtual addresses to scattered physical pages, sharing some, paging
+others to disk, and lazily allocating the rest. Understanding this machinery explains a
+huge share of real behavior: why your process's reported memory is "huge" but harmless,
+why a program slows to a crawl when it starts swapping, why the OOM killer struck, and —
+most importantly — why **where data lives in the memory hierarchy** dominates
+performance far more than how many instructions you execute. The latency numbers in this
+page are the single most valuable thing to internalize.
+
+## Mental model
+
+Two mental models, and you need both.
+
+**Virtual memory is indirection.** Every memory access your code makes uses a *virtual*
+address. Hardware (the MMU) translates it to a *physical* address through a **page
+table** the kernel maintains per process. Memory is managed in fixed-size **pages**
+(typically 4 KB). Because the mapping is per-process, two processes can both use address
+`0x1000` and never collide — they map to different physical pages. This indirection is
+what gives you isolation, lazy allocation, sharing (the same physical page of a library
+mapped into many processes), and swapping (a page can live on disk and be faulted back
+in on demand) — all transparently.
+
+**The memory hierarchy is a pyramid of speed versus size.** There is no single "memory."
+There is a steep gradient from tiny-and-instant to huge-and-slow, and the CPU
+automatically pulls data up the pyramid as you touch it:
+
+| Level | Size (order of magnitude) | Latency | Relative to L1 |
+| ----- | ------------------------- | ------- | -------------- |
+| Register | bytes | ~0 (1 cycle) | — |
+| L1 cache | ~32–64 KB | ~1 ns (~4 cycles) | 1× |
+| L2 cache | ~256 KB–1 MB | ~4 ns | ~4× |
+| L3 cache | ~8–64 MB (shared) | ~10–20 ns | ~15× |
+| Main memory (RAM) | GBs | ~100 ns | ~100× |
+| NVMe SSD | TBs | ~10–100 µs | ~100,000× |
+| Spinning disk | TBs | ~1–10 ms | ~10,000,000× |
+| Network round trip (same DC) | — | ~0.5 ms | ~500,000× |
+
+The punchline: **an L1 hit is ~100× faster than a RAM hit, and RAM is ~100,000× faster
+than disk.** A cache miss that goes to RAM costs the CPU ~100 ns — hundreds of stalled
+cycles. This is why a contiguous array beats a pointer-chasing linked list with the
+identical Big-O: the array keeps the next item already in cache; the linked list takes a
+~100 ns RAM trip per `next`. *Locality is the whole game.*
+
+## Types / Variants
+
+**Pages and the page table.** The virtual address space is divided into pages; physical
+RAM into equal-size frames. The page table maps page → frame (plus permission bits:
+read/write/execute, present, dirty). Modern page tables are *multi-level* (4 levels on
+x86-64) so the table itself is sparse — most of the vast address space is unmapped and
+costs nothing.
+
+**The TLB (Translation Lookaside Buffer).** Walking a 4-level page table on every memory
+access would be ruinous, so the CPU caches recent translations in the **TLB**, a small,
+very fast hardware cache. A **TLB hit** translates an address in ~1 cycle; a **TLB miss**
+triggers a page-table walk (tens to hundreds of cycles). Workloads that touch memory in a
+scattered way thrash the TLB; **huge pages** (2 MB / 1 GB instead of 4 KB) reduce TLB
+pressure by covering more memory per entry.
+
+**Page faults.** When you touch a page that isn't currently mapped to a physical frame,
+the MMU traps to the kernel — a **page fault**. There are two very different kinds:
+
+- **Minor (soft) fault** — the page is in RAM (e.g. shared, or just lazily not yet
+  mapped into *this* process); the kernel updates the table. Cheap (microseconds).
+- **Major (hard) fault** — the page must be read from disk (it was swapped out, or it's a
+  file being demand-paged in). Costs a *disk* access — milliseconds. A storm of major
+  faults is **thrashing**, and it is catastrophic for performance.
+
+**Swapping.** When RAM is over-committed, the kernel evicts ("swaps out") cold pages to a
+disk swap area, freeing frames for hot data. Reasonable in small doses; once the *working
+set* exceeds RAM and pages are constantly swapped in and out, the machine thrashes —
+nominally running but spending all its time waiting on disk.
+
+**Stack vs heap.** A thread's **stack** holds call frames (local variables, return
+addresses); it is contiguous, grows/shrinks automatically with calls and returns, is
+extremely cache-friendly, and allocation is just "move the stack pointer" (essentially
+free). The **heap** is the region for dynamically-sized, longer-lived allocations
+(`malloc`/`new`); flexible but slower — the allocator must find a free block, it
+fragments, and freeing is manual or GC's job. Rule of thumb: **prefer the stack; reach
+for the heap only when lifetime or size demands it.**
+
+**`mmap`.** The syscall that maps a file (or anonymous memory) directly into the process
+address space, so file contents appear as memory and are demand-paged in by the page-fault
+mechanism — no explicit `read()` calls. Used for loading executables and shared
+libraries, for large read-only datasets, and as the backing for many allocators and
+memory-mapped databases (LMDB, parts of SQLite).
+
+**The OOM killer.** Linux *over-commits* — it hands out more virtual address space than it
+has physical RAM + swap, betting most won't be touched. When that bet fails and physical
+memory is genuinely exhausted, the kernel's **Out-Of-Memory killer** picks a process (by a
+heuristic "badness" score, tunable via `oom_score_adj`) and kills it to survive. This is
+why a process can die with no error in *its* code — and why container memory limits and
+careful sizing matter: the OOM killer is a blunt instrument.
+
+## When to use / When NOT
+
+- **Stack allocation — use when:** the value's size is known and its lifetime fits the
+  function call (the overwhelming default). **Avoid when:** the object outlives the
+  function, is very large (stacks are small — a few MB; deep recursion or huge stack
+  arrays overflow), or its size is unknown at compile time.
+- **Heap allocation — use when:** lifetime is dynamic or spans calls, or size is unknown
+  until runtime. **Avoid the heap on hot paths** when you can — allocation, fragmentation,
+  and (in GC languages) collection pressure all cost; pool or pre-allocate instead.
+- **`mmap` — use when:** mapping large files you access randomly, sharing read-only data
+  across processes, or letting the page cache manage a dataset bigger than RAM. **Avoid
+  when:** the access is purely sequential and streamed (plain buffered `read` is simpler
+  and avoids page-fault overhead), or when you need precise control over when I/O happens.
+- **Huge pages — use when:** a large-footprint, latency-sensitive process (databases,
+  JVMs with big heaps) suffers measurable TLB misses. **Avoid prematurely** — they reduce
+  flexibility and can cause allocation stalls.
+- **Allowing swap — use when:** you want a soft cushion against transient spikes. **Avoid
+  (or disable) when:** running latency-critical services or databases, where a major fault
+  storm is worse than a clean OOM kill — many run with swap off and tight memory limits.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="The memory hierarchy — speed, size, and what controls it"
+  columns={['Register', 'L1/L2/L3 cache', 'Main memory (RAM)', 'SSD / Disk']}
+  rows={[
+    { criterion: 'Typical latency', cells: ['~0 (1 cycle)', '~1–20 ns', '~100 ns', '~10 µs–10 ms'] },
+    { criterion: 'Typical size', cells: ['Bytes', 'KB–tens of MB', 'GBs', 'TBs'] },
+    { criterion: 'Managed by', cells: ['Compiler / register allocator', 'CPU hardware (automatic)', 'OS (virtual memory, paging)', 'OS + filesystem'] },
+    { criterion: 'You influence it via', cells: ['Code that keeps hot vars live', 'Data layout & locality', 'Working-set size, allocation', 'I/O model, page cache'] },
+    { criterion: 'Cost of a miss/eviction', cells: ['Spill to cache (~ns)', 'Fall to RAM (~100 ns)', 'Major page fault to disk (~ms)', 'Already the floor'] },
+    { criterion: 'Volatile?', cells: ['Yes', 'Yes', 'Yes', 'No (persistent)'] },
+  ]}
+/>
+
+The central tradeoff in memory management is **utilization versus predictability**.
+Over-commit and swap let you pack more work into less RAM (better utilization) at the risk
+of a thrashing cliff or an OOM kill (worse predictability and tail latency). Caches and
+the TLB make the *common* case fast but make the *worst* case (a miss, a fault) far slower
+than the average — so latency-sensitive systems optimize for the worst case (pre-fault,
+pin pages, disable swap, keep the working set in RAM) rather than the average.
+
+## Diagram
+
+How a virtual address becomes a physical access — and where it can fall off the fast path.
+
+<Mermaid code={`graph TD
+  VA[CPU issues virtual address] --> TLB{In TLB?}
+  TLB -->|hit ~1 cycle| PA[Physical address]
+  TLB -->|miss| PW[Page-table walk]
+  PW --> PRES{Page present in RAM?}
+  PRES -->|yes minor| PA
+  PRES -->|no major fault| DISK[Read page from disk ~ms]
+  DISK --> PA
+  PA --> CACHE{In L1/L2/L3?}
+  CACHE -->|hit ~1-20 ns| CPU[Data to CPU]
+  CACHE -->|miss| RAM[Fetch from RAM ~100 ns]
+  RAM --> CPU`} />
+
+## Try it
+
+Slide from packing memory tightly to keeping it predictable, and see what each operating
+point implies.
+
+<TradeoffSlider
+  client:visible
+  caption="Memory utilization ↔ latency predictability"
+  leftAxis="Max utilization (pack tight)"
+  rightAxis="Max predictability (pin & reserve)"
+  stops={[
+    { label: 'Aggressive over-commit + swap', description: 'Hand out far more virtual memory than RAM, swap freely. Highest density, lowest cost — but risks thrashing and OOM kills under pressure. Fine for batch/dev workloads, dangerous for latency-critical services.' },
+    { label: 'Over-commit, swap as cushion', description: 'Default Linux behavior: over-commit but use swap only as a soft buffer for spikes. Good general-purpose balance for most servers.' },
+    { label: 'Tight limits, minimal swap', description: 'Container memory limits sized to the working set, swap minimized. The OOM killer becomes a clean, predictable backstop rather than a slow thrash. Common for production microservices.' },
+    { label: 'Pin pages, huge pages, no swap', description: 'Lock the working set into RAM (mlock), use huge pages to cut TLB misses, disable swap so a hot page is never on disk. Databases and HFT do this — pay memory for worst-case predictability.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Redis** keeps the entire dataset in RAM precisely to avoid the ~100,000× disk
+  penalty; it warns loudly against swap and recommends disabling it, because a swapped-out
+  hot key turns a sub-microsecond GET into a multi-millisecond major fault.
+- **PostgreSQL and other databases** use `mmap`/buffered I/O plus their own buffer pools,
+  and benefit from huge pages on large-RAM machines to cut TLB pressure; their performance
+  is a direct function of keeping the working set in the page cache.
+- **The Linux OOM killer** routinely makes the news as the cause of "my process vanished
+  with no log": it killed the biggest memory user to save the box. Tuning `oom_score_adj`
+  and setting cgroup limits is standard production hygiene.
+- **Memory-mapped databases (LMDB)** lean entirely on `mmap` and the page cache for
+  reads, letting the OS's virtual-memory machinery do the caching — elegant, and a direct
+  application of this page.
+- **Game engines and HFT systems** obsess over cache locality and stack-vs-heap, laying
+  out data in contiguous arrays (data-oriented design) so hot loops stay in L1 rather than
+  paying ~100 ns RAM trips per element.
+
+## Further reading
+
+- [*Operating Systems: Three Easy Pieces* — Virtual Memory chapters](https://pages.cs.wisc.edu/~remzi/OSTEP/) — paging, page tables, the TLB, and swapping explained from first principles, free.
+- [Ulrich Drepper — "What Every Programmer Should Know About Memory"](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf) — the definitive treatment of the memory hierarchy, caches, and why locality dominates.
+- [Jeff Dean — "Latency Numbers Every Programmer Should Know"](https://gist.github.com/jboner/2841832) — the canonical table of the latency gradient this page is built around.

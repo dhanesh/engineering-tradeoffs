@@ -1,0 +1,189 @@
+---
+title: OS & Computer Architecture
+description: Why the under-the-hood fundamentals — the hardware/OS/runtime/app abstraction stack, the kernel/user-space boundary, and what the OS actually does — give engineers the mechanical sympathy to reason correctly about performance and behavior.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Most production performance bugs are not algorithmic — they are *mechanical*. A
+service is slow not because the Big-O is wrong but because it thrashes the page
+cache, false-shares a cache line, blocks a thread on a syscall, or triggers a
+stop-the-world garbage collection at the worst moment. None of these are visible
+from the application code alone. They are visible only if you understand the
+machine *underneath* the code: the CPU, the memory hierarchy, the operating
+system, and the language runtime. This cluster teaches that layer — the
+fundamentals that turn "it's slow and I don't know why" into a diagnosis. The
+goal is **mechanical sympathy**: reasoning about software the way a driver who
+understands the engine reasons about the car.
+
+## Mental model
+
+Software runs on a **stack of abstractions**, each hiding the layer below so you
+*usually* don't have to think about it — until performance or a strange bug forces
+you to. From bottom to top:
+
+- **Hardware** — transistors, the CPU with its pipeline and caches, RAM, disks,
+  network cards. Everything is ultimately bytes moving between these at wildly
+  different speeds.
+- **The operating system kernel** — multiplexes that hardware across many programs.
+  It schedules CPU time, manages memory (virtual address spaces, paging), mediates
+  every access to disk and network through *syscalls*, and isolates programs from
+  each other.
+- **The language runtime** — the layer your program's binary depends on: the C
+  runtime, the JVM, the Go scheduler, the Python/Node interpreter, the garbage
+  collector, the allocator. It turns OS primitives (threads, `mmap`) into the
+  abstractions your code uses (goroutines, objects, promises).
+- **The application** — your code, which sees none of the above directly and
+  assumes a flat, fast, infinite, single-threaded-feeling world that does not exist.
+
+The single most important boundary in that stack is the line between **user space**
+and **kernel space**. Your code runs in user space with restricted privileges. It
+*cannot* touch hardware, other processes' memory, or the disk directly. To do
+anything real — read a file, send a packet, allocate memory from the OS, create a
+thread — it must cross into the kernel via a **system call**, a controlled,
+relatively expensive trap that switches privilege levels. Understanding where that
+boundary sits, and what crossing it costs, explains an enormous amount of
+real-world performance behavior.
+
+## Types / Variants
+
+The fundamentals split into the layers this cluster covers, each a page:
+
+- **Processes, threads & scheduling** — how the OS creates units of execution,
+  isolates them with address spaces, and time-shares the CPU among far more of them
+  than there are cores. The cost of a context switch lives here.
+- **Memory management** — virtual memory, paging, the page table and TLB, and the
+  *memory hierarchy* (registers, L1/L2/L3 cache, RAM, disk) whose latency numbers,
+  spanning roughly nine orders of magnitude, dominate real performance.
+- **I/O & filesystems** — how data crosses the user/kernel boundary to and from disk
+  and network: syscalls, blocking versus non-blocking versus async I/O, the
+  `epoll`/`io_uring` models, the page cache, and durability (`fsync`).
+- **CPU architecture** — what happens inside a single core: the pipeline, caches and
+  cache lines, branch prediction, speculative and out-of-order execution, SIMD, and
+  NUMA. Why data *layout* beats algorithmic cleverness.
+- **Runtime & memory management** — compilation versus interpretation versus JIT, the
+  call stack, heap allocation, and garbage collection. Where your language's
+  abstractions meet the hardware reality.
+
+There is also a fundamental split in *how* programs run: **compiled** straight to
+machine code (C, Rust, Go), **interpreted** (CPython, Ruby), or **JIT-compiled** at
+runtime (JVM, V8, .NET). And a split in *who manages memory*: **manual** (C/C++) or
+**automatic** via garbage collection (almost everything else). These choices ripple
+all the way up into how you must reason about latency.
+
+## When to use / When NOT
+
+This is a *foundations* cluster, so the "when" is about when this knowledge pays off
+versus when the abstractions are doing their job and you should leave them alone.
+
+- **Invest in fundamentals when:** you are diagnosing a performance problem that
+  profiling alone doesn't explain; designing a hot path (tight loops, high
+  throughput, low latency); choosing a language/runtime for a latency-sensitive
+  service; debugging a heisenbug that only appears under load or on different
+  hardware; or sizing capacity (how much RAM, how many cores, what disk).
+- **Trust the abstractions when:** you are writing ordinary business logic where
+  correctness and clarity dominate and the workload is nowhere near a hardware limit.
+  Reaching for `mmap`, manual cache-line padding, or hand-tuned allocators in code
+  that runs once a minute is premature optimization that buys nothing and costs
+  readability.
+
+The skill is knowing *which mode you are in*. Mechanical sympathy is not "optimize
+everything" — it is "know what the machine is doing so you can tell when it matters."
+
+## Tradeoffs
+
+Every layer of abstraction trades **convenience and portability** for **control and
+predictability**. The higher you sit, the less you must know and the more the system
+decides for you — and the harder it becomes to reason about worst-case behavior.
+
+| Layer you reason at | You gain | You give up |
+| ------------------- | -------- | ----------- |
+| Application only | Speed of development, portability | Insight into latency, memory, and tail behavior |
+| Runtime | Control of GC, allocation, concurrency model | Have to learn the runtime's internals |
+| OS / syscalls | Control of I/O model, scheduling, memory mapping | Portability; more code; sharper edges |
+| Hardware-aware | Cache-friendly layout, NUMA placement, SIMD | Time; complexity; fragility across CPUs |
+
+The recurring lesson across every page: **the cost of an operation is dominated by
+where the data lives and how often you cross a boundary** (cache line, page,
+user/kernel, network), far more than by the instruction count. Reasoning about
+*locality* and *boundary crossings* is the through-line of mechanical sympathy.
+
+## Diagram
+
+The abstraction stack and the one boundary that matters most: the user/kernel line,
+crossed by every system call.
+
+<Mermaid code={`graph TD
+  subgraph US[User space]
+    APP[Application code]
+    RT[Language runtime / GC / allocator]
+    APP --> RT
+  end
+  subgraph KS[Kernel space]
+    SCH[Scheduler]
+    MM[Virtual memory / paging]
+    VFS[Filesystem / page cache]
+    NET[Network stack]
+  end
+  HW[Hardware: CPU, caches, RAM, disk, NIC]
+  RT -->|system call: trap, privilege switch| KS
+  KS --> HW
+  SCH --> HW
+  MM --> HW
+  VFS --> HW
+  NET --> HW`} />
+
+## Try it
+
+Use the tabs to anchor *why* each fundamental earns its place before diving into the
+detailed pages.
+
+<WhenWhyTabs
+  client:visible
+  caption="Why learn the layer underneath?"
+  tabs={[
+    {
+      label: 'When it matters',
+      content:
+        'When profiling shows time spent in places your code never mentions: in the kernel (syscalls, page faults), in GC pauses, in cache misses, in lock contention. When latency has a long tail you cannot explain. When the same code is fast on one machine and slow on another. When you must size memory and cores. These are mechanical, not algorithmic, problems — invisible without knowing the machine.',
+    },
+    {
+      label: 'Why it prevents bug classes',
+      content:
+        'Knowing the user/kernel boundary explains why a chatty syscall loop is slow. Knowing virtual memory explains why your 4 GB process maps 40 GB of address space and why the OOM killer struck. Knowing the memory hierarchy explains why an array beats a linked list despite identical Big-O. Knowing context-switch cost explains why 10,000 threads collapse throughput. Each fundamental retires a whole class of "mysterious" bugs.',
+    },
+    {
+      label: 'Why NOT to over-apply',
+      content:
+        'The abstractions exist so you usually do not have to think about them, and that is a feature. Most code is not on a hot path; for it, clarity and correctness beat cache-line tricks every time. The danger is cargo-cult micro-optimization — padding structs, hand-rolling allocators, bypassing the page cache — in code that never runs hot. Apply mechanical sympathy where measurement says it pays, and trust the stack everywhere else.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **The LMAX Disruptor** is the canonical case study in mechanical sympathy: a
+  trading platform that hit millions of operations per second on a single thread by
+  designing around cache lines, branch prediction, and avoiding allocation/GC — the
+  term "mechanical sympathy" entered software engineering through it.
+- **Database engines** (PostgreSQL, MySQL, RocksDB) are end-to-end exercises in these
+  fundamentals: their buffer pools mirror the page cache, their storage engines fight
+  write amplification and `fsync` cost, and their query executors are tuned for cache
+  locality and SIMD.
+- **High-performance runtimes** — the JVM's JIT and GC, Go's scheduler and escape
+  analysis, V8's hidden classes — are all about mediating between convenient
+  application abstractions and the hardware reality this cluster describes.
+- **Cloud cost** is mechanical sympathy with a price tag: right-sizing instances
+  (cores, RAM, NUMA), avoiding noisy-neighbor cache contention, and minimizing
+  syscall/network crossings translate directly into the monthly bill.
+
+## Further reading
+
+- [Brendan Gregg — *Systems Performance*](https://www.brendangregg.com/systems-performance-2nd-edition-book.html) — the definitive modern reference on how the OS, CPU, memory, and I/O actually behave under load, with the tools to observe them.
+- [Ulrich Drepper — "What Every Programmer Should Know About Memory"](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf) — the classic deep dive into the memory hierarchy and why locality dominates performance.
+- [Martin Thompson — Mechanical Sympathy blog](https://mechanical-sympathy.blogspot.com/) — where the discipline of designing software to fit the hardware was popularized.
