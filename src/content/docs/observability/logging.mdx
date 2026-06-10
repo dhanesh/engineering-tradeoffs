@@ -1,0 +1,208 @@
+---
+title: Logging
+description: Structured versus unstructured logs, log levels, correlation IDs, sampling, centralized logging (ELK and Loki), retention and cost, PII and redaction, logs versus events, and when logs beat metrics.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **log** is a timestamped record of a discrete event — "request received," "payment
+authorized," "connection refused." Logs are the high-cardinality, high-fidelity pillar: they
+carry the *full detail* of what happened to a single event, including dimensions far too varied
+to ever put on a metric (the exact user, the request body, the precise error). That fidelity is
+their strength and their cost — log volume scales with traffic, so an unmanaged logging stack is
+one of the most expensive parts of an observability bill. The modern discipline of logging is
+about emitting **structured** logs (machine-parseable key-value records, not prose), threading a
+**correlation ID** through every line so a single request's logs can be reassembled across
+services, and controlling cost through **levels, sampling, and retention** — all while never
+leaking **PII** into a system that wasn't built to protect it. This page covers those choices and
+the increasingly blurry line between a "log" and an "event."
+
+## Mental model
+
+**A log line should be a row in a database you'll query later, not a sentence you'll read.**
+The single highest-leverage decision in logging is **structured versus unstructured**. An
+unstructured log — `"User 4823 failed login from 10.2.1.7 at 14:32"` — is written for a human
+reading a file. The moment you have millions of these across dozens of services, no human reads
+the file; a machine does, and the machine must *parse prose with fragile regexes* to extract
+"user," "ip," "outcome." A **structured** log emits those as fields directly:
+`{"event":"login_failed","user_id":4823,"ip":"10.2.1.7","ts":"..."}`. Now "show me failed logins
+for user 4823 in the last hour" is a field query, not a regex hunt. Structure turns logs from a
+*text file you grep* into a *queryable event store* — which is exactly what you need during an
+incident. Write logs for the query you'll run at 3am, not for the eye.
+
+Second model: **the correlation ID is the thread that re-sews a distributed request.** A single
+user action fans out across a gateway, three services, and a database — each emitting logs into
+its own stream. Without a shared identifier, those logs are unrelated noise interleaved by
+timestamp. Inject a **correlation ID** (or reuse the **trace ID** from your tracing system) at
+the edge, propagate it through every call, and stamp it on every log line. Now one query by that
+ID reassembles the *entire* request's story across every service in causal order. This is the
+single cheapest, highest-value thing you can add to a logging setup, and it's what makes logs and
+traces *unify* rather than coexist.
+
+## Types / Variants
+
+### Structured vs unstructured
+
+- **Unstructured** — free-text lines. Easy to write and read by eye; miserable to query at scale.
+  Acceptable for a single dev process; a liability in production at volume.
+- **Structured** — JSON or logfmt key-value records. Slightly more verbose to emit, but indexable,
+  filterable, and aggregatable. The production default. Pair with **semantic conventions**
+  (OpenTelemetry's standard field names) so fields mean the same thing across services.
+
+### Log levels
+
+A severity dial you set per environment to control volume and signal:
+
+- **ERROR** — something failed and needs attention (a request errored, a dependency is down).
+- **WARN** — recoverable or suspicious, not yet failing (a retry succeeded, a deprecated path hit).
+- **INFO** — normal significant events (service started, request completed) — the usual production
+  floor.
+- **DEBUG / TRACE** — fine-grained internal detail, far too voluminous for steady-state
+  production; enabled temporarily or via dynamic, per-request log-level overrides during an
+  investigation.
+
+The level is a coarse, free knob for cost and noise: run production at INFO, drop to DEBUG only
+when chasing something.
+
+### Correlation IDs
+
+A unique identifier injected at the system edge and propagated through every hop (HTTP header,
+message metadata) so all logs for one request share a key. Best practice is to *reuse the W3C
+Trace Context `trace_id`* so logs join directly to traces rather than maintaining a separate ID.
+
+### Sampling
+
+Keep a *representative* fraction rather than every line, to bound cost: keep 100% of errors and a
+small percentage of successful, high-volume, low-information lines (health checks, successful
+reads). Sampling logs always risks dropping the one line you needed — so sample the *boring*,
+never the *errors*.
+
+### Centralized logging
+
+- **ELK / Elastic Stack** (Elasticsearch + Logstash/Beats + Kibana) — full-text *indexes every
+  field*, giving powerful arbitrary search at high storage and compute cost.
+- **Grafana Loki** — indexes only a small set of *labels* (like Prometheus) and stores the log
+  body compressed and unindexed, querying it by brute force within a label-narrowed stream. Much
+  cheaper to run; trades rich full-text search for low cost and tight Grafana/metrics correlation.
+- **Managed** (Datadog Logs, CloudWatch, Splunk, Sumo) — same patterns, billed by ingest and
+  retention.
+
+## When to use / When NOT
+
+- **Use structured logs when:** anything runs in production at volume — always. **Avoid
+  unstructured logs** beyond local development; they don't scale to query.
+- **Add a correlation/trace ID when:** a request touches more than one service or async hop —
+  effectively always in distributed systems. **You can skip it** only in a single-process app
+  with no fan-out (and even then it's cheap insurance).
+- **Reach for logs (over metrics) when:** you need the *full context* of individual events — the
+  exact error, the request payload, per-user forensics, an audit trail. **Avoid logs for
+  aggregate trends and alerting** — counting errors by grepping logs is slow and expensive; a
+  counter metric does it for a fraction of the cost.
+- **Sample logs when:** volume of low-information lines dominates cost. **Never sample errors or
+  audit-required events** — keep those at 100%.
+- **Choose ELK when:** you need rich, arbitrary full-text search and can pay for it. **Choose Loki
+  when:** cost matters and you mostly query by known labels and want tight metrics correlation.
+- **Redact/forbid PII when:** logs touch user data — always, especially under RBI/financial
+  regimes. **Never log** full card numbers, passwords, tokens, or raw PII; a log store is rarely
+  built to the same compliance bar as your primary database.
+
+## Tradeoffs
+
+Logs buy fidelity and pay in volume; the storage backend choice is a search-power-versus-cost
+dial, and PII handling is non-negotiable.
+
+| Decision | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Structured over unstructured | Queryable fields, machine-parseable | Slightly more verbose; needs field discipline |
+| Correlation/trace ID on every line | Reassemble a request across services | Must propagate context through every hop |
+| Higher log level (DEBUG) | Deep forensic detail | Volume and cost explode; noise drowns signal |
+| Sampling boring lines | Bounded cost at high traffic | Risk of dropping a needed line (never sample errors) |
+| ELK (index everything) | Powerful arbitrary full-text search | High storage/compute cost |
+| Loki (index labels only) | Cheap storage, metrics correlation | Weaker full-text search; query by label first |
+| Long retention | Forensics & compliance reach back | Storage cost grows linearly with retention window |
+
+The master tradeoff is **fidelity versus cost**, sharper here than for metrics because log cost
+scales with *traffic*. Levels, sampling, and retention are the three dials that bound it; the
+trap is cutting them so far that the one line you needed during an incident was the one you
+dropped. Keep errors and audit events whole; spend the savings on the boring high-volume lines.
+
+## Diagram
+
+The centralized logging pipeline, with structure and a correlation ID injected at the edge so a
+single ID reassembles the whole request downstream.
+
+<Mermaid code={`graph TD
+  EDGE[Edge / gateway<br/>inject trace_id] -->|trace_id propagated| SVC1[Service A]
+  EDGE --> SVC2[Service B]
+  SVC1 -->|structured JSON + trace_id| AGG[Log shipper<br/>Fluentd / Vector / Beats]
+  SVC2 -->|structured JSON + trace_id| AGG
+  AGG -->|redact PII, sample boring lines| STORE[(Central store<br/>ELK / Loki)]
+  STORE -->|query by trace_id| STORY[Full request story<br/>across all services]
+  STORE -->|retention policy| TIER[(Cold / archived<br/>or expired)]`} />
+
+Logs are emitted structured with a shared trace ID, shipped through an aggregator that redacts PII
+and samples low-value lines, and stored centrally. One query by trace ID reassembles the request
+across every service; a retention policy ages data to cold storage or deletes it to bound cost.
+
+## Try it
+
+Compare the two dominant centralized-logging backends, then see the when-and-why of each logging
+decision.
+
+<CompareMatrix
+  client:visible
+  caption="ELK vs Loki vs managed logging"
+  columns={['ELK / Elastic', 'Grafana Loki', 'Managed (Datadog/CloudWatch)']}
+  rows={[
+    { criterion: 'Indexing model', cells: ['Full-text, every field', 'Labels only; body unindexed', 'Vendor-managed, usually full index'] },
+    { criterion: 'Search power', cells: ['Rich arbitrary full-text', 'Label filter + brute-force grep', 'Rich, vendor query language'] },
+    { criterion: 'Storage cost', cells: ['High (large indexes)', 'Low (compressed body)', 'Billed by ingest + retention'] },
+    { criterion: 'Ops burden', cells: ['High — cluster to run/tune', 'Low — Prometheus-like', 'None — fully managed, pay for it'] },
+    { criterion: 'Metrics correlation', cells: ['Via separate tooling', 'Native (same labels as Prometheus)', 'Native in-platform'] },
+    { criterion: 'Best when', cells: ['You need deep ad-hoc search', 'Cost matters, query by known labels', 'You want zero ops, will pay'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Logging decisions: when and why"
+  tabs={[
+    { label: 'Structured logs', content: 'WHEN: anything runs in production at volume. WHY: machine-parseable key-value records turn logs from a text file you grep into a queryable event store, so an incident query is a field filter, not a fragile regex over prose. RULE: write the log for the query you will run at 3am, not for the human eye. Use OpenTelemetry semantic field names so fields mean the same thing across services.' },
+    { label: 'Correlation IDs', content: 'WHEN: a request crosses more than one service or async hop — effectively always in distributed systems. WHY: a shared ID (ideally the trace_id) stamped on every line lets one query reassemble the entire request across every service in causal order. It is the cheapest, highest-value addition to a logging setup and is what unifies logs with traces.' },
+    { label: 'Sampling', content: 'WHEN: high-volume low-information lines (health checks, successful reads) dominate cost. WHY: keeping a representative fraction bounds spend without losing the signal. HARD RULE: keep 100% of errors and audit-required events; only ever sample the boring lines. Sampling the wrong thing means the one line you needed during an incident was the one you dropped.' },
+    { label: 'Retention & cost', content: 'WHEN: log volume scales with traffic and the bill grows. WHY: log cost is driven by ingest volume and retention window, both of which scale with traffic — making logs often the most expensive pillar. Control it with levels (run at INFO), sampling (boring lines only), and tiered retention (hot for days, cold/archived for compliance). The trap is cutting so far you lose the evidence you needed.' },
+    { label: 'PII & redaction', content: 'WHEN: logs can touch user data — especially under financial/RBI regimes. WHY: a log store is rarely built to the same compliance and access-control bar as your primary database, so PII in logs is a leak waiting to happen. NEVER log full card numbers, passwords, tokens, or raw PII; redact at the shipper before storage and forbid it at the source. Treat logs as a potential breach surface.' },
+    { label: 'Logs vs metrics', content: 'WHEN: deciding which pillar answers your question. WHY: reach for logs when you need the FULL context of individual events — the exact error, the payload, per-user forensics, an audit trail. Reach for metrics for aggregate trends and alerting — counting errors via grep is slow and costly; a counter does it far cheaper. Logs are the detail of one event; metrics are the shape of many.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **The ELK / Elastic Stack** (Elasticsearch, Logstash/Beats, Kibana) is the long-standing
+  full-text logging platform — maximal search power at maximal storage cost; widely run
+  self-hosted and as Elastic Cloud.
+- **Grafana Loki** deliberately indexes only labels and stores the body compressed, making it far
+  cheaper to operate and a natural fit alongside Prometheus and Tempo for correlated three-pillar
+  observability.
+- **Fluentd / Fluent Bit / Vector** are the standard log shippers/aggregators that parse,
+  enrich, redact PII, and route logs to any backend; in Kubernetes they run as a per-node
+  DaemonSet.
+- **OpenTelemetry Logs** standardizes structured log records and the trace-log correlation
+  (attaching `trace_id`/`span_id` to every record), making the correlation-ID best practice a
+  built-in rather than a bespoke convention.
+- **Audit logging in fintech** (payments, lending) is the case where sampling and short retention
+  are forbidden: regulatory and dispute requirements force 100% capture and multi-year retention
+  of money-movement events, with strict PII redaction of the surrounding context.
+
+## Further reading
+
+- [OpenTelemetry — Logs](https://opentelemetry.io/docs/concepts/signals/logs/) — structured logs and how trace context correlates them to traces.
+- [Grafana Loki — fundamentals](https://grafana.com/docs/loki/latest/get-started/) — the label-index, cheap-storage model and how it differs from full-text indexing.
+- [Twelve-Factor App — Logs](https://12factor.net/logs) — treat logs as event streams, not files the app manages.
+- [Honeycomb — logs versus events](https://www.honeycomb.io/blog/structured-events-are-the-basis-of-observability) — why wide structured events beat line-oriented logs for observability.

@@ -1,0 +1,235 @@
+---
+title: Alerting
+description: Symptom versus cause alerting, alerting on SLO burn rate, static thresholds versus anomaly detection, alert fatigue, runbooks, paging versus ticketing, the good-alert checklist, and the dead man's switch.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+An **alert** is the bridge from telemetry to a human: it decides *when a person must be
+interrupted*. That makes alerting the highest-stakes, easiest-to-get-wrong part of observability.
+Too few alerts and real outages go unnoticed; too many and you get **alert fatigue** — the slow
+poisoning where on-call engineers, drowning in noise, start ignoring pages and miss the one that
+mattered. The whole discipline reduces to a single principle: **page a human only for things that
+are both urgent and actionable, and ideally only for things users can feel.** This page covers the
+core decisions — alerting on **symptoms** (user-visible pain) versus **causes** (internal
+conditions), alerting on **SLO burn rate** (the right primary signal, covered in depth in the
+Reliability cluster), static **thresholds** versus **anomaly detection**, the routing split between
+**paging** and **ticketing**, attaching **runbooks**, the **good-alert checklist**, and the
+**dead man's switch** that catches the silent failure of the alerting system itself.
+
+## Mental model
+
+**Alert on symptoms the user feels, not on causes you happened to anticipate.** A *symptom* alert
+fires on the thing the user actually experiences: "the checkout success rate dropped below 99%,"
+"p99 latency exceeds 2s." A *cause* alert fires on an internal condition: "CPU is at 90%," "a
+replica is down," "the queue is deep." The trap is that there are *infinitely many* causes — you
+will never enumerate them all, and most of them don't actually hurt users (CPU at 90% with latency
+fine is not a problem). Symptom-based alerting flips this: there are *few* symptoms (the golden
+signals), each one *definitely* matters because it's user-visible, and a symptom alert catches
+*every* cause that produces it — including the unknown-unknowns you never thought to alert on.
+Causes belong on **dashboards** you consult *after* a symptom pages you, to diagnose; they rarely
+belong on a pager. The refinement of this principle is to alert on **SLO burn rate** — page when
+you're consuming your error budget too fast — which is symptom-based by construction and tunes
+precision/recall far better than a raw threshold (the full burn-rate recipe lives in the
+*SLOs, SLIs & error budgets* page).
+
+Second model: **every page is a withdrawal from a finite trust account.** Each alert that fires and
+turns out to be noise — a flap, a non-actionable warning, a cause that didn't hurt anyone — spends
+the on-call engineer's trust in the alerting system. Spend enough and they tune it out entirely,
+and now your alerting is *worse than none*, because it creates false confidence while real pages get
+ignored. So the bar for *paging* a human is severe: it must be urgent (needs action *now*, not
+tomorrow), actionable (there's something the human can do), and real (a user is being hurt or about
+to be). Everything that fails that bar should *ticket*, not page.
+
+## Types / Variants
+
+### Symptom vs cause
+
+- **Symptom alerts** — fire on user-visible degradation (error rate, latency, the golden signals,
+  SLO burn). Few, high-value, catch unknown causes. *This is what should page.*
+- **Cause alerts** — fire on internal conditions (resource saturation, a dependency down). Useful as
+  *diagnostic* signals and dashboards; a worthy page only when the cause is a near-certain *leading
+  indicator* of imminent user pain (e.g. disk will fill in 30 minutes).
+
+### Threshold strategies
+
+- **Static thresholds** — "alert if X > N." Simple, predictable, explainable. The right default.
+  Weakness: a single number rarely fits a metric with daily/weekly seasonality (traffic is
+  naturally 10× higher at noon than 3am), causing false alarms or missed dips.
+- **Anomaly detection** — learns the normal pattern (including seasonality) and alerts on
+  *deviation*. Handles seasonal metrics where a static line can't. Weakness: opaque ("why did it
+  fire?"), can be noisy, harder to trust and tune, needs enough clean history. Use it where
+  seasonality genuinely defeats a static threshold, not as a default.
+- **Burn-rate alerts (multi-window)** — alert on the *rate of error-budget consumption*, pairing a
+  fast-burn window (page now) with a slow-burn window (ticket). The SRE-recommended primary signal;
+  high precision and high recall. Detailed in the Reliability cluster.
+
+### Routing: paging vs ticketing
+
+- **Paging** — interrupts a human *now* (push, SMS, phone call via PagerDuty/Opsgenie). Reserved for
+  urgent + actionable + user-impacting.
+- **Ticketing** — files work for the next business day (a ticket, a Slack channel, an email digest).
+  For things that need attention but not at 3am — slow burns, warnings, degraded-but-serving.
+
+### Supporting pieces
+
+- **Runbook** — a linked, step-by-step procedure attached to every paging alert: what it means, how
+  to confirm, how to mitigate, when to escalate. An alert without a runbook makes a half-awake
+  engineer reinvent the response under pressure.
+- **The good-alert checklist** — before an alert pages, it must pass: (1) **actionable** — there's a
+  defined response; (2) **urgent** — it needs doing *now*; (3) **user-impacting** — symptom-based,
+  someone is being hurt; (4) **has a runbook**; (5) **not flappy** — won't oscillate on noise (needs
+  a `for`/duration clause and a confirmation window). Fail any and it should ticket, not page.
+- **Dead man's switch** — a heartbeat alert that *expects* a regular signal and fires when it
+  *stops*. It catches the catastrophic silent failure: your monitoring pipeline itself is down, so
+  *no* alerts can fire and everything looks deceptively quiet. The dead man's switch is the alert
+  that watches the watchers.
+
+## When to use / When NOT
+
+- **Alert on symptoms when:** deciding what should page — almost always. **Avoid paging on causes**
+  unless the cause is a near-certain leading indicator of imminent user pain; otherwise it's a
+  dashboard signal, not a page.
+- **Alert on SLO burn rate when:** you have an SLO and a budget — make it your primary user-facing
+  alert. **Avoid raw static error-rate pages** as the primary signal; they trade precision against
+  recall badly (see the Reliability cluster).
+- **Use static thresholds when:** the metric is stable or you can set a clear bound — the explainable
+  default. **Use anomaly detection when:** strong seasonality genuinely defeats a static line.
+  **Avoid anomaly detection** as a default — its opacity erodes trust and it's hard to tune.
+- **Page when:** the condition is urgent, actionable, and user-impacting. **Ticket instead when:**
+  it's important but not now (slow burns, warnings, non-urgent degradation) — paging it causes
+  fatigue.
+- **Attach a runbook when:** any alert can page — always. **Never ship a paging alert without one.**
+- **Add a dead man's switch when:** you depend on alerts firing — always. **Don't assume silence
+  means health**; silence might mean your monitoring is dead.
+- **Cut an alert when:** it has paged and been actioned-as-noise repeatedly. A page nobody acts on is
+  pure fatigue — delete it or demote it to a ticket.
+
+## Tradeoffs
+
+The master tension is **precision versus recall** — catch every real incident (recall) without
+crying wolf (precision) — and every choice tunes that dial against on-call sanity.
+
+| Decision | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Symptom alerts (page) | Few, high-value, catch unknown causes | Slightly later detection than a leading-indicator cause |
+| Cause alerts (page) | Early warning on a known failure mode | Infinite causes, mostly non-impacting → fatigue |
+| Static threshold | Simple, explainable, predictable | Fails on seasonal metrics; tuning is manual |
+| Anomaly detection | Handles seasonality automatically | Opaque, noisy, hard to trust/tune, needs history |
+| Paging | Immediate human response | Interrupts a life; overuse = alert fatigue |
+| Ticketing | No 3am interruption for non-urgent work | Slower response; wrong for a true emergency |
+| Dead man's switch | Catches silent monitoring failure | One more alert to maintain (cheap, worth it) |
+
+The dominant failure mode is **alert fatigue**: optimizing recall in isolation (alert on everything)
+destroys precision, engineers tune out, and effective recall collapses to zero. The whole craft is
+keeping the *paging* set small, symptom-based, actionable, and runbook-backed — and routing
+everything else to tickets.
+
+## Diagram
+
+The alert routing pipeline: telemetry to evaluation to the page-or-ticket decision, with a dead
+man's switch watching that the pipeline itself is alive.
+
+<Mermaid code={`graph TD
+  TEL[Telemetry<br/>metrics / SLO burn] --> EVAL{Alert rule fires?<br/>with 'for' duration}
+  EVAL -->|no| OK[Steady state]
+  EVAL -->|yes| GATE{Urgent + actionable<br/>+ user-impacting?}
+  GATE -->|yes — symptom / fast burn| PAGE[PAGE on-call now<br/>+ linked runbook]
+  GATE -->|no — slow burn / warning / cause| TICKET[File a ticket<br/>handle next business day]
+  PAGE --> RUN[Runbook: confirm, mitigate, escalate]
+  HB[Heartbeat from pipeline] --> DMS{Heartbeat still arriving?}
+  DMS -->|stopped| DEADPAGE[Dead man's switch PAGES<br/>monitoring itself is down]`} />
+
+A rule fires only after a sustained `for` duration (no flapping). The gate routes user-impacting
+urgent symptoms to a page with an attached runbook, and everything else to a ticket. Independently, a
+dead man's switch watches for a heartbeat from the monitoring pipeline and pages if it stops —
+catching the silent failure where no alerts can fire at all.
+
+## Try it
+
+Decide whether a condition should page, ticket, or stay a dashboard signal, then review the
+when-and-why of each alerting choice.
+
+<DecisionTree
+  client:visible
+  caption="Should this condition page, ticket, or just be a dashboard?"
+  root={{
+    question: 'Is the condition something a USER can feel (error rate, latency, a failing flow), i.e. a symptom?',
+    branches: [
+      {
+        label: 'No — it is an internal cause (CPU, queue depth, a replica down)',
+        next: {
+          question: 'Is it a near-certain leading indicator of imminent user pain (e.g. disk fills in 30 min)?',
+          branches: [
+            {
+              label: 'Yes — imminent, certain user impact',
+              next: { leaf: { recommendation: 'Page it (with a runbook)', detail: 'A leading-indicator cause that will certainly hurt users soon is worth an early page — it buys mitigation time. Keep these rare and high-confidence, and attach a runbook to act on it.' } },
+            },
+            {
+              label: 'No — it may never hurt users',
+              next: { leaf: { recommendation: 'Dashboard signal (or ticket), do NOT page', detail: 'Causes are infinite and mostly non-impacting (CPU at 90% with latency fine is not a problem). Put it on a diagnostic dashboard you consult after a symptom pages. Paging on it is pure alert fatigue.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Yes — it is a user-visible symptom',
+        next: {
+          question: 'Is it urgent — does a human need to act NOW (fast SLO burn / active outage)?',
+          branches: [
+            {
+              label: 'Yes — urgent, acting now matters',
+              next: { leaf: { recommendation: 'Page on-call (fast burn) + runbook', detail: 'Urgent, actionable, user-impacting symptom = the textbook page. Use a multi-window burn-rate rule with a short confirmation window so you do not page on an already-recovered spike, and link the runbook.' } },
+            },
+            {
+              label: 'No — real but slow (a gentle bleed, can wait for business hours)',
+              next: { leaf: { recommendation: 'Ticket it (slow burn)', detail: 'A slow error-budget burn matters but does not justify a 3am page. File a ticket / low-urgency notification so it is handled the next business day. This is what keeps precision high without losing recall.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Alerting decisions: when and why"
+  tabs={[
+    { label: 'Symptom vs cause', content: 'WHEN: deciding what should page. WHY: symptoms (error rate, latency) are few, definitely matter because users feel them, and catch EVERY cause that produces them — including unknown-unknowns. Causes are infinite and mostly harmless, so paging on them breeds fatigue. RULE: page on symptoms; keep causes on diagnostic dashboards you consult AFTER a symptom pages. Exception: a cause that is a near-certain leading indicator of imminent pain.' },
+    { label: 'SLO burn rate', content: 'WHEN: you have an SLO and an error budget to protect — make this your primary user-facing alert. WHY: alerting on the RATE of budget consumption (multi-window, multi-burn) is symptom-based by construction and tunes precision/recall far better than a raw threshold — page on fast burns, ticket on slow ones. The full recipe with worked numbers lives in the Reliability cluster (SLOs, SLIs & error budgets).' },
+    { label: 'Threshold vs anomaly', content: 'WHEN: choosing how an alert decides to fire. WHY: static thresholds are simple, explainable, and the right default — but a single line fails on metrics with daily/weekly seasonality (noon traffic is 10x the 3am floor). Anomaly detection learns the seasonal pattern and alerts on deviation, but is opaque, noisier, and harder to trust and tune. Use anomaly detection only where seasonality genuinely defeats a static line, not as a default.' },
+    { label: 'Alert fatigue', content: 'WHEN: always — it is the dominant failure mode. WHY: every noisy page spends the on-call engineer trust account; spend it all and they tune out real pages, making alerting worse than none. CURE: keep the paging set small, symptom-based, actionable, and runbook-backed; route everything non-urgent to tickets; and delete any alert that repeatedly fires and gets actioned as noise.' },
+    { label: 'Paging vs ticketing', content: 'WHEN: routing a fired alert. WHY: paging interrupts a human NOW and must be reserved for urgent + actionable + user-impacting conditions; ticketing files work for the next business day and is right for important-but-not-urgent things (slow burns, warnings, degraded-but-serving). Misrouting a non-urgent condition to a page is the single biggest source of fatigue.' },
+    { label: 'Runbooks', content: 'WHEN: any alert can page — attach one to every paging alert. WHY: a half-awake engineer at 3am should not be reinventing the response. A runbook states what the alert means, how to confirm it, how to mitigate, and when to escalate — turning a page into a procedure. An alert without a runbook is an unfinished alert.' },
+    { label: "Dead man's switch", content: 'WHEN: you depend on alerts firing — i.e. always. WHY: the most dangerous failure is silent: your monitoring pipeline dies, so NO alerts can fire and everything looks calm. A dead man\'s switch expects a regular heartbeat and pages when it STOPS — it is the alert that watches the watchers. Without it, silence is ambiguous: it could mean health, or it could mean your monitoring is dead.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google SRE** codified symptom-based alerting and the move away from cause-based pages; *My
+  Philosophy on Alerting* (Rob Ewaschuk) is the foundational argument that you should page on
+  symptoms and user pain, not on every internal condition.
+- **PagerDuty and Opsgenie** are the standard paging/on-call routers — escalation policies,
+  schedules, and the paging-versus-ticketing split — integrating with Prometheus Alertmanager,
+  Datadog, and the rest.
+- **Prometheus Alertmanager** implements the `for` duration (anti-flap), routing trees, grouping,
+  inhibition (suppress a flood of cause alerts when a symptom alert already fired), and silences —
+  the open-source embodiment of the routing model on this page.
+- **Dead Man's Snitch / Healthchecks.io** and Alertmanager's `Watchdog`/`DeadMansSwitch` pattern are
+  the canonical heartbeat tools that page when the *expected* signal stops — guarding against silent
+  monitoring failure.
+
+## Further reading
+
+- [Rob Ewaschuk — My Philosophy on Alerting](https://docs.google.com/document/d/199PqyG3UsyXlwieHaqbGiWVa8eMWi8zzAn0YfcApr8Q/edit) — the canonical case for symptom-based, page-only-when-urgent alerting.
+- [Google SRE Workbook — Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/) — multi-window, multi-burn-rate alerting with worked numbers.
+- [Prometheus — Alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) — the `for` duration and rule mechanics that prevent flapping.
+- [Google SRE Book — Being On-Call](https://sre.google/sre-book/being-on-call/) — operational reality of paging, fatigue, and sustainable on-call.

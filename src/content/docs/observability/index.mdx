@@ -1,0 +1,194 @@
+---
+title: Observability
+description: Observability versus monitoring, the three pillars (metrics, logs, traces) and how they unify, known-unknowns versus unknown-unknowns, high-cardinality, the debugging loop, and OpenTelemetry as the cross-cutting standard.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+**Monitoring tells you *that* something is wrong; observability tells you *why*.**
+Monitoring is the practice of watching a *predefined* set of signals — dashboards
+and alerts built around failure modes you already anticipated. Observability is a
+property of the system: the degree to which you can understand its internal state
+from its external outputs *without shipping new code*. The difference matters most
+when something breaks in a way nobody predicted. A monitored system answers the
+questions you asked in advance; an observable system lets you ask new questions of
+data already being emitted. This cluster covers the three pillars that produce that
+data — **metrics**, **logs**, and **traces** — how to unify them, how to keep their
+cost from exploding, and how to use them as a *debugging loop* rather than a wall of
+graphs. The SLO discipline that decides *what* to measure and alert on lives in the
+Reliability cluster; this cluster is about the telemetry that feeds it.
+
+## Mental model
+
+**Telemetry is evidence; observability is the ability to run an investigation on it.**
+Two distinctions anchor the whole field:
+
+The first is **known-unknowns versus unknown-unknowns**. A known-unknown is a failure
+mode you can name in advance — "the database might run out of connections" — so you
+pre-build a dashboard and an alert for it. That is monitoring, and it is necessary but
+finite: you can only pre-build for failures you imagined. An unknown-unknown is the
+failure you never thought of — "checkout is slow, but only for users in Mumbai paying
+with one specific card network, and only since the 14:00 deploy." You cannot dashboard
+your way to that in advance. Observability is what lets you slice the data along
+*arbitrary* dimensions after the fact to corner it. The dividing line is whether you
+must ship new instrumentation to answer the question: if yes, the system was not
+observable for that question.
+
+The second is **cardinality** — the number of distinct values a dimension can take.
+`http_status` has low cardinality (a handful of codes); `user_id` or `request_id` has
+near-unbounded cardinality (millions). High-cardinality data is exactly what you need
+to corner an unknown-unknown (drill down to the one customer, one build, one host), and
+it is exactly what is expensive to store and index. The entire economics of
+observability — metrics versus logs versus traces, sampling, retention — is a fight
+over how much high-cardinality detail you can afford to keep. That tension is the
+recurring theme across every page in this cluster.
+
+## Types / Variants
+
+**The three pillars** are three complementary shapes of telemetry, each strong where
+the others are weak:
+
+- **Metrics** — numeric measurements aggregated over time (a request counter, a latency
+  histogram, CPU saturation). Cheap, compact, and ideal for *dashboards and alerting*
+  because cost is bounded by the number of distinct label combinations, not by traffic
+  volume. Weak at high cardinality: you cannot put `user_id` on a metric without a
+  cardinality explosion.
+- **Logs** — timestamped records of discrete events, ideally **structured** (key-value
+  JSON, not free text). Rich, high-cardinality, and ideal for *the detailed story of a
+  single event*. Cost scales with event volume, so logs get expensive and must be
+  sampled or retention-capped.
+- **Traces** — the causal, end-to-end path of *one request* as it fans out across
+  services, broken into timed **spans**. Ideal for *latency attribution in distributed
+  systems* — "which of the eleven services on this request was slow?" Cost is dominated
+  by volume, so traces are almost always sampled.
+
+**Their unification** is the whole game. The three pillars are far more than the sum of
+their parts when *correlated* by shared identifiers — a **trace ID** and **span ID**
+threaded through every log line and attached to metrics as **exemplars**. With that
+thread, the debugging loop becomes: a metric tells you *something* spiked, an exemplar
+jumps you from the spiking point on the graph to a representative *trace*, the trace
+shows *which span* is slow, and that span's *logs* (joined by trace ID) tell you exactly
+*why*. Three disconnected tools become one navigable surface. **OpenTelemetry (OTel)** is
+the vendor-neutral standard — APIs, SDKs, and the OTel Collector — that emits all three
+pillars with consistent semantic conventions and propagates that correlating context, so
+you are not locked into one vendor's agent or wire format.
+
+## When to use / When NOT
+
+- **Invest in observability when:** you run a distributed or microservice system where
+  failures cross service boundaries and you genuinely face unknown-unknowns. **Don't
+  over-invest when:** a single-process monolith with a handful of known failure modes —
+  basic metrics plus structured logs may be all you act on; a full tracing stack is
+  overhead nobody queries.
+- **Reach for metrics when:** you need cheap, always-on dashboards and alerts on
+  aggregate health (the four golden signals). **Avoid metrics when:** you need to slice
+  by a high-cardinality dimension — that's a logs or traces question.
+- **Reach for logs when:** you need the full detailed context of individual events
+  (the request body, the exact error, the user). **Avoid relying on logs alone** for
+  cross-service latency — you'll be grepping timestamps across services by hand; that's
+  what traces are for.
+- **Reach for traces when:** latency or errors span multiple services and you must
+  attribute them to one hop. **Avoid full-fidelity tracing when:** volume makes 100%
+  capture unaffordable — sample, and accept that you keep the interesting traces, not
+  all of them.
+- **Adopt OpenTelemetry when:** you want vendor-neutral instrumentation and the freedom
+  to switch backends. **Skip the migration churn when:** you're tiny and a single
+  managed agent already does everything you need — though new instrumentation should
+  still default to OTel.
+
+## Tradeoffs
+
+The pillars trade cost, cardinality, and the kind of question they answer. Choose by the
+question, not by fashion; mature stacks run all three and correlate them.
+
+| Pillar | Best at | Cardinality | Cost driver | Weak at |
+| ------ | ------- | ----------- | ----------- | ------- |
+| Metrics | Dashboards, alerting, trends | Low (label sets) | Distinct label combinations | High-cardinality drill-down |
+| Logs | The detailed story of one event | High | Event volume × size | Cross-service latency attribution |
+| Traces | Latency attribution across services | High (sampled) | Span volume | Aggregate trends (sampling skews) |
+
+The master tradeoff mirrors the rest of the field: **fidelity versus cost.** Every dimension
+of detail you keep — every label on a metric, every retained log line, every unsampled trace —
+buys you the ability to answer a future question, and costs storage, indexing, and money. The
+art is keeping *enough* high-cardinality evidence to corner unknown-unknowns without paying to
+store everything. Sampling, retention policies, and cardinality budgets are how you set that
+dial — covered in detail on the metrics, tracing, and dashboards-and-debugging pages.
+
+## Diagram
+
+The unified pillars: correlated by a shared trace ID, the three telemetry types become one
+navigable debugging surface rather than three disconnected tools.
+
+<Mermaid code={`graph TD
+  APP[Instrumented service<br/>OpenTelemetry SDK] --> M[Metrics<br/>aggregated, cheap, low-cardinality]
+  APP --> L[Logs<br/>structured events, high-cardinality]
+  APP --> T[Traces<br/>per-request spans, sampled]
+  M -->|exemplar: trace_id| T
+  T -->|span_id joins| L
+  M --> DASH[Dashboard / alert<br/>'something spiked']
+  DASH -->|exemplar jump| T
+  T -->|which span is slow| L
+  L -->|why it was slow| ROOT[Root cause]`} />
+
+A metric spike surfaces on a dashboard; an exemplar carries a trace ID that jumps you to a
+representative trace; the trace pinpoints the slow span; the span's logs (joined by trace ID)
+explain the cause. The shared identifier is what turns three pillars into one investigation.
+
+## Try it
+
+Compare the three pillars by the question each answers, then see when and why to reach for
+each.
+
+<CompareMatrix
+  client:visible
+  caption="The three pillars compared"
+  columns={['Metrics', 'Logs', 'Traces']}
+  rows={[
+    { criterion: 'Shape of data', cells: ['Aggregated numbers over time', 'Discrete timestamped events', 'Causal per-request span tree'] },
+    { criterion: 'Question it answers', cells: ['Is the aggregate healthy? (trends)', 'What exactly happened in this event?', 'Where did this request spend its time?'] },
+    { criterion: 'Cardinality', cells: ['Low — bounded by label sets', 'High — per event', 'High — per request (sampled)'] },
+    { criterion: 'Cost driver', cells: ['Distinct label combinations', 'Event volume × payload size', 'Span volume (mitigated by sampling)'] },
+    { criterion: 'Primary use', cells: ['Dashboards & alerting', 'Forensic detail & audit', 'Latency attribution across services'] },
+    { criterion: 'Main weakness', cells: ['No high-cardinality drill-down', 'Poor cross-service correlation alone', 'Sampling skews aggregate stats'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Observability building blocks: when and why"
+  tabs={[
+    { label: 'Monitoring', content: 'WHEN: you can name the failure modes in advance and want dashboards plus alerts on them. WHY: pre-built signals catch the known-unknowns cheaply and reliably. LIMIT: it can only answer questions you asked before the incident — it is necessary but not sufficient for novel failures.' },
+    { label: 'Observability', content: 'WHEN: failures cross service boundaries and you face unknown-unknowns you could not have dashboarded in advance. WHY: rich, high-cardinality telemetry lets you slice along arbitrary dimensions after the fact and ask new questions of data already emitted — no need to ship new instrumentation mid-incident. TEST: if answering a question requires deploying new code, the system was not observable for it.' },
+    { label: 'Cardinality', content: 'WHEN: you decide what detail to attach to telemetry. WHY: high-cardinality dimensions (user_id, request_id, build_id) are exactly what corner an unknown-unknown — and exactly what is expensive to store and index. The whole cost model of observability is a budget over how much high-cardinality evidence you keep. RULE: keep high cardinality on logs and traces, keep it OFF metric labels.' },
+    { label: 'Unification', content: 'WHEN: you want the pillars to be more than three disconnected tools. WHY: a shared trace ID threaded through logs and attached to metrics as exemplars turns metric-spike to trace to log into one click-through investigation. Without correlation you are manually joining three systems by timestamp during an outage. The thread is the value.' },
+    { label: 'OpenTelemetry', content: 'WHEN: you instrument new services or want to avoid vendor lock-in. WHY: OTel is the vendor-neutral standard — one set of APIs/SDKs and the Collector emit all three pillars with consistent semantic conventions and propagate the correlating context. You can switch backends without re-instrumenting. DEFAULT: new code should emit OTel even if the old stack uses proprietary agents.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google** originated much of the practice — Dapper (the distributed-tracing paper that
+  seeded the field), Borgmon (the metrics system Prometheus is modeled on), and the SRE books
+  that codified golden signals and SLO-driven alerting.
+- **Prometheus + Grafana** is the de facto open-source metrics-and-dashboards stack; pairing it
+  with **Loki** (logs) and **Tempo** (traces) gives a correlated three-pillar stack from one
+  vendor, all OpenTelemetry-compatible.
+- **Honeycomb** popularized the high-cardinality, event-driven take on observability — wide
+  structured events you can slice arbitrarily — and is the canonical argument that
+  unknown-unknowns demand cardinality that classic metrics can't carry.
+- **Datadog, New Relic, and Grafana Cloud** are the mainstream managed platforms that unify all
+  three pillars with correlation and exemplars built in; **OpenTelemetry** is the standard they
+  all now ingest, decoupling instrumentation from backend choice.
+
+## Further reading
+
+- [OpenTelemetry — what is observability](https://opentelemetry.io/docs/concepts/observability-primer/) — the standard's own primer on the three pillars and signals.
+- [Google SRE Book — Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/) — the four golden signals and the monitoring philosophy this cluster builds on.
+- [Honeycomb — Observability: a Manifesto](https://www.honeycomb.io/blog/observability-a-manifesto) — the high-cardinality, unknown-unknowns framing of observability versus monitoring.
+- [Distributed Systems Observability (Cindy Sridharan)](https://www.oreilly.com/library/view/distributed-systems-observability/9781492033431/) — a concise, vendor-neutral tour of the three pillars and their limits.

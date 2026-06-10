@@ -1,0 +1,180 @@
+---
+title: Dashboards & Debugging
+description: Dashboard design (overview to drill-down), correlating the three pillars, exemplars, the observability-driven debugging workflow, cost management (sampling, retention, cardinality), and SLO dashboards.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+The pillars produce telemetry; **dashboards and the debugging workflow are how a human turns that
+telemetry into a root cause.** A wall of fifty graphs is not observability — it's a graveyard nobody
+reads during an incident. A *good* dashboard is designed for a path: it answers "is anything wrong?"
+at a glance, then lets you **drill down** from that high-level symptom toward the cause, ideally
+crossing from one pillar to the next without losing context. This page is about that craft: laying
+out dashboards **overview-first then drill-down**, **correlating** metrics, logs, and traces so they
+form one investigation rather than three tabs, using **exemplars** to jump from a metric spike
+straight to a representative trace, running the **observability-driven debugging loop**, building
+**SLO dashboards** that show budget burn, and — because all of this costs money — managing **cost**
+through sampling, retention, and cardinality. It's the payoff page: where the three pillars and the
+correlation thread from the rest of the cluster become an actual workflow.
+
+## Mental model
+
+**A dashboard is a funnel, not a poster.** The structure that works mirrors how you actually
+investigate: the *top* is a small set of overview signals — the golden signals or SLO status for the
+whole service — answering one question, "is the user being hurt right now?" If that's green, you
+stop. If it's red, you *drill down*: from the service overview to the failing endpoint, from the
+endpoint to the slow dependency, from the dependency to the specific host or trace. Each level
+narrows the search space. The anti-pattern is the flat "junk drawer" dashboard — every metric anyone
+ever wanted, no hierarchy — which forces you to scan everything and find nothing. Design top-down:
+what tells me there's a problem, then what tells me where, then what tells me why.
+
+Second model: **the value is in the *seams between* the pillars, not the pillars themselves.** Any
+one pillar in isolation leaves you manually pivoting — see a latency spike on a metric, then go to
+another tool and guess timestamps to find matching logs, then a third tool to find a trace. The
+modern workflow collapses those pivots into clicks via shared identifiers. The keystone is the
+**exemplar**: a sampled metric data point that carries a `trace_id`, so you can click the exact spike
+on a latency histogram and land on a *representative trace* of a slow request — no timestamp
+guessing. From the trace's slow span, the span's `trace_id` joins you to its **logs**. The debugging
+loop is therefore: *metric* (something is wrong) → *exemplar* → *trace* (which span is slow) → *log*
+(why). Observability is good exactly to the degree those transitions are one click, not three tools.
+
+## Types / Variants
+
+### Dashboard layers (overview → drill-down)
+
+- **Overview / health** — the few golden-signal or SLO panels for the whole service. The "is it
+  broken?" screen, glanceable, ideally one row. This is what's on the wall.
+- **Service / drill-down** — per-endpoint, per-dependency breakdowns: which route is erroring, which
+  downstream call is slow. The "where?" screen.
+- **Resource / diagnostic** — USE-style per-resource panels (CPU, memory, connection pools, queue
+  depth) and per-host detail. The "why, mechanically?" screen — cause signals you reach *after* a
+  symptom sent you here.
+- **SLO dashboard** — a dedicated view of each SLI against its target, **error budget remaining**,
+  and **burn rate** over multiple windows. Answers "how much budget is left and how fast are we
+  spending it?" — the decision surface from the Reliability cluster, made visible.
+
+### Correlation mechanisms
+
+- **Exemplars** — the jump from a metric data point to a trace (via an attached `trace_id`). Turns a
+  graph spike into a clickable example.
+- **Shared `trace_id`** — threaded through logs and spans, lets one identifier pivot across all three
+  pillars.
+- **Linked panels / data-link templating** — dashboard links that carry the current filters
+  (service, time range, label) from a metrics panel into a logs or traces query, preserving context.
+
+### Cost-management levers
+
+The same three dials recur because cost is the binding constraint:
+
+- **Sampling** — keep a representative fraction of traces (and high-volume boring logs); bias toward
+  errors and slow requests (tail sampling) so you keep what you'd investigate.
+- **Retention** — tier storage: hot/queryable for days, cheap cold/archived for compliance reach,
+  expired beyond that. Retention cost grows linearly with the window.
+- **Cardinality budget** — cap distinct metric label combinations; keep high-cardinality dimensions
+  on logs/traces (where they belong) and off metric labels (where they explode). The most common
+  surprise on the bill.
+
+## When to use / When NOT
+
+- **Design overview-first when:** building any service dashboard — start with golden signals/SLO, add
+  drill-down beneath. **Avoid the flat junk-drawer dashboard** — fifty ungrouped panels with no
+  hierarchy slow you down in an incident.
+- **Use exemplars when:** your stack supports them (Prometheus + a trace backend) — they're the
+  single biggest workflow accelerator. **Don't rely on timestamp-guessing** to cross from metrics to
+  traces when exemplars can make it a click.
+- **Build an SLO dashboard when:** you have SLOs — show budget remaining and burn rate, not just raw
+  latency. **Don't substitute** a raw-metrics dashboard for it; budget framing is what drives the
+  ship/no-ship decision.
+- **Sample and cap retention when:** telemetry volume drives real cost — almost always at scale.
+  **Don't sample errors or audit events, and don't retain everything forever** — both are expensive
+  in opposite directions.
+- **Watch cardinality when:** adding any metric label. **Never** put unbounded IDs on metric labels —
+  push that detail to logs/traces.
+- **Correlate the pillars when:** debugging anything cross-cutting — wire the data-links once so the
+  pivots are clicks. **Don't run three disconnected tools** and join by hand under incident
+  pressure.
+
+## Tradeoffs
+
+Dashboard and cost choices trade investigative speed against clutter and spend; the correlation seams
+are pure upside if your stack supports them.
+
+| Decision | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Overview-first, layered dashboard | Fast triage, guided drill-down | Up-front design effort and discipline |
+| Flat junk-drawer dashboard | Everything is *somewhere* | Nothing is findable fast; useless in an incident |
+| Exemplars + correlation links | Metric → trace → log in clicks | Requires compatible stack + wiring |
+| Aggressive sampling | Lower trace/log cost | Risk of missing a rare event (bias toward errors) |
+| Long retention | Deep forensic/compliance reach | Linear storage cost growth |
+| High-cardinality metric labels | Fine-grained metric slicing | Series explosion — can take the backend down |
+| SLO dashboard (budget + burn) | Decision-grade reliability view | Needs SLOs defined and burn-rate math wired |
+
+The cross-cutting tradeoff is the cluster's recurring one — **fidelity versus cost** — now applied at
+the *system* level: a dashboard that's too rich is unreadable, telemetry that's too complete is
+unaffordable, and the craft is keeping *just enough* visible and stored to drive decisions and corner
+unknown-unknowns. Overview-first design solves the readability half; sampling, retention, and
+cardinality budgets solve the cost half.
+
+## Diagram
+
+The observability-driven debugging loop: how a single incident flows from a red overview panel down
+through the correlated pillars to a root cause.
+
+<Mermaid code={`graph TD
+  OV[Overview dashboard<br/>golden signals / SLO status] -->|symptom: latency or errors spike| DRILL[Drill-down panel<br/>which endpoint / dependency?]
+  DRILL -->|click exemplar on the spike| TR[Representative trace<br/>via attached trace_id]
+  TR -->|read the waterfall| SPAN[Slowest span on the critical path]
+  SPAN -->|join by trace_id| LOG[That span's structured logs]
+  LOG --> ROOT[Root cause]
+  DRILL -.->|resource view| RES[USE panels: CPU, pool, queue]
+  RES -.-> ROOT
+  ROOT --> FIX[Mitigate, then fix + add a signal so next time it pages]`} />
+
+A red overview panel sends you to the drill-down view to localize the failing endpoint. An exemplar on
+the spike jumps you to a representative trace; the waterfall reveals the slow span on the critical
+path; the span's `trace_id` joins to its logs, which explain why. Resource (USE) panels corroborate.
+The loop ends not just at a fix but at *adding the signal* that would have caught it sooner.
+
+## Try it
+
+The when-and-why of each dashboard, correlation, and cost decision.
+
+<WhenWhyTabs
+  client:visible
+  caption="Dashboards, correlation, and cost: when and why"
+  tabs={[
+    { label: 'Overview → drill-down', content: 'WHEN: designing any service dashboard. WHY: investigation is a funnel — start with a glanceable overview (golden signals / SLO) answering "is the user hurt?", then drill down to "where?" (endpoint, dependency) and "why?" (resource, host). Each layer narrows the search. The anti-pattern is the flat junk-drawer of fifty ungrouped panels: everything is somewhere, nothing is findable fast. Design top-down.' },
+    { label: 'Correlating pillars', content: 'WHEN: debugging anything that crosses metrics, logs, and traces. WHY: the value is in the seams, not the pillars. Without correlation you pivot between three tools guessing timestamps under incident pressure. Thread a shared trace_id through logs and spans and wire data-links between panels so a metric spike becomes a click-through to the matching trace and logs. Wire it once; save it every incident.' },
+    { label: 'Exemplars', content: 'WHEN: your metrics + trace backends support them (e.g. Prometheus + Tempo). WHY: an exemplar is a sampled metric point carrying a trace_id, so you click the exact spike on a latency histogram and land on a representative trace of a slow request — no timestamp guessing. It is the single biggest accelerator of the metric → trace → log loop. Turn them on if you can.' },
+    { label: 'Debugging workflow', content: 'WHEN: an incident fires. WHY: the loop is metric (something is wrong) → exemplar → trace (which span is slow) → log (why), corroborated by resource (USE) panels. Observability is good exactly to the degree those transitions are clicks, not three separate tools. END the loop properly: not just at a fix, but at adding the signal/alert that would have caught it sooner next time.' },
+    { label: 'Cost management', content: 'WHEN: telemetry volume drives real spend — always at scale. WHY: fidelity costs money, so tune three dials. SAMPLING: keep a representative fraction, biased toward errors and slow traces (never sample errors away). RETENTION: tier hot/cold/expired; cost grows linearly with the window. CARDINALITY: cap metric label combinations and keep high-cardinality dimensions on logs/traces, off metric labels. Cardinality is the most common bill surprise.' },
+    { label: 'SLO dashboards', content: 'WHEN: you have SLOs. WHY: a reliability decision needs budget framing, not raw latency. An SLO dashboard shows each SLI against target, error budget REMAINING, and burn rate across multiple windows — making the ship/no-ship and page/ticket decisions visible. It is the Reliability clusters error-budget discipline rendered as a screen; do not substitute a raw-metrics graph for it.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Grafana** is the de facto dashboarding layer; its **exemplar** support links a Prometheus metric
+  point directly to a **Tempo** trace, and data-links carry context into **Loki** logs — the
+  three-pillar correlation workflow on this page, productized.
+- **Google SRE** dashboard guidance (overview-first, golden-signal-led, drill-down beneath) and the
+  *Art of SLOs* materials are the source of the layered-dashboard and SLO-dashboard patterns here.
+- **Honeycomb** built its product around the high-cardinality drill-down loop — start from an
+  aggregate, then slice by arbitrary dimensions (user, build, region) to corner an unknown-unknown —
+  the clearest example of debugging-as-iterative-querying rather than pre-built panels.
+- **Datadog, New Relic, and Grafana Cloud** ship unified dashboards with built-in exemplar/trace
+  correlation and managed sampling and retention controls — and bill on ingested volume and active
+  time series, which is exactly why cardinality and retention budgeting is a first-class operational
+  concern.
+
+## Further reading
+
+- [Grafana — Introduction to exemplars](https://grafana.com/docs/grafana/latest/fundamentals/exemplars/) — how a metric point links to a trace and powers the metric → trace jump.
+- [Google SRE Workbook — Monitoring](https://sre.google/workbook/monitoring/) — dashboard design, the four golden signals, and overview-to-detail layout.
+- [Grafana — Correlations and data links](https://grafana.com/docs/grafana/latest/panels-visualizations/configure-data-links/) — wiring context-preserving jumps between metrics, logs, and traces.
+- [The Art of SLOs (Google)](https://sre.google/resources/practices-and-processes/art-of-slos/) — building SLO dashboards that show budget remaining and burn rate.

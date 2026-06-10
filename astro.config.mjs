@@ -131,6 +131,17 @@ export default defineConfig({
             { label: 'Incident management', slug: 'reliability/incident-management' },
           ],
         },
+        {
+          label: 'Observability',
+          items: [
+            { label: 'Overview', slug: 'observability' },
+            { label: 'Metrics', slug: 'observability/metrics' },
+            { label: 'Logging', slug: 'observability/logging' },
+            { label: 'Distributed tracing', slug: 'observability/tracing' },
+            { label: 'Alerting', slug: 'observability/alerting' },
+            { label: 'Dashboards & debugging', slug: 'observability/dashboards-debugging' },
+          ],
+        },
       ],
     }),
   ],

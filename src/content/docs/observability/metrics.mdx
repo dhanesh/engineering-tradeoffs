@@ -1,0 +1,231 @@
+---
+title: Metrics
+description: Metric instrument types (counter, gauge, histogram, summary), the four golden signals, the RED and USE methods, cardinality explosion, Prometheus pull versus push, aggregation, and why you alert on percentiles not averages.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A **metric** is a numeric measurement aggregated over a time window — a request count, a
+queue depth, a latency distribution. Metrics are the cheap, always-on pillar: their cost is
+bounded by the number of distinct *label combinations*, not by traffic, so you can compute
+them on every request and keep them for a year. That makes them the backbone of dashboards
+and alerting. The discipline of metrics is twofold: picking the *right* instrument type for
+each measurement (a counter, gauge, histogram, or summary — getting this wrong makes the data
+meaningless or un-aggregatable), and picking the *right* signals to watch (the four golden
+signals, RED, USE). The recurring failure mode is **cardinality explosion** — attaching a
+high-cardinality label that multiplies your time series into the millions and bankrupts the
+metrics backend. This page is about choosing instruments, choosing signals, and not blowing up
+the cardinality budget.
+
+## Mental model
+
+**A metric is a pre-aggregated number with a low-cardinality set of labels; the moment you
+want per-entity detail, you've left metrics-land.** Picture the metrics store as a giant
+spreadsheet where each *row* is a unique combination of `(metric name, label values)` — one
+**time series** — and each cell is that series' value at a point in time. The cost of the
+whole system is the *number of rows*. Adding a label like `region` (5 values) to a metric with
+3 existing series gives 15 series — fine. Adding `user_id` (10 million values) gives 30 million
+series — catastrophe. So the mental rule is brutal and simple: **labels must be low-cardinality
+and bounded.** `status_code`, `method`, `region`, `endpoint-template` — yes. `user_id`,
+`request_id`, raw `url`, `email` — never. When you genuinely need to slice by a high-cardinality
+dimension, that is a *logs or traces* question, not a metrics one.
+
+Second model: **always measure the distribution, never just the average.** An average latency
+of 200ms can hide that 1% of users wait 8 seconds — and that 1% is often your most valuable or
+most vocal users. Averages are statistically meaningless for latency because the distribution is
+heavily right-skewed: a few huge values barely move the mean but define the user experience. You
+care about **percentiles** — p50 (typical), p95, p99, p99.9 (the tail). "p99 latency is 1.2s"
+means 1% of requests are slower than 1.2s, which is a real, actionable statement about real
+users. That is why latency metrics are **histograms**, not gauges of an average.
+
+## Types / Variants
+
+### Instrument types
+
+- **Counter.** A value that only ever *increases* (or resets to zero on restart): total
+  requests served, total bytes sent, total errors. You never read a counter's raw value; you
+  read its *rate* of increase (`rate(http_requests_total[5m])`). Counters are monotonic so that
+  rates survive restarts and are correctly summable across instances. Use for: "how many / how
+  often."
+- **Gauge.** A value that can go *up or down*: current memory in use, queue depth, in-flight
+  requests, temperature. You read the instantaneous value, and aggregate with `avg`/`max`/`sum`
+  as appropriate. Use for: "how much, right now."
+- **Histogram.** Bucketed counts of observations, used to compute **percentiles**: latency,
+  request size. The application pre-defines bucket boundaries (e.g. ≤10ms, ≤50ms, ≤100ms, …) and
+  increments the bucket each observation falls into. Crucially, **histogram buckets are
+  *aggregatable across instances*** — you can sum bucket counts from 50 servers and compute a
+  correct *global* p99. This is the right choice for latency in a distributed system.
+- **Summary.** Like a histogram, but the client computes **quantiles locally** (e.g. it tracks a
+  streaming p99 per instance) and ships the quantile directly. The catch: **summary quantiles
+  are NOT aggregatable** — you cannot average two instances' p99s to get the fleet p99 (a p99 of
+  a p99 is mathematically wrong). Summaries are cheaper to query (no bucket math) and more
+  accurate per-instance, but useless for fleet-wide percentiles. Prefer histograms unless you
+  truly only need per-instance quantiles.
+
+### Signal frameworks
+
+- **The four golden signals** (Google SRE): **Latency** (how long requests take — split success
+  from error latency), **Traffic** (demand on the system — requests/sec), **Errors** (rate of
+  failed requests), **Saturation** (how full the system is — the most constrained resource's
+  utilization, the leading indicator of imminent trouble). If you watch only four things, watch
+  these.
+- **RED** (request-scoped, for services): **Rate**, **Errors**, **Duration**. A focused subset
+  of the golden signals aimed at request-driven services — the right starting dashboard for any
+  microservice. (It drops saturation, which RED users get from USE on the underlying resources.)
+- **USE** (resource-scoped, for infrastructure, from Brendan Gregg): for every *resource*
+  (CPU, memory, disk, network, connection pool), track **Utilization** (% busy), **Saturation**
+  (queued/waiting work), and **Errors**. RED tells you the service is sick; USE tells you which
+  *resource* is the bottleneck.
+
+## When to use / When NOT
+
+- **Use a counter when:** the quantity only grows and you care about its rate (requests, errors,
+  bytes). **Don't use a gauge** for these — you'd lose rate semantics across restarts and can't
+  sum correctly.
+- **Use a gauge when:** the value moves both directions and the instantaneous level matters
+  (queue depth, memory, in-flight count). **Don't use a counter** — it can't go down.
+- **Use a histogram when:** you need percentiles *and* must aggregate across many instances
+  (latency in any distributed system). **Avoid a summary** there — its quantiles can't be merged.
+- **Use a summary when:** you need an accurate per-instance quantile cheaply and will never
+  aggregate it across instances. **Avoid it** as your fleet-wide latency SLI.
+- **Use RED when:** instrumenting a request-driven service — it's the fastest path to a useful
+  dashboard. **Use USE when:** diagnosing *which resource* is the bottleneck. **Use the golden
+  signals when:** you want the canonical four-signal service health view.
+- **Avoid high-cardinality labels — always.** Never put `user_id`, `request_id`, raw URLs, or
+  unbounded IDs on a metric label. That detail belongs on logs/traces.
+
+## Tradeoffs
+
+The instrument choice is mostly determined by the measurement's shape and whether you must
+aggregate; the headline pitfall is cardinality.
+
+| Instrument | Measures | Aggregatable across instances? | Cost / pitfall |
+| ---------- | -------- | ------------------------------ | -------------- |
+| Counter | Monotonic totals (rate) | Yes (sum, then rate) | Cheap; misuse = using raw value not rate |
+| Gauge | Up-and-down level | Yes (avg/max/sum) | Cheap; sampling can miss spikes between scrapes |
+| Histogram | Distribution → percentiles | **Yes** (sum buckets) | More series (one per bucket); pick buckets well |
+| Summary | Per-instance quantiles | **No** | Can't compute fleet percentiles; quantiles fixed at instrument time |
+
+Two cross-cutting tradeoffs dominate. First, **cardinality versus insight**: more labels let you
+slice finer but multiply series count multiplicatively — the cost is super-linear, and one
+unbounded label can take a metrics backend down. Budget cardinality like memory. Second, **pull
+versus push** for collection: a *pull* model (Prometheus scrapes targets on an interval) gives
+the monitoring system control over rate, free liveness detection (a target that fails to scrape
+is down), and easy service discovery — but struggles with short-lived jobs and targets behind
+NAT/firewalls. A *push* model (the app pushes to a gateway/collector — StatsD, OTLP push, the
+Prometheus Pushgateway) handles ephemeral batch jobs and locked-down networks, at the cost of
+losing free liveness signal and needing the app to know where to send. Most stacks pull
+long-lived services and push only short-lived jobs.
+
+## Diagram
+
+Pull versus push collection, and how histogram buckets aggregate to a correct fleet-wide
+percentile while summary quantiles cannot.
+
+<Mermaid code={`graph TD
+  subgraph Pull[Pull model - Prometheus]
+    P[Prometheus server] -->|scrape /metrics every 15s| S1[Service A]
+    P -->|scrape| S2[Service B]
+    P -.->|scrape fails = target down| S3[Service C]
+  end
+  subgraph Push[Push model - ephemeral jobs]
+    J[Batch job - short-lived] -->|push on exit| GW[Pushgateway / OTLP collector]
+    GW -->|scraped by| P
+  end
+  S1 --> H[Histogram buckets<br/>le=10,50,100,500ms]
+  S2 --> H
+  H -->|sum buckets across instances| P99[Correct fleet p99]
+  S1 --> SUM[Summary quantile p99 - per instance]
+  SUM -->|cannot average p99s| WRONG[No valid fleet p99]`} />
+
+Long-lived services are *pulled* (scraping doubles as a liveness check); short-lived jobs *push*
+to a gateway that Prometheus then scrapes. Histogram buckets sum across instances to a correct
+global percentile; summary quantiles, computed per-instance, cannot be merged.
+
+## Try it
+
+Pick the right instrument and signal framework for what you're measuring.
+
+<CompareMatrix
+  client:visible
+  caption="Metric instruments: pick by measurement shape"
+  columns={['Counter', 'Gauge', 'Histogram', 'Summary']}
+  rows={[
+    { criterion: 'Direction', cells: ['Only increases', 'Up and down', 'Distribution of values', 'Distribution of values'] },
+    { criterion: 'You read', cells: ['Its rate of change', 'Instantaneous value', 'Percentiles (server-side)', 'Quantiles (client-side)'] },
+    { criterion: 'Aggregates across instances', cells: ['Yes (sum then rate)', 'Yes (avg/max/sum)', 'Yes (sum buckets)', 'No'] },
+    { criterion: 'Use for', cells: ['Requests, errors, bytes', 'Queue depth, memory, in-flight', 'Latency, request size (distributed)', 'Per-instance quantile, cheaply'] },
+    { criterion: 'Classic mistake', cells: ['Reading raw value not rate', 'Missing spikes between scrapes', 'Badly chosen bucket bounds', 'Averaging quantiles (invalid)'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which metric instrument should I use?"
+  root={{
+    question: 'Is the value a distribution you need percentiles from (e.g. latency, request size)?',
+    branches: [
+      {
+        label: 'Yes — I need percentiles',
+        next: {
+          question: 'Will you aggregate across many instances to get a fleet-wide percentile?',
+          branches: [
+            {
+              label: 'Yes — fleet-wide p99 across instances',
+              next: { leaf: { recommendation: 'Histogram', detail: 'Buckets sum across instances, so you can compute a correct global p99/p99.9. The right default for latency in any distributed system. Choose bucket boundaries to bracket your SLO thresholds.' } },
+            },
+            {
+              label: 'No — only a per-instance quantile, computed cheaply',
+              next: { leaf: { recommendation: 'Summary', detail: 'Client-computed quantiles are accurate per-instance and cheap to query, but they cannot be merged across instances. Only safe when you will never need a fleet-wide percentile.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — it is a single number',
+        next: {
+          question: 'Does the value only ever increase (resetting on restart)?',
+          branches: [
+            {
+              label: 'Yes — monotonic total (requests, errors, bytes)',
+              next: { leaf: { recommendation: 'Counter', detail: 'Read its rate, not its raw value. Monotonicity makes rates survive restarts and lets you sum across instances before taking the rate.' } },
+            },
+            {
+              label: 'No — it goes up and down (queue depth, memory)',
+              next: { leaf: { recommendation: 'Gauge', detail: 'Captures the instantaneous level. Aggregate with avg/max/sum. Beware: the value between two scrapes is invisible, so brief spikes can be missed.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Prometheus** is the reference metrics system: a *pull* model with a multi-dimensional data
+  model (`metric{label=value}`), the four instrument types above, and PromQL for rates and
+  histogram-quantile math. The **Pushgateway** exists specifically for short-lived jobs that
+  can't be scraped.
+- **Google's four golden signals** (SRE book) and **Brendan Gregg's USE method** are the two
+  canonical signal frameworks; **RED** (Tom Wilkie, Weaveworks/Grafana) is the request-scoped
+  distillation widely used for microservice dashboards.
+- **StatsD / Graphite** popularized the *push* model with client-side aggregation; **OpenTelemetry
+  metrics** with OTLP support both push and pull and is the emerging vendor-neutral standard.
+- **Cardinality explosion** is the canonical metrics outage: a deploy that adds `user_id` or a
+  raw URL as a label can multiply series into the millions overnight — every managed vendor
+  (Datadog, Grafana, Chronosphere) bills on and rate-limits active time series for exactly this
+  reason.
+
+## Further reading
+
+- [Google SRE Book — The Four Golden Signals](https://sre.google/sre-book/monitoring-distributed-systems/#xref_monitoring_golden-signals) — latency, traffic, errors, saturation.
+- [Brendan Gregg — The USE Method](https://www.brendangregg.com/usemethod.html) — utilization, saturation, errors per resource.
+- [Prometheus — Metric Types](https://prometheus.io/docs/concepts/metric_types/) — counter, gauge, histogram, summary, and when each applies.
+- [Prometheus — Histograms and summaries](https://prometheus.io/docs/practices/histograms/) — why histograms aggregate and summary quantiles do not.

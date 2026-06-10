@@ -1,0 +1,224 @@
+---
+title: Distributed Tracing
+description: Distributed tracing, spans and trace-context propagation, head versus tail sampling, span attributes, critical-path analysis, OpenTelemetry, and when tracing earns its cost.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+**Distributed tracing** follows a single request as it fans out across services, recording the
+causal, timed path it took. Where a metric says "p99 latency is 2s" and a log says "this one call
+failed," a trace answers the question neither can alone: *which of the eleven services on this
+request was the slow one, and what was it waiting on?* In a monolith you'd attach a profiler; in a
+microservice system the request crosses process and network boundaries, so the "stack trace" must
+be reconstructed from pieces emitted by each service and stitched together by a shared identifier.
+That stitched structure — a tree of timed **spans** under one **trace ID** — is what makes latency
+in a distributed system debuggable. Tracing is the most powerful pillar for cross-service latency
+attribution and also the most expensive at full fidelity, so the central operational question is
+**how to sample** — keeping the interesting traces without keeping (and paying for) all of them.
+
+## Mental model
+
+**A trace is a distributed stack trace with timing; a span is one stack frame.** A **span** is a
+single unit of work — one service handling one operation — with a start time, a duration, a name,
+a set of **attributes** (key-value metadata: `http.method`, `db.statement`, `user.tier`), and a
+**parent span ID**. The first span (the edge request) is the **root**; every downstream call
+creates a **child** span pointing back at its parent. Assemble all spans sharing a **trace ID** by
+their parent links and you get a tree — render it on a time axis and you get a **waterfall**: each
+span a horizontal bar, nesting showing causality, length showing duration. Reading the waterfall,
+the slow hop is the long bar; a serial chain of bars is sequential dependency; overlapping bars are
+concurrency. The whole point is that latency *attribution* — "the 2 seconds were spent here" —
+becomes visual and obvious.
+
+Second model: **the magic is context propagation, and it must be unbroken.** A trace only stitches
+together if every service forwards the trace context (the `trace_id` plus the current `span_id`,
+carried in a standard header — **W3C Trace Context**'s `traceparent`) on every outbound call, and
+each receiver makes its new span a child of the incoming one. Break the chain *anywhere* — a
+service that drops the header, an async queue that doesn't carry it, a thread boundary that loses
+it — and the trace splits into disconnected fragments, hiding exactly the cross-boundary latency you
+were chasing. Propagation discipline across *every* hop, sync and async, is the non-negotiable
+foundation; everything else is reading the result.
+
+## Types / Variants
+
+### Spans and structure
+
+- **Root span** — the top-level operation (the inbound request at the edge). Its duration is the
+  end-to-end latency the user felt.
+- **Child spans** — nested units of work (a downstream RPC, a DB query, a cache lookup), each
+  pointing at its parent, forming the tree.
+- **Span attributes** — key-value metadata on a span. *This is where high cardinality lives safely*:
+  unlike metric labels, you *can* attach `user_id`, `order_id`, `build_sha`, or `region` to a span,
+  because traces are sampled and stored as events, not as a cartesian product of time series. Rich
+  attributes are what let you later filter "show traces for enterprise-tier users on build X."
+- **Span events / links** — timestamped sub-events within a span, and links to spans in *other*
+  traces (e.g. a batch job triggered by many requests).
+
+### Context propagation
+
+The mechanism that ties spans into one trace: the **W3C Trace Context** standard (`traceparent` /
+`tracestate` headers) carries `trace_id` and parent `span_id` across HTTP, gRPC, and (via message
+metadata) async queues. OpenTelemetry instruments most frameworks to inject and extract it
+automatically.
+
+### Sampling — the central cost lever
+
+You cannot afford to store every trace at scale, so you keep a fraction. *Where* you decide is the
+key distinction:
+
+- **Head-based sampling** — decide at the *start* of the trace (at the root) whether to keep it,
+  before you know how it turns out. Simple, cheap, stateless, and the decision propagates so the
+  whole trace is consistently kept or dropped. Weakness: it's *blind to the outcome* — a purely
+  random head sampler will, by chance, drop most of your rare errors and slow requests, which are
+  exactly the traces you wanted.
+- **Tail-based sampling** — buffer *all* spans of a trace until it completes, then decide *with full
+  knowledge* — keep it if it errored, if it was slow (latency above a threshold), or if it touched a
+  rare code path; drop the boring fast successes. Catches the interesting traces head sampling
+  misses, at the cost of *buffering every trace in memory* until it finishes (significant resource
+  and infrastructure cost) and needing a collector that sees all spans of a trace.
+
+### Critical-path analysis
+
+Not every span on the waterfall contributes to total latency. The **critical path** is the chain of
+spans that actually determined the end-to-end duration — the serial dependencies whose sum *is* the
+latency. Optimizing a span *off* the critical path (one running in parallel, finishing early)
+changes nothing. Critical-path analysis is what tells you *which* slow span is worth fixing.
+
+## When to use / When NOT
+
+- **Use tracing when:** requests fan out across multiple services and you need to attribute latency
+  or errors to a specific hop — the defining use case for microservices. **Don't bother when:** a
+  single-process monolith where a local profiler/flamegraph already shows where time goes; tracing's
+  cross-boundary value is wasted.
+- **Use head sampling when:** you want simple, cheap, low-overhead tracing and a uniform random
+  sample is acceptable for understanding *typical* behavior. **Avoid head sampling** as your only
+  strategy if you must reliably capture rare errors/slow requests — randomness will drop most of
+  them.
+- **Use tail sampling when:** you specifically need to keep all errors and slow traces and can
+  afford the buffering infrastructure. **Avoid tail sampling when:** trace volume is so high that
+  buffering every trace to decide is prohibitively expensive — or combine: head-sample a baseline,
+  tail-sample the interesting.
+- **Put high-cardinality data on span attributes when:** you'll want to filter traces by it later
+  (`user_id`, `build`, `region`) — traces are the *right* place for this, unlike metrics.
+- **Invest in tracing when:** the operational cost is justified by genuinely cross-service latency
+  problems. **Hold off when:** you have no distributed latency mystery to solve and the
+  instrumentation + storage cost would buy nothing you'd query.
+
+## Tradeoffs
+
+The headline tradeoff is *where and how you sample*: completeness of the interesting traces versus
+the cost of buffering and storing them.
+
+| Decision | Buys you | Costs / risk |
+| -------- | -------- | ------------ |
+| Tracing at all | Cross-service latency attribution | Instrumentation effort + storage; wasted on a monolith |
+| Head sampling | Cheap, simple, stateless, low overhead | Blind to outcome — randomly drops rare errors/slow traces |
+| Tail sampling | Keeps all errors and slow traces | Must buffer every trace until complete — heavy infra cost |
+| Rich span attributes | High-cardinality filtering after the fact | Larger spans; PII risk if you attach user data carelessly |
+| 100% capture (no sampling) | Every trace available | Often unaffordable at scale; storage/cost explodes |
+
+The recurring theme is **fidelity versus cost**, and sampling is the dial. The sophisticated answer
+is rarely "head or tail" but *both*: a small uniform head sample to understand typical behavior
+cheaply, plus tail sampling biased toward errors and high latency to guarantee the rare-but-critical
+traces survive. Pick the dial by what you'll actually investigate — typical-case performance versus
+worst-case incidents.
+
+## Diagram
+
+A trace waterfall: nested spans under one trace ID, on a time axis. The slow span and the critical
+path are visible at a glance.
+
+<Mermaid code={`gantt
+  title Trace waterfall - one request across services (trace_id abc123)
+  dateFormat X
+  axisFormat %Lms
+  section Edge
+  GET /checkout (root span)        :root, 0, 520
+  section Auth
+  auth.verify (RPC)                :auth, 0, 40
+  section Cart
+  cart.load (RPC)                  :cart, 45, 110
+  cart.db.query                    :cartdb, 60, 95
+  section Payment
+  payment.authorize (RPC)          :crit, pay, 115, 470
+  payment.db.query                 :paydb, 130, 180
+  payment.gateway.call (SLOW)      :crit2, gw, 185, 460
+  section Notify
+  notify.enqueue (async)           :notify, 470, 510`} />
+
+The root span is the user-felt latency (520ms). Auth, cart, and payment run in sequence; within
+payment, the external gateway call (185–460ms) dominates. That gateway span sits *on the critical
+path* — the serial chain root → payment → gateway whose durations sum to the total — so it is the
+one worth optimizing. The async notify span runs at the end and off the critical path: speeding it
+up wouldn't change end-to-end latency.
+
+## Try it
+
+Decide whether to trace, and which sampling strategy fits your cost and capture needs.
+
+<DecisionTree
+  client:visible
+  caption="Tracing and sampling: what should I do?"
+  root={{
+    question: 'Do requests fan out across multiple services where you need to attribute latency or errors to a specific hop?',
+    branches: [
+      {
+        label: 'No — single process / monolith',
+        next: { leaf: { recommendation: 'Skip distributed tracing (use a local profiler)', detail: 'In one process a flamegraph or profiler already shows where time goes. Tracing earns its cost only across service boundaries — instrument metrics and structured logs instead.' } },
+      },
+      {
+        label: 'Yes — multi-service latency/error attribution',
+        next: {
+          question: 'Do you specifically need to capture ALL errors and slow traces (not just a random sample)?',
+          branches: [
+            {
+              label: 'Yes — must keep every error / slow trace',
+              next: {
+                question: 'Can you afford to buffer every trace in memory until it completes?',
+                branches: [
+                  {
+                    label: 'Yes — buffering infra is fine',
+                    next: { leaf: { recommendation: 'Tail-based sampling', detail: 'Decide after the trace completes: keep it if it errored, was slow, or hit a rare path; drop boring fast successes. Catches exactly the interesting traces, at the cost of buffering all spans until completion.' } },
+                  },
+                  {
+                    label: 'No — buffering is too expensive at our volume',
+                    next: { leaf: { recommendation: 'Head sample baseline + bias toward errors', detail: 'Use cheap head sampling for typical behavior, and raise the keep-rate (or use error-aware head sampling where supported) for error paths. A pragmatic compromise when full tail buffering is unaffordable.' } },
+                  },
+                ],
+              },
+            },
+            {
+              label: 'No — a representative sample of typical behavior is enough',
+              next: { leaf: { recommendation: 'Head-based sampling', detail: 'Decide at the root and propagate it, so the whole trace is consistently kept or dropped. Cheap, stateless, low overhead — ideal for understanding typical performance. Accept that it randomly drops most rare errors.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google Dapper** is the foundational distributed-tracing system; its 2010 paper introduced
+  spans, trace propagation, and sampling, and seeded essentially every tracer that followed.
+- **OpenTelemetry** is now the vendor-neutral standard for trace instrumentation and context
+  propagation (W3C Trace Context); the **OTel Collector** is where tail-based sampling is commonly
+  configured. It superseded the earlier OpenTracing and OpenCensus projects.
+- **Jaeger** (CNCF) and **Grafana Tempo** are the common open-source trace backends; Tempo pairs
+  with Loki and Prometheus for correlated three-pillar debugging, and supports exemplar jumps from a
+  metric straight into a trace.
+- **Honeycomb and Lightstep** built their products around high-cardinality span attributes and
+  tail-based sampling, making "filter all traces where `user.tier = enterprise` and latency > 1s"
+  the core workflow — the case for putting rich attributes on spans rather than metric labels.
+
+## Further reading
+
+- [Dapper, a Large-Scale Distributed Systems Tracing Infrastructure (Google, 2010)](https://research.google/pubs/pub36356/) — the paper that founded distributed tracing.
+- [OpenTelemetry — Traces](https://opentelemetry.io/docs/concepts/signals/traces/) — spans, attributes, context, and propagation.
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/) — the `traceparent` header standard that makes cross-vendor propagation work.
+- [OpenTelemetry — Sampling](https://opentelemetry.io/docs/concepts/sampling/) — head versus tail sampling and how to configure each.
