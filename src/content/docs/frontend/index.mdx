@@ -1,0 +1,156 @@
+---
+title: The Browser as a Platform
+description: How a page actually loads — DNS, TCP, TLS, HTML, the critical rendering path — plus the DOM/CSSOM/render tree, reflow vs repaint, and the event loop's macro/microtask ordering.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+The browser is not a document viewer — it is a runtime: a networking stack, a
+parser, a layout engine, a JavaScript VM, and a compositor, all coordinated by a
+single-threaded event loop. Every frontend performance problem and every
+rendering bug traces back to one of those subsystems. A full-stack engineer who
+understands *how a URL becomes pixels* can reason about why a page is slow,
+why it flickers, and why an `await` ran later than expected — instead of
+guessing. This page is the substrate the rest of the cluster builds on:
+the load sequence, the render tree, and the event loop.
+
+## Mental model
+
+A page load is a **pipeline with a gate in the middle**. The first half is
+*networking* — turning a URL into bytes (DNS, TCP, TLS, HTTP). The second half
+is *rendering* — turning bytes into pixels (parse, style, layout, paint,
+composite). The gate is the **critical rendering path (CRP)**: the minimum
+sequence of work the browser *must* finish before it can show the first
+meaningful frame. Anything on the CRP (render-blocking CSS, synchronous
+JavaScript in the head) delays first paint; anything off it (async scripts,
+below-the-fold images) does not.
+
+Once loaded, the page is driven by the **event loop**: a single thread that
+pulls one task at a time, runs it to completion, then drains *all* pending
+microtasks before painting and picking up the next task. "JavaScript is
+single-threaded" is really "the event loop runs one task at a time" — and
+understanding that ordering explains nearly every async surprise.
+
+## Types / Variants
+
+The work splits into distinct phases, each a place latency hides:
+
+- **DNS resolution.** Hostname to IP. Cold lookups cost a round trip
+  (often 20–120 ms); cached or `dns-prefetch`-warmed lookups are near-free.
+- **TCP handshake.** SYN / SYN-ACK / ACK — one round trip before any bytes flow.
+  HTTP/3 over QUIC folds this into the crypto handshake, removing a round trip.
+- **TLS handshake.** Certificate exchange and key agreement. TLS 1.3 needs one
+  round trip (0-RTT on resumption); TLS 1.2 needs two. See *TLS and security*.
+- **HTML download and parse.** The parser builds the **DOM** incrementally as
+  bytes arrive. A synchronous `script` (no `async`/`defer`) *blocks* the parser.
+- **CSSOM construction.** CSS is **render-blocking**: the browser will not paint
+  until it has enough stylesheet to compute styles, because a late rule could
+  restyle everything (flash of unstyled content otherwise).
+- **Render tree.** DOM and CSSOM merged, with non-visual nodes
+  (`display: none`, `head`) pruned — only what will be painted.
+- **Layout (reflow).** Compute the geometry (box, position) of every render-tree
+  node. Output is the box model in device pixels.
+- **Paint.** Fill in pixels — text, colors, borders, shadows — into layers.
+- **Composite.** Assemble layers on the GPU into the final frame. `transform`
+  and `opacity` changes can be done *here alone*, skipping layout and paint.
+
+## When to use / When NOT
+
+The decision here is **what to put on the critical path** — every byte on it
+delays first paint.
+
+- **Use render-blocking resources when:** the content genuinely cannot render
+  correctly without them — your base CSS, a font that would otherwise cause a
+  visible swap. Keep this set minimal and inline critical CSS.
+- **Avoid blocking when:** a script or stylesheet is not needed for the first
+  frame. Use `defer` (run after parse, in order), `async` (run whenever ready,
+  unordered), or `media`-scoped stylesheets so they leave the CRP.
+- **Use compositor-only properties (`transform`, `opacity`) when:** animating.
+  They skip layout and paint, so they hit 60 fps cheaply.
+- **Avoid animating layout properties (`top`, `width`, `margin`) when:** you care
+  about smoothness — each frame triggers a reflow of the subtree, the single
+  most expensive rendering operation.
+
+## Tradeoffs
+
+| Lever | Speeds up | Costs |
+| ----- | --------- | ----- |
+| Inline critical CSS | First paint (no extra request) | Larger HTML, no caching of that CSS |
+| `defer` scripts | Parse + first paint | Script runs later (after DOMContentLoaded) |
+| `async` scripts | Parse not blocked | Unordered execution; risky for dependent scripts |
+| Preconnect / dns-prefetch | Connection setup for third parties | Wasted handshakes if the origin is unused |
+| Compositor-only animation | Frame rate, main-thread freedom | Extra GPU memory per promoted layer |
+| Reducing DOM size | Layout + style recalc cost | Sometimes more JS to virtualize lists |
+
+## Diagram
+
+The full path from URL to pixels — networking phases feed the critical
+rendering path, which gates the first frame.
+
+<Mermaid code={`graph TD
+  URL[URL entered] --> DNS[DNS: hostname to IP]
+  DNS --> TCP[TCP handshake]
+  TCP --> TLS[TLS handshake]
+  TLS --> REQ[HTTP request]
+  REQ --> HTML[HTML bytes stream in]
+  HTML --> DOM[Parse to DOM]
+  HTML --> CSS[Fetch + parse CSS to CSSOM]
+  DOM --> RT[Render tree = DOM + CSSOM, pruned]
+  CSS --> RT
+  RT --> LAY[Layout / reflow: geometry]
+  LAY --> PAINT[Paint: fill pixels into layers]
+  PAINT --> COMP[Composite on GPU]
+  COMP --> FRAME[First frame on screen]`} />
+
+## Try it
+
+Switch tabs to see how each subsystem maps to a concrete decision and a common
+failure mode.
+
+<WhenWhyTabs
+  client:visible
+  caption="The browser's subsystems, by concern"
+  tabs={[
+    {
+      label: 'Critical rendering path',
+      content: 'The CRP is the minimum work before first paint: build the DOM, build enough CSSOM to style, form the render tree, lay out, paint, composite. Optimize it by shrinking the bytes on it (inline critical CSS, defer non-essential JS) and reducing render-blocking requests. Render-blocking CSS and synchronous head scripts are the two classic CRP stalls.',
+    },
+    {
+      label: 'Reflow vs repaint',
+      content: 'Reflow (layout) recomputes geometry — triggered by changing size, position, font, or reading layout properties like offsetHeight (which forces a synchronous reflow, the "layout thrash" trap). Repaint redraws pixels without changing geometry — triggered by color or visibility changes. Composite-only changes (transform, opacity) skip both. Batch DOM reads then writes to avoid forced synchronous layout.',
+    },
+    {
+      label: 'Event loop: tasks',
+      content: 'A macrotask is one unit of work: a script execution, a setTimeout callback, an event handler, an I/O completion. The loop runs exactly one macrotask to completion, then drains microtasks, then may render, then picks the next macrotask. A long macrotask blocks rendering and input — this is what "the main thread is blocked" means.',
+    },
+    {
+      label: 'Event loop: microtasks',
+      content: 'Microtasks (Promise .then callbacks, queueMicrotask, MutationObserver) run after the current macrotask finishes and BEFORE the next macrotask or paint — the entire microtask queue is drained, including microtasks queued by other microtasks. This is why an awaited promise resolves before a setTimeout(0) scheduled earlier, and why an infinite microtask loop can freeze the page entirely.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Chrome DevTools Performance panel** visualizes exactly this pipeline:
+  the flame chart shows main-thread tasks, and purple "Layout"/green "Paint"
+  bars mark reflows and repaints you can hunt down.
+- **React 18's concurrent rendering** yields to the event loop between work
+  units so a long render does not monopolize a macrotask and block input —
+  a direct application of the task/microtask model.
+- **Cloudflare and Vercel** push TLS 1.3 and HTTP/3 to the edge specifically to
+  collapse the networking phases (DNS, TCP, TLS) that front-load the CRP.
+- **The `content-visibility: auto` CSS property** lets the browser skip layout
+  and paint for off-screen subtrees — pruning the render-tree work entirely.
+
+## Further reading
+
+- [How browsers work (web.dev / Tali Garsiel)](https://web.dev/articles/howbrowserswork) — the canonical deep dive on parsing, render tree, and layout.
+- [The critical rendering path (MDN)](https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/Critical_rendering_path) — render-blocking resources and how to optimize them.
+- [Jake Archibald — In the loop (event loop talk)](https://www.youtube.com/watch?v=cCOL7MC4Pl0) — the definitive explanation of tasks, microtasks, and rendering.
+- [Render-tree construction, layout, and paint (web.dev)](https://web.dev/articles/critical-rendering-path/render-tree-construction) — DOM + CSSOM to pixels.

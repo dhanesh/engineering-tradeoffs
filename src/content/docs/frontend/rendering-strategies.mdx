@@ -1,0 +1,199 @@
+---
+title: Rendering Strategies
+description: CSR, SSR, SSG, ISR, streaming SSR, and islands/RSC — what each does to TTFB, FCP, TTI, and SEO, the true cost of hydration, and a decision tree for picking one per route.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+"Rendering strategy" answers one question: **where and when does HTML get
+generated** — in the browser at runtime, on the server per request, at build
+time, or some blend. The choice sets your time-to-first-byte, your time-to-first
+paint, your interactivity delay, your SEO, and your infrastructure cost. There
+is no universally correct answer; modern frameworks (Next.js, Astro, Remix,
+SvelteKit) let you choose *per route*, which is the real skill — matching each
+page's freshness and interactivity needs to the cheapest strategy that satisfies
+them.
+
+## Mental model
+
+Every strategy is a point on two axes: **when the HTML is produced** (build time
+to request time to client time) and **how much JavaScript must run before the
+page is interactive** (none to a full app re-render). Pushing rendering earlier
+(build time) makes the first byte instant but the content potentially stale.
+Pushing it later (the client) makes content fresh and personalized but delays
+everything behind a JavaScript download-parse-execute tax.
+
+The hidden cost in client-involved strategies is **hydration**: the server
+sends HTML, then the browser downloads the *same* component tree as JavaScript
+and re-runs it to attach event listeners and rebuild state. Until hydration
+finishes, the page *looks* ready but isn't interactive — the gap between FCP
+(it appears) and TTI (it responds). Hydration is pure overhead: you pay to
+reconstruct on the client what the server already computed. Islands and React
+Server Components exist specifically to shrink or eliminate that bill.
+
+## Types / Variants
+
+- **CSR (Client-Side Rendering).** Server sends a near-empty HTML shell plus a
+  JS bundle; the browser builds the entire DOM. Fast TTFB, poor FCP (blank until
+  JS runs), SEO needs the crawler to execute JS. Classic SPA (Create React App,
+  Vite SPA).
+- **SSR (Server-Side Rendering).** Server renders full HTML per request, then the
+  client hydrates. Good FCP and SEO, fresh/personalized content, but TTFB rises
+  with server work and you still pay full hydration. (Next.js `getServerSideProps`,
+  Remix loaders.)
+- **SSG (Static Site Generation).** HTML rendered once at build time, served from
+  a CDN. Best possible TTFB and FCP, trivially cacheable, but content is frozen
+  until the next build — rebuilds scale with page count. (Astro, Hugo, Next
+  `getStaticProps`.)
+- **ISR (Incremental Static Regeneration).** SSG plus background revalidation:
+  serve the cached static page, regenerate it after a TTL or on demand. Static
+  speed with bounded staleness, no full rebuild. (Next.js `revalidate`.)
+- **Streaming SSR.** Server flushes HTML in chunks as it renders, so the browser
+  paints the shell while slow data is still resolving (React `Suspense` +
+  `renderToPipeableStream`). Improves perceived FCP/TTFB without waiting for the
+  slowest query.
+- **Islands architecture.** Page is mostly static HTML; only interactive
+  "islands" ship and hydrate JavaScript, independently. Most of the page never
+  hydrates at all. (Astro, Fresh.)
+- **React Server Components (RSC).** Components render *only* on the server and
+  ship as serialized output, not JavaScript — zero client bundle for those parts.
+  Client Components interleave for interactivity. (Next.js App Router.)
+
+## When to use / When NOT
+
+- **Use CSR when:** the page is behind auth, highly interactive, and SEO is
+  irrelevant (dashboards, internal tools, app shells). **Avoid when:** SEO,
+  social previews, or fast first paint on slow devices matter.
+- **Use SSR when:** content is personalized or must be fresh on every request and
+  you need SEO (logged-in feeds, search results, e-commerce with live pricing).
+  **Avoid when:** content is identical for everyone — you are paying per-request
+  compute for cacheable output.
+- **Use SSG when:** content changes infrequently and is the same for all users
+  (docs, marketing, blogs). **Avoid when:** content is per-user or changes
+  faster than you can rebuild.
+- **Use ISR when:** mostly-static content needs periodic freshness without full
+  rebuilds (product catalogs, news). **Avoid when:** strict consistency is
+  required — readers can see a stale page within the revalidation window.
+- **Use streaming SSR when:** part of the page depends on a slow data source and
+  you want the shell visible immediately. **Avoid when:** the page is trivial —
+  the complexity is not worth it.
+- **Use islands / RSC when:** the page is content-heavy with isolated
+  interactivity and you want to minimize shipped JS. **Avoid when:** the whole
+  page is a deeply interconnected interactive app.
+
+## Tradeoffs
+
+The core tensions are freshness vs speed and interactivity vs shipped JavaScript.
+
+<CompareMatrix
+  client:visible
+  caption="Rendering strategies across the metrics that matter"
+  columns={["CSR", "SSR", "SSG", "ISR", "Streaming SSR", "Islands / RSC"]}
+  rows={[
+    { criterion: "HTML produced", cells: ["In browser", "Per request (server)", "At build", "Build + background revalidate", "Per request, streamed", "Build/server, partial"] },
+    { criterion: "TTFB", cells: ["Excellent (shell)", "Worse (server work)", "Excellent (CDN)", "Excellent (CDN)", "Good (flush shell early)", "Excellent"] },
+    { criterion: "FCP", cells: ["Poor (blank until JS)", "Good", "Excellent", "Excellent", "Good", "Excellent"] },
+    { criterion: "TTI / interactivity", cells: ["Late (full hydrate)", "Late (full hydrate)", "Fast (little JS)", "Fast (little JS)", "Improving (progressive)", "Fast (only islands hydrate)"] },
+    { criterion: "SEO", cells: ["Weak (needs JS crawl)", "Strong", "Strong", "Strong", "Strong", "Strong"] },
+    { criterion: "Content freshness", cells: ["Live", "Live per request", "Build-time only", "Bounded staleness", "Live per request", "Mixed"] },
+    { criterion: "Shipped JS", cells: ["Large", "Large (hydration)", "Small", "Small", "Large (hydration)", "Minimal"] },
+    { criterion: "Infra cost", cells: ["Low (static host)", "High (per-request compute)", "Lowest (CDN)", "Low (CDN + occasional regen)", "Moderate", "Low"] },
+  ]}
+/>
+
+## Diagram
+
+How rendering location shifts the work — and where hydration adds cost.
+
+<Mermaid code={`graph LR
+  subgraph Build["Build time"]
+    SSG[SSG: render once] --> CDN1[(CDN)]
+    ISR[ISR: render + revalidate] --> CDN1
+  end
+  subgraph Server["Request time"]
+    SSR[SSR: render per request]
+    STR[Streaming SSR: flush chunks]
+  end
+  subgraph Client["Client"]
+    CSR[CSR: render in browser]
+    HYD[Hydration: re-run components]
+  end
+  CDN1 --> Browser[Browser paints]
+  SSR --> Browser
+  STR --> Browser
+  Browser --> HYD
+  CSR --> Browser
+  HYD --> Interactive[Page interactive / TTI]
+  Islands[Islands / RSC: hydrate only islands] --> Interactive`} />
+
+## Try it
+
+Walk the tree to pick a strategy for a single route.
+
+<DecisionTree
+  client:visible
+  caption="Which rendering strategy for this route?"
+  root={{
+    question: 'Does this route need SEO or a fast first paint for anonymous visitors?',
+    branches: [
+      {
+        label: 'No — it is behind auth / an app shell',
+        next: { leaf: { recommendation: 'CSR (SPA)', detail: 'No SEO need and heavy interactivity favors a client-rendered SPA served from a static host. Keep the bundle lean and lazy-load routes.' } },
+      },
+      {
+        label: 'Yes — SEO / first paint matters',
+        next: {
+          question: 'Is the content the same for every user?',
+          branches: [
+            {
+              label: 'Yes — identical for all users',
+              next: {
+                question: 'How often does it change?',
+                branches: [
+                  { label: 'Rarely (docs, marketing)', next: { leaf: { recommendation: 'SSG', detail: 'Render once at build, serve from CDN. Best TTFB/FCP and lowest cost. Rebuild on content change.' } } },
+                  { label: 'Periodically (catalog, news)', next: { leaf: { recommendation: 'ISR', detail: 'Static speed with background revalidation. Accept bounded staleness within the revalidate window — no full rebuild.' } } },
+                ],
+              },
+            },
+            {
+              label: 'No — personalized or per-request fresh',
+              next: {
+                question: 'Does part of the page depend on a slow data source?',
+                branches: [
+                  { label: 'Yes — one slow section', next: { leaf: { recommendation: 'Streaming SSR (+ Suspense)', detail: 'Flush the shell immediately and stream the slow section when ready, so FCP is not held hostage by the slowest query.' } } },
+                  { label: 'No — uniformly fast', next: { leaf: { recommendation: 'SSR (consider islands/RSC)', detail: 'Render per request for fresh, personalized HTML with SEO. Use islands or RSC to cut hydration cost where parts are static.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Astro** defaults to zero-JS static HTML with **islands** — interactive
+  components opt in via `client:*` directives (this very page uses
+  `client:visible`), so most of the page never hydrates.
+- **Next.js App Router** makes **RSC** the default: components are server-rendered
+  with no client JS unless marked `'use client'`, and `revalidate` gives ISR.
+- **Remix** leans on **SSR** with nested loaders and progressive enhancement —
+  forms work before JS loads.
+- **Amazon and other large e-commerce sites** use SSR/streaming for product pages
+  (SEO + personalization) but ship minimal JS, because hydration cost on
+  low-end mobile directly hurts conversion.
+
+## Further reading
+
+- [Rendering on the Web (web.dev / Jason Miller)](https://web.dev/articles/rendering-on-the-web) — the canonical taxonomy of CSR/SSR/SSG and the spectrum between.
+- [Why Progressive Hydration is Harder than You Think](https://www.patterns.dev/react/progressive-hydration/) — the real cost and mechanics of hydration.
+- [Islands Architecture (Jason Format)](https://jasonformat.com/islands-architecture/) — the original articulation of the islands model.
+- [React Server Components (React docs)](https://react.dev/reference/rsc/server-components) — how server-only components remove client bundle weight.

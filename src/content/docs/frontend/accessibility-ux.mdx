@@ -1,0 +1,191 @@
+---
+title: Accessibility & UX
+description: Semantic HTML, the first rule of ARIA, keyboard navigation and focus management, screen readers, WCAG contrast, progressive enhancement, responsive design, and accessible forms.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Accessibility (a11y) is not a compliance checkbox bolted on at the end — it is
+the discipline of building interfaces that work for *everyone*, including people
+using keyboards, screen readers, magnification, or simply a flaky connection on a
+small screen. The vast majority of accessibility is free if you use the right
+HTML element; most a11y bugs come from *recreating* native behavior with `div`s
+and then having to reimplement everything the browser gave you for free. Good
+accessibility and good UX are the same thing viewed from different angles:
+predictable focus, clear semantics, and graceful degradation help all users.
+
+## Mental model
+
+The durable rule: **HTML is accessible by default; you make it inaccessible.**
+A native `button`, `a`, `input`, `select`, or `label` arrives with keyboard
+operability, focus management, a correct accessibility-tree role, and screen-
+reader semantics already wired up. The moment you replace it with a styled `div`,
+you inherit responsibility for *all* of that — tab order, Enter/Space activation,
+`role`, `aria-*`, focus ring — and you will get some of it wrong.
+
+This is why the **first rule of ARIA is: don't use ARIA**. ARIA adds *no*
+behavior — it only relabels the accessibility tree. A `role="button"` on a `div`
+tells a screen reader "this is a button" but does not make Space activate it or
+make it focusable. Native element first; ARIA only to enhance a genuinely custom
+widget that has no HTML equivalent. Bad ARIA is worse than none.
+
+## Types / Variants
+
+- **Semantic HTML.** Use elements for their meaning: `nav`, `main`, `header`,
+  `footer`, `button`, `a` (navigation) vs `button` (action), headings in order
+  (`h1`→`h2`, no skips). This builds a correct accessibility tree for free and
+  gives screen-reader users landmark navigation.
+- **ARIA.** Roles, states, and properties (`aria-expanded`, `aria-label`,
+  `aria-live`) that *describe* custom widgets to assistive tech. Use only when
+  HTML has no native equivalent (a custom combobox, a tab panel) — and follow the
+  WAI-ARIA Authoring Practices for the expected keyboard interactions.
+- **Keyboard navigation.** Everything operable by mouse must be operable by
+  keyboard: logical tab order (DOM order), no keyboard traps, visible focus,
+  `Esc` to close, arrow keys within composite widgets.
+- **Focus management.** On route change, opening a modal, or revealing content,
+  move focus deliberately and restore it on close. Never remove the focus
+  outline without replacing it with a visible alternative.
+- **Screen readers.** Software (VoiceOver, NVDA, JAWS) that narrates the
+  accessibility tree. Test with one — it reveals issues nothing else does.
+- **WCAG and contrast.** The standard (currently 2.2), graded A / AA / AAA. AA is
+  the common legal target: text contrast at least 4.5:1 (3:1 for large text),
+  and never rely on color alone to convey meaning.
+- **Progressive enhancement.** Start with working HTML, layer CSS, then JS — so
+  the core experience survives a failed script or an old browser. Forms that
+  submit and links that navigate without JS are the baseline.
+- **Responsive design.** Fluid layouts, relative units, and `min-width` media
+  queries (mobile-first) so one document adapts across viewport sizes; respect
+  user preferences like `prefers-reduced-motion`.
+- **Accessible forms.** Every input has an associated `label`; group related
+  fields with `fieldset`/`legend`; tie errors to inputs with `aria-describedby`;
+  use correct `type` and `autocomplete`.
+
+## When to use / When NOT
+
+- **Use a native element when:** an HTML element does the job (`button`, `a`,
+  `details`, `dialog`, `input`). **Avoid a `div` with handlers** — you will
+  reimplement focus, keyboard, and semantics imperfectly.
+- **Use ARIA when:** building a genuinely custom widget with no HTML equivalent.
+  **Avoid ARIA when:** a native element exists, or when you would only be
+  *duplicating* semantics the element already provides (no `role="button"` on a
+  `button`).
+- **Use `aria-live` regions when:** content updates dynamically and users must be
+  notified (form errors, toast notifications, search results count). **Avoid**
+  spamming live regions — frequent announcements overwhelm.
+- **Manage focus when:** opening modals, navigating in an SPA, or revealing
+  content. **Avoid stealing or trapping focus** outside an intentional modal
+  context.
+- **Use progressive enhancement when:** core flows (auth, payment, navigation)
+  must be resilient. **Avoid JS-only** critical paths where a single failed
+  bundle breaks everything.
+
+## Tradeoffs
+
+| Approach | Pros | Cons |
+| -------- | ---- | ---- |
+| Semantic HTML first | Free a11y, less code, robust | Less visual control without extra styling |
+| Custom widget + ARIA | Full design freedom | You own all keyboard/focus/role logic; easy to get wrong |
+| Progressive enhancement | Resilient, works without JS | More upfront design; some interactions feel basic without JS |
+| JS-driven SPA only | Rich interactions | Fragile to JS failure; needs explicit focus + SEO work |
+| Color-only signaling | Visually clean | Fails for color-blind users and low contrast — WCAG violation |
+
+## Diagram
+
+The decision that prevents most a11y bugs: does a native element already do this?
+
+<Mermaid code={`graph TD
+  NEED[I need an interactive control] --> Q1{Does a native HTML element do this?}
+  Q1 -->|Yes| NATIVE[Use it: button / a / input / select / details / dialog]
+  NATIVE --> FREE[Keyboard, focus, role, screen-reader semantics for free]
+  Q1 -->|No, truly custom| CUSTOM[Build the widget]
+  CUSTOM --> ARIA[Add ARIA role + states]
+  ARIA --> KBD[Implement keyboard interactions per WAI-ARIA APG]
+  KBD --> FOCUS[Manage focus + visible focus ring]
+  FOCUS --> TEST[Test with a screen reader + keyboard only]`} />
+
+## Try it
+
+Switch tabs for the concrete rule behind each pillar of accessible UX.
+
+<WhenWhyTabs
+  client:visible
+  caption="Accessible UX, pillar by pillar"
+  tabs={[
+    {
+      label: 'Semantic HTML',
+      content: 'Reach for the element that means what you intend: a link navigates (use a), a button performs an action (use button), structure uses nav/main/header/footer and ordered headings. This produces a correct accessibility tree and landmark navigation with zero extra code. Replacing these with div/span throws all of it away.',
+    },
+    {
+      label: 'ARIA: first rule',
+      content: 'The first rule of ARIA is do not use ARIA — prefer a native element. ARIA changes only how the accessibility tree is described; it adds no keyboard behavior, no focusability, no activation. Use it solely to label genuinely custom widgets, and then you must also implement the keyboard interactions the role implies. Incorrect ARIA is worse than none because it lies to assistive tech.',
+    },
+    {
+      label: 'Keyboard & focus',
+      content: 'Every mouse interaction must have a keyboard equivalent: logical tab order following DOM order, no keyboard traps, Esc to dismiss, arrow keys inside composite widgets. Manage focus deliberately — move it into a modal on open and restore it on close, move it on SPA route change. Never hide the focus outline without a clearly visible replacement.',
+    },
+    {
+      label: 'WCAG & contrast',
+      content: 'Target WCAG 2.2 level AA: text contrast at least 4.5:1 (3:1 for large text), do not convey meaning by color alone (pair color with an icon or text), ensure content reflows at 200% zoom, and respect prefers-reduced-motion. AA is the common legal baseline under accessibility laws.',
+    },
+    {
+      label: 'Progressive enhancement',
+      content: 'Build the working baseline in HTML, enhance with CSS, then JS. A form should submit and a link should navigate before any script runs, so a failed bundle or slow connection degrades gracefully instead of breaking. This also makes content crawlable and resilient.',
+    },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Building an interactive control — what to use?"
+  root={{
+    question: 'Does a native HTML element already provide this interaction (button, link, checkbox, select, dialog, disclosure)?',
+    branches: [
+      {
+        label: 'Yes — a native element fits',
+        next: { leaf: { recommendation: 'Use the native element', detail: 'Keyboard operability, focus, role, and screen-reader semantics come for free. Style it; do not rebuild it. This avoids the majority of a11y bugs.' } },
+      },
+      {
+        label: 'No — it is a genuinely custom widget',
+        next: {
+          question: 'Is there a WAI-ARIA Authoring Practices (APG) pattern for it (tabs, combobox, menu, etc.)?',
+          branches: [
+            {
+              label: 'Yes — an APG pattern exists',
+              next: { leaf: { recommendation: 'Follow the APG pattern exactly', detail: 'Apply the prescribed roles, states, and the full keyboard interaction model, manage focus, then test with a screen reader and keyboard only.' } },
+            },
+            {
+              label: 'No / unsure',
+              next: { leaf: { recommendation: 'Compose from native elements where possible', detail: 'Build from native controls and minimal ARIA rather than inventing a div-based widget. Validate with assistive tech before shipping — untested custom ARIA usually regresses accessibility.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **GOV.UK Design System** is the reference for progressive enhancement and
+  accessible-by-default components — everything works without JavaScript first.
+- **The WAI-ARIA Authoring Practices Guide (APG)** publishes the canonical
+  keyboard and ARIA patterns for tabs, comboboxes, menus, and dialogs that teams
+  copy rather than invent.
+- **axe-core (Deque)** powers automated a11y testing in Lighthouse, browser
+  extensions, and CI — catching contrast, missing labels, and bad ARIA, though
+  it cannot replace manual screen-reader testing.
+- **The European Accessibility Act and ADA case law** make WCAG AA a practical
+  legal requirement for many products, not just a nicety.
+
+## Further reading
+
+- [The first rule of ARIA use (W3C)](https://www.w3.org/TR/using-aria/#firstrule) — why a native element beats ARIA every time.
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/patterns/) — canonical keyboard/ARIA patterns for custom widgets.
+- [WebAIM — keyboard accessibility](https://webaim.org/techniques/keyboard/) — focus order, traps, and visible focus done right.
+- [MDN — Accessible forms](https://developer.mozilla.org/en-US/docs/Learn/Forms/How_to_structure_a_web_form) — labels, fieldsets, and error association.

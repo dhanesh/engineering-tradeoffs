@@ -1,0 +1,185 @@
+---
+title: Frontend Architecture
+description: Component architecture and design systems, CSS approaches (BEM, utility, CSS-in-JS, modules), monorepos, micro-frontends (and when not to), build tooling, the BFF, and framework selection.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Frontend architecture is the set of structural decisions that determine whether a
+codebase stays maintainable as it and the team grow: how components compose, how
+styles are scoped, how code is organized across packages, how it is built, and
+which framework underpins it all. These choices are sticky — changing a CSS
+strategy or splitting a monolith into micro-frontends mid-life is expensive — so
+they reward thinking about *team size, deploy independence, and longevity* up
+front rather than chasing the newest tool. The recurring trap is adopting
+big-company architecture (micro-frontends, complex monorepos) at small-company
+scale, paying the coordination cost without the coordination problem.
+
+## Mental model
+
+Frontend architecture is **scope management at four levels**: scoping *markup*
+(components), scoping *styles* (CSS strategy), scoping *code ownership*
+(repo/package boundaries), and scoping *deployment* (one app vs many). At each
+level you trade **isolation against integration cost**: tighter isolation
+(scoped CSS, separate packages, independently deployed micro-frontends) reduces
+the blast radius of a change and lets teams move independently, but adds
+boundaries, duplication, and coordination overhead. The right level of isolation
+is a function of how many people touch the code and how independently they must
+ship — not of fashion. A two-person team wants the least isolation that keeps
+things tidy; a fifty-team org wants the most.
+
+## Types / Variants
+
+**Component architecture and design systems.** Compose UI from small, reusable,
+single-responsibility components. A **design system** is the shared library of
+those components plus tokens (color, spacing, type) and usage rules — the
+contract that keeps a large UI consistent. Patterns like composition over
+configuration and headless components (logic without styling) keep them reusable.
+
+**CSS approaches:**
+
+- **BEM (Block-Element-Modifier).** A naming convention (`card__title--active`)
+  for scoping in plain CSS. Zero tooling, but discipline-dependent and verbose.
+- **CSS Modules.** Build-time local scoping — class names are hashed per file, so
+  collisions are impossible. Plain CSS ergonomics with guaranteed scope.
+- **Utility-first (Tailwind).** Compose styles from atomic utility classes in
+  markup. Fast iteration, tiny shipped CSS (purged), consistent by constraint;
+  cost is verbose markup and a learning curve.
+- **CSS-in-JS (styled-components, Emotion).** Styles co-located in JS, scoped and
+  dynamic. Great DX and dynamic theming; runtime cost and SSR complexity pushed
+  many teams toward zero-runtime alternatives (vanilla-extract, Linaria).
+
+**Monorepos.** One repository, many packages (apps, shared libs, design system),
+managed with tooling (Nx, Turborepo, pnpm workspaces). Atomic cross-package
+changes, shared config, easy code sharing; cost is build orchestration and CI
+complexity. The alternative is polyrepo — independent repos, simpler each but
+hard to change across.
+
+**Micro-frontends.** Splitting one app into independently developed and deployed
+pieces owned by different teams, composed at runtime (Module Federation),
+build time, or via an app shell. Enables team autonomy at large scale; costs
+duplicated dependencies, version skew, runtime integration risk, and harder
+shared state. Rarely justified below many teams.
+
+**Build tooling (bundlers).** Vite (esbuild dev + Rollup build) is the modern
+default for speed; webpack remains common in large legacy apps and powers Module
+Federation; esbuild/Rollup/Turbopack occupy specific niches. The bundler handles
+splitting, tree shaking, and asset transforms.
+
+**The BFF (Backend for Frontend).** A thin server tailored to one frontend that
+aggregates and reshapes backend/microservice calls into exactly what the UI
+needs — removing client-side orchestration, hiding internal APIs, and handling
+auth. See *API gateways and BFF*.
+
+**Framework selection.** React (ecosystem, hiring), Vue (gentle, cohesive),
+Svelte (compile-away, minimal runtime), Solid (fine-grained signals), Angular
+(batteries-included for large orgs), and meta-frameworks (Next, Nuxt, SvelteKit,
+Astro) that add routing/SSR.
+
+## When to use / When NOT
+
+- **Use a design system when:** multiple teams or many surfaces must stay
+  consistent. **Avoid building one** for a single small app — a folder of
+  components is enough.
+- **Use a monorepo when:** packages change together and share code (app + design
+  system + utils). **Avoid it when:** projects are truly independent and the
+  build orchestration cost outweighs the sharing benefit.
+- **Use micro-frontends when:** many autonomous teams must deploy independently on
+  one product and the org-coordination pain is real. **Avoid them when:** you have
+  one or a few teams — you will pay duplication, version skew, and integration
+  risk for autonomy you do not need.
+- **Use utility-first CSS when:** you want fast, consistent, low-runtime styling
+  and accept verbose markup. **Avoid CSS-in-JS runtime libraries when:** SSR
+  performance is critical — prefer modules or zero-runtime.
+- **Use a BFF when:** the client orchestrates many backend calls or needs reshaped
+  data. **Avoid it when:** a single well-shaped API already serves the UI.
+- **Pick a mainstream framework when:** hiring and ecosystem matter. **Avoid
+  niche/bleeding-edge** for long-lived business-critical apps unless the team
+  owns that expertise.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="CSS strategies and code-organization choices"
+  columns={["BEM", "CSS Modules", "Utility (Tailwind)", "CSS-in-JS (runtime)", "Monorepo", "Micro-frontends"]}
+  rows={[
+    { criterion: "Scoping", cells: ["Convention (manual)", "Build-time, automatic", "Atomic, global utilities", "Component-scoped", "N/A (org level)", "N/A (deploy level)"] },
+    { criterion: "Tooling needed", cells: ["None", "Bundler plugin", "Build step + config", "Library + runtime", "Nx/Turborepo/pnpm", "Module Federation / shell"] },
+    { criterion: "Runtime cost", cells: ["None", "None", "None (purged CSS)", "Yes (style injection)", "N/A", "Duplicated deps, integration"] },
+    { criterion: "Best at scale for", cells: ["Small/simple", "Medium apps", "Fast iteration, design constraint", "Dynamic theming", "Shared code, atomic changes", "Many autonomous teams"] },
+    { criterion: "Main risk", cells: ["Discipline drift", "Little", "Verbose markup", "SSR + perf cost", "CI/build complexity", "Version skew, over-adoption"] },
+  ]}
+/>
+
+## Diagram
+
+Architecture as nested scopes — pick the smallest enclosing scope your team size
+actually requires.
+
+<Mermaid code={`graph TD
+  TEAM{Team / org size?} -->|Small, one team| MONO[Single app, modular components]
+  TEAM -->|Medium, shared code| REPO[Monorepo: app + design system + libs]
+  TEAM -->|Many autonomous teams| MF[Micro-frontends: independent deploys]
+  MONO --> CSS[Scope styles: Modules / utility / BEM]
+  REPO --> CSS
+  MF --> CSS
+  CSS --> BUILD[Bundler: Vite / webpack splits + tree-shakes]
+  BUILD --> BFF[Optional BFF reshapes backend for the UI]`} />
+
+## Try it
+
+Switch tabs for the decision heuristic behind each architectural layer.
+
+<WhenWhyTabs
+  client:visible
+  caption="Architectural decisions, layer by layer"
+  tabs={[
+    {
+      label: 'Components & design system',
+      content: 'Build small single-responsibility components and favor composition over configuration. Invest in a design system (shared components + tokens + rules) only once multiple teams or surfaces must stay consistent — for one small app, a components folder is enough. Headless/unstyled component libraries give you accessible logic while you own the styling.',
+    },
+    {
+      label: 'CSS strategy',
+      content: 'Default to CSS Modules or utility-first (Tailwind) for automatic scoping with no runtime cost. Use BEM only where you must write plain CSS with no build step. Reach for runtime CSS-in-JS only when you need highly dynamic, prop-driven styling — and weigh its SSR and performance cost against zero-runtime alternatives like vanilla-extract.',
+    },
+    {
+      label: 'Monorepo vs polyrepo',
+      content: 'Choose a monorepo when packages change together and share code, so a single PR can touch app, design system, and utilities atomically (Nx, Turborepo, pnpm workspaces give caching and task orchestration). Stay polyrepo when projects are genuinely independent and the build/CI orchestration of a monorepo is not worth it.',
+    },
+    {
+      label: 'Micro-frontends: when NOT',
+      content: 'Micro-frontends exist to let many autonomous teams deploy one product independently. Below that scale they are usually a mistake: you pay duplicated dependencies, version skew, runtime integration complexity, harder shared state, and bigger bundles — buying deployment autonomy you do not need. Default to a modular monolith and split only when org coordination genuinely breaks down.',
+    },
+    {
+      label: 'Framework selection',
+      content: 'Weigh ecosystem and hiring (React), cohesion and gentleness (Vue), minimal runtime via compilation (Svelte), fine-grained reactivity (Solid), and batteries-included structure for large orgs (Angular). For most products a meta-framework (Next, Nuxt, SvelteKit, Astro) is the real choice since it bundles routing and rendering strategy. Favor mainstream, well-supported options for long-lived business-critical apps.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Spotify** popularized organizing UI work around autonomous squads, an early
+  driver of the micro-frontend conversation — though many teams later found a
+  well-structured monolith simpler.
+- **Material UI, Radix, and shadcn/ui** show the spectrum from full design system
+  to headless primitives to copy-in components teams own outright.
+- **Tailwind CSS** became the dominant utility-first approach by shipping near-zero
+  CSS after purge while enforcing a consistent design scale.
+- **Vite** displaced webpack as the default bundler for new projects on dev-server
+  speed, while **webpack Module Federation** remains the main runtime mechanism
+  for micro-frontends.
+
+## Further reading
+
+- [Micro Frontends (Cam Jackson / martinfowler.com)](https://martinfowler.com/articles/micro-frontends.html) — the canonical overview, including the costs.
+- [Monorepo Explained (Nx)](https://monorepo.tools/) — when a monorepo pays off and the tooling landscape.
+- [Design Systems Handbook (InVision)](https://www.designsystems.com/) — components, tokens, and governance for consistency at scale.
+- [Patterns.dev](https://www.patterns.dev/) — rendering, performance, and component patterns across modern frameworks.

@@ -1,0 +1,166 @@
+---
+title: Frontend Performance
+description: Core Web Vitals (LCP, INP, CLS), bundle size, code splitting and tree shaking, critical CSS, image optimization, preload vs prefetch, rendering performance, and how to measure it.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Frontend performance is a business metric: every 100 ms of added latency
+measurably lowers conversion, and Google ranks partly on it. The discipline has
+converged on **Core Web Vitals** — three field-measured numbers that proxy
+loading, interactivity, and visual stability. Optimizing them is mostly about
+shipping *less* (smaller bundles, fewer bytes on the critical path), shipping it
+*later* (code splitting, lazy loading), and *not moving things around* after
+paint. The cardinal rule: measure with real-user field data first, because lab
+tools lie about the conditions your actual users face.
+
+## Mental model
+
+Performance is a **budget you spend on bytes and main-thread time**. The browser
+has one main thread; every kilobyte of JavaScript must be downloaded, parsed,
+compiled, and executed on it before the page responds — and JS is byte-for-byte
+*far* more expensive than images or CSS because of that parse/execute tax. So the
+mental model is two ledgers:
+
+- **The network ledger** — total bytes, and crucially *which bytes are on the
+  critical path*. Defer or split everything not needed for the first interaction.
+- **The main-thread ledger** — time spent parsing/executing JS and doing
+  layout/paint. Long tasks here block input (hurting INP) and delay
+  interactivity.
+
+Core Web Vitals map onto experience: **LCP** = "did the main content appear
+fast?" (loading), **INP** = "does it respond quickly when I interact?"
+(responsiveness), **CLS** = "did it stay put?" (stability).
+
+## Types / Variants
+
+The three Core Web Vitals and their good thresholds (75th percentile, field):
+
+- **LCP (Largest Contentful Paint) — good is under 2.5 s.** Time until the
+  largest content element (hero image, headline) is painted. Driven by TTFB,
+  render-blocking resources, and the LCP resource's load time. Fix with faster
+  server response, `preload` of the LCP image, smaller critical CSS.
+- **INP (Interaction to Next Paint) — good is under 200 ms.** Replaced FID in
+  March 2024. Measures the latency of *all* interactions across the page's
+  lifetime (the worst, roughly), from input to the next paint. Driven by
+  long main-thread tasks. Fix by breaking up long tasks, yielding to the event
+  loop, debouncing, and reducing hydration cost.
+- **CLS (Cumulative Layout Shift) — good is under 0.1.** Sum of unexpected layout
+  shifts. Driven by images/ads/iframes without reserved dimensions, late-loading
+  fonts, and content injected above existing content. Fix with explicit
+  `width`/`height` (or `aspect-ratio`), `font-display: optional`, and reserving
+  space for dynamic content.
+
+The main optimization techniques:
+
+- **Code splitting** — break the bundle so each route/feature loads its own
+  chunk on demand (dynamic `import()`), shrinking the initial payload.
+- **Lazy loading** — defer offscreen work: `loading="lazy"` on images/iframes,
+  `import()` on components below the fold or behind interaction.
+- **Tree shaking** — the bundler drops unused exports (relies on ES modules and
+  no side effects); import named functions, not whole libraries.
+- **Critical CSS** — inline the CSS needed for above-the-fold content, defer the
+  rest, so the first paint is not render-blocked on a full stylesheet.
+- **Image optimization** — modern formats (AVIF, WebP), responsive `srcset`,
+  correct dimensions, and CDN resizing. Images are usually the largest bytes.
+- **Preload vs prefetch** — `preload` fetches a resource needed for the *current*
+  navigation at high priority (the LCP image, a critical font); `prefetch`
+  fetches at low priority something likely needed for a *future* navigation.
+- **Caching** — HTTP caching and a CDN keep repeat visits and shared assets fast
+  (see *CDN and edge caching* and *Caching strategies*).
+
+## When to use / When NOT
+
+- **Use code splitting when:** the app has distinct routes/features not all needed
+  upfront. **Avoid over-splitting** — too many tiny chunks add request overhead
+  and waterfalls.
+- **Use lazy loading when:** content is below the fold or behind interaction.
+  **Avoid lazy-loading the LCP element** — it delays the very thing LCP measures;
+  `preload` it instead.
+- **Use `preload` when:** a critical resource is discovered late (a font in CSS,
+  an LCP image set by JS). **Avoid preloading everything** — it competes for
+  bandwidth and can *slow* the true critical resource.
+- **Use `prefetch` when:** you can predict the next navigation (hovered link,
+  likely next step). **Avoid prefetching aggressively** on metered/mobile
+  connections.
+- **Optimize CLS reservations when:** you have images, ads, or async content.
+  **Avoid** inserting content above existing content after load.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="Performance techniques: what they buy, what they cost"
+  columns={["Code splitting", "Lazy loading", "Tree shaking", "Critical CSS", "Image optimization", "Preload"]}
+  rows={[
+    { criterion: "Primarily improves", cells: ["Initial bundle / TTI", "Initial bytes / LCP", "Bundle size", "FCP / LCP (unblock paint)", "LCP / total bytes", "LCP (late-discovered resource)"] },
+    { criterion: "Mechanism", cells: ["Dynamic import() chunks", "Defer offscreen loads", "Drop unused exports", "Inline above-fold CSS", "AVIF/WebP, srcset, resize", "High-priority early fetch"] },
+    { criterion: "Main cost / risk", cells: ["Request waterfalls if over-split", "Hurts LCP if applied to hero", "Needs ESM + side-effect-free", "Build complexity, larger HTML", "Build pipeline / CDN setup", "Bandwidth contention if overused"] },
+    { criterion: "Effort", cells: ["Moderate", "Low", "Low (bundler default)", "Moderate", "Moderate", "Low"] },
+  ]}
+/>
+
+## Diagram
+
+The budget split: network bytes feed first paint, main-thread time gates
+interactivity, and Core Web Vitals score the result.
+
+<Mermaid code={`graph TD
+  BYTES[Bytes shipped] --> CRIT{On critical path?}
+  CRIT -->|Yes| FP[First paint -> LCP]
+  CRIT -->|No, split/lazy/prefetch| LATER[Loaded on demand]
+  BYTES --> JS[JavaScript parse + execute]
+  JS --> MT[Main-thread time]
+  MT --> LONG{Long tasks?}
+  LONG -->|Yes| INP[Slow interactions -> high INP]
+  LONG -->|No| RESP[Responsive -> low INP]
+  IMG[Unsized media / late fonts] --> SHIFT[Layout shift -> CLS]
+  FP --> CWV[Core Web Vitals]
+  INP --> CWV
+  RESP --> CWV
+  SHIFT --> CWV`} />
+
+## Try it
+
+Slide from "ship everything now" to "ship the bare minimum, defer the rest" to
+see the tradeoff each posture makes.
+
+<TradeoffSlider
+  client:visible
+  caption="Eager loading ↔ Aggressive deferral"
+  leftAxis="Ship everything upfront"
+  rightAxis="Defer almost everything"
+  stops={[
+    { label: 'Single eager bundle', description: 'One big bundle, no splitting. Simplest build and no request waterfalls, but huge initial payload — slow LCP and TTI, especially on mobile. Fine only for tiny apps.' },
+    { label: 'Route-level splitting', description: 'Each route is its own chunk loaded on navigation. The pragmatic default: small initial payload, manageable number of chunks, fast first route.' },
+    { label: 'Route + component splitting', description: 'Split below-the-fold and interaction-gated components too, plus lazy-load images. Smaller initial load and better INP; watch for waterfalls and a flash before lazy parts arrive.' },
+    { label: 'Islands / minimal JS', description: 'Ship static HTML and hydrate only interactive islands. Best Core Web Vitals — almost nothing on the main thread — but requires an architecture (Astro, RSC) built for it.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google Search ranking** uses Core Web Vitals as a signal, and the
+  **Chrome User Experience Report (CrUX)** publishes the real-user field data
+  that defines "good."
+- **Next.js / Astro image components** automate format negotiation (AVIF/WebP),
+  responsive `srcset`, and dimension reservation — fixing LCP and CLS by default.
+- **The INP transition (March 2024)** pushed teams to profile long tasks and
+  break up hydration — frameworks responded with selective and progressive
+  hydration.
+- **Lighthouse and WebPageTest** give lab diagnostics (reproducible, controlled),
+  while CrUX/RUM give field truth — mature teams use lab to debug, field to
+  judge.
+
+## Further reading
+
+- [Web Vitals (web.dev)](https://web.dev/articles/vitals) — definitions, thresholds, and how LCP/INP/CLS are measured.
+- [Optimize INP (web.dev)](https://web.dev/articles/optimize-inp) — breaking up long tasks and yielding to the main thread.
+- [Lighthouse performance scoring](https://developer.chrome.com/docs/lighthouse/performance/performance-scoring) — how the lab score is computed and weighted.
+- [Preload, prefetch and other link rel keywords](https://web.dev/articles/preload-critical-assets) — when each resource hint helps and when it hurts.

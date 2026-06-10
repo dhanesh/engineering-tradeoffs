@@ -1,0 +1,195 @@
+---
+title: State Management
+description: Local vs global vs server state, prop drilling and context, flux/redux vs signals, server-state caching, derived state, the URL as state, and when you actually need a state library.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Most frontend complexity is *state* complexity: who owns a piece of data, who can
+change it, who needs to re-render when it changes, and how it stays consistent
+with the server. Reaching for Redux on day one is the classic over-engineering
+mistake; refusing to ever lift state is the classic under-engineering one. The
+skill is **classifying each piece of state** — is it local UI state, shared
+client state, server-cache state, or URL state? — because each class has a
+right tool, and most apps need different tools for different state, not one
+store to rule them all.
+
+## Mental model
+
+Think of state in **four buckets**, each answering "where does the truth live?":
+
+1. **Local state** — owned by one component (a toggle, an input's value).
+   Truth lives in the component. Use `useState`.
+2. **Shared client state** — UI state several components need (theme, a modal's
+   open flag, a multi-step form). Truth must live *above* them. Lift it, or use
+   context / a store.
+3. **Server state** — a cached copy of data the server owns (user profile, a
+   product list). The truth lives on the *server*; the client holds a possibly
+   stale copy that needs fetching, caching, revalidation, and invalidation.
+   This is not "state" in the same sense — it is a cache, and treating it like
+   local state (manually stuffing fetch results into Redux) is the #1 source of
+   stale-data bugs.
+4. **URL state** — state that belongs in the address bar (current page, filters,
+   selected tab, search query). The truth lives in the URL so it is shareable,
+   bookmarkable, and survives reload.
+
+Picking the wrong bucket is the root cause of most state pain. Server data in a
+global store goes stale; URL-worthy state in component state breaks the back
+button; local state lifted too high causes needless re-renders.
+
+## Types / Variants
+
+- **`useState` / `useReducer` (local).** Built-in, zero deps. `useReducer` when
+  transitions are complex or many actions mutate one object.
+- **Prop drilling.** Passing state down through props. Fine for two or three
+  levels; painful and brittle beyond that.
+- **Context API.** Broadcasts a value to a subtree without drilling. Solves
+  *prop drilling*, not *state management* — every consumer re-renders on any
+  change, so it suits low-frequency, slowly-changing values (theme, locale,
+  auth user), not hot state.
+- **Flux / Redux.** A single immutable store, state changed only via dispatched
+  actions through pure reducers. Predictable, time-travel debuggable, great for
+  complex shared client state with many interdependent updates. Heavy boilerplate;
+  Redux Toolkit reduces it. Often misused as a server cache.
+- **Atomic stores (Zustand, Jotai, Recoil).** Lighter global state without the
+  reducer ceremony; subscribe to slices so only affected components re-render.
+- **Signals (Solid, Preact, Angular, Vue refs).** Fine-grained reactive
+  primitives: a signal is a value plus its dependents, so an update re-runs only
+  the exact computations that read it — no virtual-DOM diff, no re-render of an
+  entire component tree.
+- **Server-state libraries (TanStack Query, SWR, Apollo, RTK Query).** Purpose-built
+  for bucket 3: caching, deduping requests, background refetch, stale-while-
+  revalidate, optimistic updates, and invalidation. This is what you should reach
+  for instead of putting fetch results in a global store.
+- **Derived state.** State *computed* from other state (a filtered list, a total).
+  The rule: do not store it — derive it on render (or memoize). Storing derived
+  state creates two sources of truth that drift.
+- **URL as state.** Router params and query strings hold shareable state. The
+  router *is* a store for the subset of state that should survive a reload.
+
+## When to use / When NOT
+
+- **Use local state when:** only one component (or it and a child via props)
+  cares. **Avoid lifting** until a second component genuinely needs it — premature
+  lifting causes re-render cascades.
+- **Use Context when:** a slowly-changing value is needed widely (theme, auth).
+  **Avoid Context for** high-frequency updates (mouse position, form keystrokes) —
+  it re-renders every consumer.
+- **Use a server-state library when:** the data lives on the server. **Avoid a
+  global store for server data** — you will reimplement caching, badly.
+- **Use Redux / a store when:** you have substantial, interdependent *client*
+  state with complex update logic and need traceability. **Avoid it when:** your
+  "global state" is mostly server data plus a couple of toggles — that is
+  TanStack Query plus `useState`.
+- **Use signals when:** fine-grained reactivity and minimal re-rendering matter,
+  and your framework supports them. **Avoid retrofitting** them into an
+  architecture built around immutable top-down renders.
+- **Use the URL when:** state should be shareable, bookmarkable, or survive
+  reload (filters, tabs, pagination). **Avoid the URL for** transient or
+  sensitive state.
+
+## Tradeoffs
+
+<CompareMatrix
+  client:visible
+  caption="State tools by the bucket they serve and what they cost"
+  columns={["useState", "Context", "Redux Toolkit", "Zustand/Jotai", "Signals", "TanStack Query"]}
+  rows={[
+    { criterion: "Best for", cells: ["Local UI state", "Slow-changing shared values", "Complex shared client state", "Shared client state, lean", "Fine-grained reactivity", "Server-state cache"] },
+    { criterion: "Boilerplate", cells: ["None", "Low", "Moderate (reduced by RTK)", "Low", "Low", "Low"] },
+    { criterion: "Re-render scope", cells: ["The component", "Whole subtree (all consumers)", "Connected components (selectors)", "Subscribed slices only", "Exact readers only", "Components using the query"] },
+    { criterion: "Server caching", cells: ["No", "No", "No (anti-pattern)", "No", "No", "Yes — built in"] },
+    { criterion: "Devtools / time-travel", cells: ["No", "No", "Excellent", "Basic", "Varies", "Query devtools"] },
+    { criterion: "Risk if misused", cells: ["Lifted too high", "Re-render storms", "Used as server cache", "Global sprawl", "Framework lock-in", "Treated as client store"] },
+  ]}
+/>
+
+## Diagram
+
+Classify the state first; the tool follows from the bucket.
+
+<Mermaid code={`graph TD
+  S[A piece of state] --> Q1{Does the server own the truth?}
+  Q1 -->|Yes| SS[Server state] --> TQ[TanStack Query / SWR: cache + revalidate]
+  Q1 -->|No| Q2{Should it survive reload / be shareable?}
+  Q2 -->|Yes| URL[URL state: router params / query]
+  Q2 -->|No| Q3{Do multiple components need it?}
+  Q3 -->|No| LOCAL[Local: useState / useReducer]
+  Q3 -->|Yes| Q4{High-frequency updates or complex logic?}
+  Q4 -->|No, slow-changing| CTX[Context]
+  Q4 -->|Yes| STORE[Store: Redux / Zustand / signals]`} />
+
+## Try it
+
+Walk the tree for one piece of state at a time.
+
+<DecisionTree
+  client:visible
+  caption="Where should this state live?"
+  root={{
+    question: 'Does the server own the source of truth for this data (it is fetched from / written to an API)?',
+    branches: [
+      {
+        label: 'Yes — it comes from the server',
+        next: { leaf: { recommendation: 'Server-state library (TanStack Query / SWR)', detail: 'Treat it as a cache, not state. You get deduping, background refetch, stale-while-revalidate, and invalidation for free. Do NOT mirror it into Redux.' } },
+      },
+      {
+        label: 'No — it is client/UI state',
+        next: {
+          question: 'Should it be shareable, bookmarkable, or survive a page reload?',
+          branches: [
+            {
+              label: 'Yes (filters, tab, pagination, query)',
+              next: { leaf: { recommendation: 'URL state (router params / query string)', detail: 'The router is the store for reload-surviving state. Keeps the back button and shareable links working.' } },
+            },
+            {
+              label: 'No — transient UI state',
+              next: {
+                question: 'Do multiple, distant components need it?',
+                branches: [
+                  { label: 'No — one component (or its children)', next: { leaf: { recommendation: 'Local state (useState / useReducer)', detail: 'Keep it as low as possible. Lift only when a second component truly needs it.' } } },
+                  {
+                    label: 'Yes — shared across the tree',
+                    next: {
+                      question: 'Is it slow-changing (theme, locale, auth) or complex/hot?',
+                      branches: [
+                        { label: 'Slow-changing, low-frequency', next: { leaf: { recommendation: 'Context API', detail: 'Solves prop drilling for stable values. Avoid for hot updates — every consumer re-renders.' } } },
+                        { label: 'Complex or high-frequency', next: { leaf: { recommendation: 'A store (Zustand / Redux Toolkit / signals)', detail: 'Use slice subscriptions or signals so only affected components re-render. Reach for Redux when update logic is genuinely complex and traceability matters.' } } },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **TanStack Query (React Query)** popularized the server-state-as-cache model;
+  most modern React apps now pair it with light local/global state instead of a
+  monolithic Redux store.
+- **Redux** still anchors large, long-lived apps with intricate cross-cutting
+  client state; **Redux Toolkit** is the official, boilerplate-reduced default.
+- **SolidJS and Angular signals** brought fine-grained signal reactivity
+  mainstream — updates touch only the exact DOM bindings that read the signal.
+- **Next.js and Remix** push more state into the **URL and server**, shrinking
+  client state to genuinely interactive bits — search params as the filter store
+  is now an idiomatic pattern.
+
+## Further reading
+
+- [Kent C. Dodds — Application State Management with React](https://kentcdodds.com/blog/application-state-management-with-react) — the "right tool per kind of state" framing.
+- [TanStack Query — overview](https://tanstack.com/query/latest/docs/framework/react/overview) — why server state is a cache, not state.
+- [A (Brief) History of Reactivity / Signals](https://dev.to/this-is-learning/the-evolution-of-signals-in-javascript-8ob) — how signals differ from virtual-DOM re-rendering.
+- [Redux — Style Guide & when to use](https://redux.js.org/style-guide/) — the maintainers' own guidance on when Redux earns its keep.

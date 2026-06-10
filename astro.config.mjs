@@ -208,6 +208,17 @@ export default defineConfig({
             { label: 'Infrastructure as Code & Cloud', slug: 'delivery/iac-cloud' },
           ],
         },
+        {
+          label: 'Frontend Fundamentals',
+          items: [
+            { label: 'The browser as a platform', slug: 'frontend' },
+            { label: 'Rendering strategies', slug: 'frontend/rendering-strategies' },
+            { label: 'State management', slug: 'frontend/state-management' },
+            { label: 'Frontend performance', slug: 'frontend/performance' },
+            { label: 'Accessibility & UX', slug: 'frontend/accessibility-ux' },
+            { label: 'Frontend architecture', slug: 'frontend/frontend-architecture' },
+          ],
+        },
       ],
     }),
   ],
