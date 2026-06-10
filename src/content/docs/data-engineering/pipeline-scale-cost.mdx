@@ -1,0 +1,217 @@
+---
+title: Pipeline Scale & Cost
+description: Partitioning and parallelism, shuffle as the expensive part, data skew, the small-files problem and compaction, compute/storage separation, data freshness vs cost, and governing PII at scale.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Data pipelines that work on a gigabyte often fall over — or quietly cost a
+fortune — on a terabyte. Scaling them is mostly about understanding what's
+expensive (moving data between machines), what wastes money (idle compute,
+redundant scans, millions of tiny files), and what you can trade (freshness for
+cost). Unlike app scaling, where latency per request dominates, data-pipeline
+scaling is about **throughput, data movement, and the cloud bill** — and the
+bill is often the loudest signal that something is wrong.
+
+This page covers **partitioning and parallelism**, why **shuffle** is the
+expensive part of distributed processing, **data skew**, the **small-files
+problem** and **compaction**, **cost optimization** via compute/storage
+separation, the **freshness-vs-cost** tradeoff, and governing **PII at scale**.
+It assumes the storage and pipeline pages.
+
+## Mental model
+
+Distributed data processing is **embarrassingly parallel until it has to move
+data across the network** — and that movement, the **shuffle**, is where the
+time and money go. The mental model has three pieces:
+
+1. **Partition to parallelize.** Split data into independent chunks so N workers
+   process them simultaneously. Throughput scales with parallelism — *if* the
+   chunks are balanced and independent.
+2. **Shuffle is the tax.** Operations that need data grouped differently than
+   it's partitioned (`GROUP BY`, `JOIN`, `DISTINCT`, repartition) force a
+   **shuffle**: every worker sends data to every other worker over the network,
+   with serialization and often disk spill. Shuffle is usually the single most
+   expensive step; minimizing and avoiding it is the core of pipeline
+   performance tuning.
+3. **Skew breaks parallelism.** If one partition (one hot key — a null, a
+   mega-customer) is far larger than the rest, one worker does most of the work
+   while others idle. The job runs as slow as its biggest partition. **Data
+   skew** is the most common reason a "parallel" job isn't.
+
+Hold this: **partitioning gives you parallelism; shuffle and skew take it
+away.**
+
+## Types / Variants
+
+**Partitioning / parallelism strategies.** Hash partitioning (even spread by
+key), range partitioning (ordered, good for time), and partition *count* tuning
+(too few starves parallelism; too many creates overhead and small files). Good
+partitioning aligns with query filters so the engine prunes whole partitions.
+
+**Shuffle-reduction techniques.**
+- *Broadcast join* — when one side is small, send it in full to every worker so
+  the join needs no shuffle of the big side. Often a 10x win.
+- *Pre-partitioning / bucketing* — store data already partitioned by the join/
+  group key so repeated operations skip the shuffle.
+- *Pushing filters/aggregations down* — reduce data volume *before* the shuffle.
+
+**Skew mitigation.**
+- *Salting* — append a random suffix to hot keys to split them across workers,
+  then aggregate in two stages.
+- *Isolating hot keys* — handle the mega-key separately.
+- *Adaptive query execution* (Spark AQE) — detect and split skewed partitions
+  at runtime.
+
+**The small-files problem.** Streaming/incremental ingestion and over-
+partitioning produce millions of tiny files. Each file carries metadata and
+open/read overhead, so queries spend more time listing and opening files than
+reading data — performance collapses and metadata operations time out. The fix
+is **compaction**: periodically rewrite many small files into fewer large ones
+(Iceberg/Delta/Hudi have built-in compaction / `OPTIMIZE`). The dual sin is
+*over-compaction* or too-coarse partitions that hurt pruning — balance file
+size (commonly ~128MB–1GB) against partition granularity.
+
+**Compute/storage separation.** Modern platforms (Snowflake, BigQuery,
+lakehouses) decouple cheap object storage from elastic, independently-scaled
+compute. You pay for storage continuously and compute only while querying, can
+spin compute up/down per workload, and avoid paying for idle clusters — the
+biggest structural cost lever.
+
+## When to use / When NOT
+
+- **Add partitions/parallelism — when:** a job is CPU/IO-bound on a single
+  worker and the data splits cleanly. **Avoid** over-partitioning into tiny
+  chunks — overhead and small files erase the gains.
+- **Broadcast join — when:** one side fits comfortably in worker memory; it
+  removes a shuffle. **Avoid** when both sides are large (broadcast OOMs).
+- **Salt / mitigate skew — when:** one or few hot keys dominate a partition and
+  one task lags badly. **Avoid** blanket salting when data is already balanced —
+  it adds a second aggregation stage for nothing.
+- **Compact — when:** file counts balloon from streaming/incremental writes and
+  query/metadata latency rises. **Avoid** compacting so aggressively that you
+  lose useful partition pruning, and schedule it off-peak (it rewrites data).
+- **Separate compute/storage / tier to cheap freshness — when:** cost matters
+  and not every dataset needs sub-minute freshness. **Avoid** paying for
+  streaming/standing compute on data that a daily batch would serve fine.
+
+## Tradeoffs
+
+The defining tension is **data freshness vs cost.** Fresher data means more
+frequent runs, standing streaming infrastructure, smaller (more numerous)
+files, and more compute — each a cost multiplier. Staler data batched less often
+is dramatically cheaper. Most "we need real-time" requirements dissolve under
+the question *"what decision changes if this is 1 hour old instead of 1
+minute?"* — and the honest answer usually permits cheaper batch.
+
+| Lever | Cheaper / slower end | Costlier / fresher end |
+| ----- | -------------------- | ---------------------- |
+| Cadence | Daily batch | Continuous streaming |
+| File layout | Compacted large files | Many small fresh files |
+| Compute | Off when idle, separated | Always-on standing cluster |
+| Partitioning | Coarse (good pruning) | Fine (parallel but small files) |
+| Reprocessing | Full refresh (simple, costly) | Incremental (cheap, complex) |
+
+Two more cross-cutting concerns:
+- **Shuffle/skew are pure waste** to be engineered out — broadcast joins,
+  pushdown, salting, AQE. Reducing them is almost always a strict win (faster
+  *and* cheaper), unlike the freshness tradeoff which is a genuine choice.
+- **PII at scale** is a governance cost that grows with data: identify and tag
+  sensitive columns (catalog/lineage), apply column masking / tokenization,
+  enforce row/column access policies, retention/deletion (right-to-be-forgotten),
+  and audit access. For a fintech handling loan and payment data, this is not
+  optional — it must be wired into the platform (masking on land or in-warehouse
+  policies) rather than bolted on per pipeline.
+
+## Diagram
+
+Shuffle is the cross-machine data movement that dominates cost; skew makes one
+worker the bottleneck.
+
+<Mermaid code={`graph TD
+  IN[Partitioned input] --> M1[Worker 1<br/>map]
+  IN --> M2[Worker 2<br/>map]
+  IN --> M3[Worker 3<br/>map]
+  M1 -->|shuffle: all-to-all<br/>network + spill| R1[Reduce by key]
+  M2 -->|shuffle| R1
+  M3 -->|shuffle| R1
+  M1 --> R2[Reduce by key]
+  M2 --> R2
+  M3 --> R2
+  R1 -. hot key: skewed<br/>this task lags .-> OUT[Output]
+  R2 --> OUT`} />
+
+## Try it
+
+Slide the freshness↔cost axis, then walk the scale/cost decision tree.
+
+<TradeoffSlider
+  client:visible
+  caption="Data freshness ↔ cost"
+  leftAxis="Cheapest (stalest)"
+  rightAxis="Freshest (costliest)"
+  stops={[
+    { label: 'Daily batch', description: 'One large run per day over compacted files on separated compute that is otherwise off. Cheapest by far; data up to 24h stale. Right for most reporting and finance reconciliation.' },
+    { label: 'Hourly batch', description: 'Hourly incremental runs. Modest cost bump, fresh within the hour. The common default for operational dashboards.' },
+    { label: 'Micro-batch (minutes)', description: 'Spark Structured Streaming style: small batches every few minutes. Standing-ish compute and more files (needs compaction); fresh within minutes.' },
+    { label: 'Streaming (seconds)', description: 'Continuous processing with standing infrastructure. Seconds-fresh but the most expensive: always-on compute, small-files pressure, harder ops. Justify with a real per-event decision.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Scaling and cost: what is the bottleneck?"
+  root={{
+    question: 'Is the job slow/expensive, or is the cloud bill the problem?',
+    branches: [
+      {
+        label: 'Job is slow / one task lags',
+        next: {
+          question: 'Is one partition/key far larger than the rest (skew)?',
+          branches: [
+            { label: 'Yes — clear hot key', next: { leaf: { recommendation: 'Mitigate skew (salt / isolate / AQE)', detail: 'Salt hot keys to split them across workers, isolate mega-keys, or enable adaptive query execution to split skewed partitions at runtime. The job is only as fast as its biggest partition.' } } },
+            { label: 'No — but big joins/group-bys', next: { leaf: { recommendation: 'Reduce shuffle (broadcast / pushdown / bucket)', detail: 'Broadcast the small side of joins, push filters/aggregations down before the shuffle, and pre-bucket by join keys. Shuffle is the most expensive step; engineer it out.' } } },
+            { label: 'No — just under-parallelized', next: { leaf: { recommendation: 'Increase partitions/parallelism', detail: 'Raise partition count so more workers run in parallel — but not so far that you create tiny files and overhead.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Bill is too high',
+        next: {
+          question: 'Where is the spend going?',
+          branches: [
+            { label: 'Idle / always-on compute', next: { leaf: { recommendation: 'Separate compute/storage; auto-suspend', detail: 'Decouple cheap object storage from elastic compute and turn compute off when idle. The single biggest structural cost lever.' } } },
+            { label: 'Queries scan/list too much', next: { leaf: { recommendation: 'Compact files + better partitioning/clustering', detail: 'Compact small files into large ones (OPTIMIZE) and partition/cluster to match query filters so engines prune and skip blocks instead of full-scanning.' } } },
+            { label: 'Real-time we may not need', next: { leaf: { recommendation: 'Relax freshness to batch', detail: 'Ask what decision changes if data is 1h vs 1min old. If none, drop streaming for hourly/daily batch — usually an order-of-magnitude cost cut.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Spark's Adaptive Query Execution** detects skewed partitions and splits
+  them at runtime — a direct answer to the most common scaling failure.
+- **Iceberg / Delta / Hudi compaction** (`OPTIMIZE`, rewrite-data-files) is
+  standard practice to tame the small-files problem from streaming ingestion.
+- **Snowflake and BigQuery** built their economics on compute/storage
+  separation, letting teams pay for compute only while querying.
+- **Fintechs and healthcare platforms** enforce column masking, tokenization,
+  and access policies on PII at the warehouse/lakehouse layer (e.g. via Unity
+  Catalog or BigQuery column-level security) to meet regulatory obligations at
+  scale.
+
+## Further reading
+
+- [Spark — Performance Tuning & AQE](https://spark.apache.org/docs/latest/sql-performance-tuning.html) — shuffle, broadcast joins, skew handling, adaptive execution.
+- [The Small Files Problem (and compaction)](https://blog.cloudera.com/the-small-files-problem/) — why tiny files wreck distributed query performance.
+- [Iceberg — Maintenance / compaction](https://iceberg.apache.org/docs/latest/maintenance/) — rewriting data files and managing snapshots.
+- [Designing Data-Intensive Applications (Kleppmann), ch. on batch & partitioning](https://dataintensive.net/) — partitioning, shuffles, and skew from first principles.

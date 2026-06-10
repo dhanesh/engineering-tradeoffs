@@ -1,0 +1,236 @@
+---
+title: Storage — Warehouses, Lakes & Lakehouses
+description: Data warehouse vs data lake vs lakehouse, columnar formats (Parquet/ORC), partitioning and clustering, open table formats (Iceberg/Delta/Hudi), object storage, OLAP engines, and row vs column storage.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Where analytical data lives determines what you can do with it, how fast, and
+how much it costs. The three architectures — **warehouse**, **lake**, and
+**lakehouse** — represent twenty years of swinging between two goods: the
+structure, performance, and SQL ergonomics of a warehouse versus the cheap,
+open, any-format flexibility of a lake. The lakehouse is the current synthesis,
+made possible by **open table formats** (Iceberg, Delta, Hudi) that bolt
+warehouse-grade transactions and schema management onto cheap object storage.
+
+This page covers the three architectures, the **columnar file formats**
+(Parquet, ORC) that make analytics fast, **partitioning and clustering** for
+pruning, the **table formats** that add ACID and time-travel to the lake, the
+**OLAP engines** that query them (Snowflake, BigQuery, ClickHouse), and the
+foundational **row vs column** distinction. It assumes the OLTP/OLAP framing
+from the cluster *Overview*.
+
+## Mental model
+
+Analytics is **scan-and-aggregate**, so the entire stack is organized to *read
+less*. Three layers stack to achieve that:
+
+1. **Columnar layout** — store all values of one column together, not row by
+   row. A query touching 3 of 50 columns reads ~3/50 of the bytes, and like
+   values compress far better (run-length, dictionary). This alone is the
+   biggest analytics speedup over row storage.
+2. **Partitioning + clustering** — physically split data by a column (date,
+   region) into separate files/directories so the engine can **prune** entire
+   partitions it doesn't need, and cluster/sort within them so it can skip
+   blocks via min/max **zone maps**.
+3. **A table format** — a metadata layer over the files that tracks which files
+   constitute the table *right now*, enabling atomic commits, schema evolution,
+   and time-travel — turning a pile of objects into a real table.
+
+Hold this image: **a warehouse hides all three behind SQL; a lakehouse exposes
+them as open files + an open table format so any engine can read them.**
+
+## Types / Variants
+
+**Data warehouse.** Structured, schema-on-write, SQL-first store with a managed
+query engine (Snowflake, BigQuery, Redshift). You load modeled tables; the
+system owns storage format, indexing, and optimization. Strengths: best SQL
+performance and ergonomics, governance, concurrency, BI integration. Weakness:
+proprietary storage (lock-in), costlier per TB, and historically awkward for
+unstructured data and ML.
+
+**Data lake.** Raw files of *any* format (JSON, CSV, Parquet, images, logs) on
+cheap **object storage** (S3, GCS, ADLS), **schema-on-read** — you impose
+structure at query time. Strengths: cheapest storage, any data type, open, ML-
+and Spark-friendly. Weakness: no transactions, no schema enforcement; without
+discipline it rots into a **"data swamp"** of undocumented, inconsistent files.
+
+**Lakehouse.** A lake's cheap open object storage **plus** a **table format**
+that adds ACID transactions, schema enforcement/evolution, time-travel, and
+performance optimizations — giving warehouse-like reliability and SQL on
+lake-like economics, queryable by many engines. Databricks (Delta), and
+Iceberg-based stacks (Snowflake, Trino, Flink, Spark) are the mainstream
+realizations.
+
+**Columnar file formats.**
+- *Parquet* — the de facto open columnar format; column chunks, row groups,
+  dictionary/RLE encoding, embedded min/max stats for predicate pushdown.
+  Ecosystem-wide support.
+- *ORC* — similar columnar format from the Hive world; strong compression and
+  built-in indexes; common in Hadoop/Hive shops.
+(Both beat row formats like CSV/Avro for scan-heavy analytics. Avro is
+row-oriented and better for streaming/serialization, not scans.)
+
+**Open table formats (the lakehouse enablers).**
+- *Apache Iceberg* — engine-agnostic table spec with hidden partitioning,
+  full schema/partition **evolution without rewrites**, snapshot isolation, and
+  time-travel. Broadest multi-engine adoption (Snowflake, BigQuery, Trino,
+  Spark, Flink); the emerging open standard.
+- *Delta Lake* — transaction log (`_delta_log`) over Parquet; ACID,
+  time-travel, `MERGE`/upsert; deeply integrated with Spark/Databricks, now
+  open via Delta UniForm/Iceberg interop.
+- *Apache Hudi* — built for **incremental ingestion and upserts/CDC** with
+  copy-on-write and merge-on-read tables; record-level updates and indexing are
+  its differentiator (originated at Uber).
+
+**OLAP engines.**
+- *Snowflake* — managed warehouse, full storage/compute separation, multi-cloud,
+  now Iceberg-capable.
+- *BigQuery* — serverless warehouse, separation of storage and compute, scales
+  to petabytes with no cluster management.
+- *ClickHouse* — extremely fast columnar OLAP database for real-time analytics
+  and high-cardinality queries; self-managed or cloud.
+
+## When to use / When NOT
+
+- **Warehouse — use when:** primarily structured data, SQL/BI is the main
+  consumer, you want top performance and governance with minimal ops, and lock-
+  in is acceptable. **Avoid when:** you have heavy unstructured/ML workloads or
+  need open, multi-engine access to the raw bytes.
+- **Lake — use when:** you have diverse/unstructured data, very large volumes
+  where storage cost dominates, and Spark/ML-first access. **Avoid when:** you
+  need transactions, schema enforcement, and reliable concurrent writes — a raw
+  lake gives none, and undisciplined lakes become swamps.
+- **Lakehouse — use when:** you want one platform for BI *and* ML on open,
+  cheap storage with ACID reliability and multi-engine access. The strong
+  modern default for greenfield platforms. **Avoid when:** a managed warehouse
+  alone fully meets your needs and you'd rather not run table-format tooling.
+- **Parquet over CSV/JSON — essentially always** for analytical storage:
+  columnar, compressed, with stats for pushdown. **Avro instead** only for
+  row-wise streaming/serialization.
+
+## Tradeoffs
+
+The governing tension: **structure/performance/governance (warehouse) vs
+openness/cost/flexibility (lake)** — with the lakehouse buying most of both at
+the price of operating a table format and tuning it yourself. A second axis is
+**lock-in**: warehouses own your storage format; lakehouses keep data in open
+Parquet + open table specs you can point any engine at.
+
+| Dimension | Data warehouse | Data lake | Lakehouse |
+| --------- | -------------- | --------- | --------- |
+| Storage | Proprietary, managed | Open files on object store | Open files + table format |
+| Data types | Structured | Any (incl. unstructured) | Any |
+| Schema | On write (enforced) | On read (none enforced) | On write (enforced via format) |
+| Transactions / ACID | Yes | No | Yes (via Iceberg/Delta/Hudi) |
+| Cost per TB | Higher | Lowest | Low (lake storage) |
+| Query performance | Best (managed) | Variable | Near-warehouse with tuning |
+| Engine access | Single (the warehouse) | Many | Many (open) |
+| Lock-in | High | Low | Low |
+| Main risk | Cost + lock-in | Data swamp | Table-format ops/tuning |
+
+Among **table formats**: Iceberg leads on engine-neutrality and painless
+schema/partition evolution; Delta is the smoothest if you live in Spark/
+Databricks; Hudi wins when record-level upserts and streaming CDC ingestion are
+the core need.
+
+## Diagram
+
+Three architectures over the same cheap object storage; the table format is
+what turns lake files into a lakehouse.
+
+<Mermaid code={`graph TD
+  subgraph Object [Cheap object storage S3 / GCS]
+    PQ[Parquet / ORC files]
+  end
+  PQ --> LAKE[Data lake<br/>schema-on-read, no ACID]
+  PQ --> TF[Table format<br/>Iceberg / Delta / Hudi]
+  TF --> LH[Lakehouse<br/>ACID + schema + time-travel]
+  WH[Data warehouse<br/>proprietary storage + engine] --> BI1[BI / SQL]
+  LH --> ENG[Many engines<br/>Spark / Trino / Flink / Snowflake]
+  LAKE --> ML[Spark / ML jobs]`} />
+
+## Try it
+
+Compare the three, then walk to a recommendation.
+
+<CompareMatrix
+  client:visible
+  caption="Warehouse vs lake vs lakehouse, and table formats"
+  columns={['Warehouse', 'Lake', 'Lakehouse']}
+  rows={[
+    { criterion: 'Storage format', cells: ['Proprietary', 'Open files (any)', 'Open Parquet + table format'] },
+    { criterion: 'Schema', cells: ['On write', 'On read', 'On write (enforced)'] },
+    { criterion: 'ACID transactions', cells: ['Yes', 'No', 'Yes'] },
+    { criterion: 'Unstructured data', cells: ['Weak', 'Strong', 'Strong'] },
+    { criterion: 'Cost per TB', cells: ['Higher', 'Lowest', 'Low'] },
+    { criterion: 'SQL/BI performance', cells: ['Best', 'Variable', 'Near-warehouse'] },
+    { criterion: 'Lock-in', cells: ['High', 'Low', 'Low'] },
+    { criterion: 'Time-travel', cells: ['Limited', 'No', 'Yes (snapshots)'] },
+    { criterion: 'Best fit', cells: ['Structured BI, governance', 'ML, raw, huge volume', 'BI + ML on open storage'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which storage architecture (and table format)?"
+  root={{
+    question: 'Is your data mostly structured and SQL/BI your dominant consumer?',
+    branches: [
+      {
+        label: 'Yes — structured, BI-first',
+        next: {
+          question: 'Do you need open, multi-engine access and to avoid storage lock-in?',
+          branches: [
+            { label: 'No, managed simplicity is fine', next: { leaf: { recommendation: 'Data warehouse (Snowflake / BigQuery)', detail: 'Best SQL performance, governance, and concurrency with minimal ops. Accept proprietary storage and higher per-TB cost.' } } },
+            { label: 'Yes, keep data open', next: { leaf: { recommendation: 'Lakehouse on Iceberg', detail: 'Warehouse-grade ACID and SQL on open Parquet, queryable by many engines. Iceberg gives painless schema/partition evolution and broad engine support.' } } },
+          ],
+        },
+      },
+      {
+        label: 'No — diverse/unstructured, ML-heavy, huge volume',
+        next: {
+          question: 'Do you need ACID transactions, schema enforcement, and upserts?',
+          branches: [
+            { label: 'No, raw Spark/ML access only', next: { leaf: { recommendation: 'Data lake (object storage + Parquet)', detail: 'Cheapest, most flexible. Impose discipline (catalog, conventions) or it becomes a data swamp.' } } },
+            {
+              label: 'Yes — I need reliability on the lake',
+              next: {
+                question: 'Is record-level upsert / streaming CDC ingestion the core need?',
+                branches: [
+                  { label: 'Yes, upsert/CDC heavy', next: { leaf: { recommendation: 'Lakehouse on Hudi', detail: 'Built for incremental ingestion and record-level updates (copy-on-write / merge-on-read). Originated at Uber for exactly this.' } } },
+                  { label: 'No, I live in Spark/Databricks', next: { leaf: { recommendation: 'Lakehouse on Delta Lake', detail: 'Smoothest ACID + MERGE + time-travel inside the Spark/Databricks ecosystem; now interoperable with Iceberg.' } } },
+                  { label: 'No, want max engine-neutrality', next: { leaf: { recommendation: 'Lakehouse on Iceberg', detail: 'The emerging open standard: engine-agnostic, hidden partitioning, full evolution without rewrites.' } } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Netflix** runs a massive Iceberg-on-S3 lakehouse (Iceberg originated there)
+  feeding Spark, Trino, and Flink.
+- **Uber** created **Hudi** to handle record-level upserts and near-real-time
+  ingestion into its lake.
+- **Databricks** created and champions **Delta Lake**, defining the "lakehouse"
+  term and pattern.
+- **ClickHouse** powers real-time, high-cardinality analytics at Cloudflare,
+  Uber, and many observability products.
+
+## Further reading
+
+- [Apache Iceberg — table spec & docs](https://iceberg.apache.org/docs/latest/) — hidden partitioning, schema evolution, snapshots.
+- [What is a Lakehouse? (Databricks)](https://www.databricks.com/blog/2020/01/30/what-is-a-data-lakehouse.html) — the synthesis argument from its originators.
+- [Apache Parquet documentation](https://parquet.apache.org/docs/) — columnar layout, row groups, and predicate pushdown.
+- [Hudi vs Delta vs Iceberg (Onehouse)](https://www.onehouse.ai/blog/apache-hudi-vs-delta-lake-vs-apache-iceberg-lakehouse-feature-comparison) — feature-by-feature table-format comparison.

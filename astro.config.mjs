@@ -230,6 +230,17 @@ export default defineConfig({
             { label: 'Mobile platform concerns', slug: 'mobile/mobile-platform-concerns' },
           ],
         },
+        {
+          label: 'Data Engineering & Pipelines',
+          items: [
+            { label: 'Overview', slug: 'data-engineering' },
+            { label: 'Batch vs streaming', slug: 'data-engineering/batch-vs-streaming' },
+            { label: 'Pipelines, ETL & ELT', slug: 'data-engineering/pipelines-etl-elt' },
+            { label: 'Storage: warehouses & lakes', slug: 'data-engineering/storage-warehouses-lakes' },
+            { label: 'Data modeling & quality', slug: 'data-engineering/data-modeling-quality' },
+            { label: 'Pipeline scale & cost', slug: 'data-engineering/pipeline-scale-cost' },
+          ],
+        },
       ],
     }),
   ],

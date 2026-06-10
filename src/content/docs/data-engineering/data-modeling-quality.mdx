@@ -1,0 +1,187 @@
+---
+title: Data Modeling & Quality
+description: Dimensional modeling (star/snowflake, facts/dims), normalization for analytics, slowly changing dimensions, data quality and contracts, schema evolution, governance, lineage and catalog, and idempotent transforms with dbt.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Raw extracted data is not analytics-ready: it's normalized for transactions,
+riddled with source quirks, and unmodeled for the questions analysts ask.
+**Data modeling** reshapes it into structures optimized for querying — most
+famously the **star schema** of facts and dimensions — and **data quality**
+ensures the reshaped data is, and stays, trustworthy. Together they are the
+difference between a warehouse people rely on and one they quietly stop using
+after the third wrong number.
+
+This page covers **dimensional modeling** (stars, snowflakes, facts, dims),
+how analytical normalization differs from OLTP normalization, **slowly changing
+dimensions** (tracking history correctly), **data quality** via
+validation/tests and **data contracts**, **schema evolution**, **governance**
+(lineage, catalog), and **idempotent transforms** as implemented by dbt. It
+builds on the storage and pipeline pages.
+
+## Mental model
+
+Model for the **questions**, not the **transactions**. OLTP normalizes to avoid
+update anomalies and keep writes cheap; analytics **denormalizes** to keep
+*reads* cheap, because nobody updates a fact row — facts are append-only history.
+
+The durable model is the **star**: a central **fact** table (the measurable
+events — orders, clicks, payments — one row per event, with numeric measures
+and foreign keys) surrounded by **dimension** tables (the descriptive context —
+customer, product, date, store — that you filter and group by). Queries become
+"aggregate this measure, sliced by these dimensions," which maps directly to a
+fact-joined-to-dims SQL pattern the engine optimizes well.
+
+The quality counterpart: treat each modeled table as a **product with a
+contract**. A contract is a promise about the table's schema, semantics, and
+freshness that producers must keep and consumers can rely on — enforced by
+tests in the pipeline, not by hope.
+
+## Types / Variants
+
+**Star schema.** One fact table joined directly to denormalized dimension
+tables. Fewer joins, fast, intuitive for BI. The default dimensional model.
+
+**Snowflake schema.** Dimensions are *normalized* into sub-dimensions (e.g.
+product → category → department as separate tables). Saves storage and reduces
+redundancy but adds joins and complexity. Use sparingly; star is usually
+better for query performance.
+
+**Facts vs dimensions.**
+- *Fact* — measurable, numeric, additive events; one row per occurrence; grows
+  fast; foreign keys to dims. (Variants: transaction, periodic snapshot,
+  accumulating snapshot.)
+- *Dimension* — descriptive attributes you slice/filter by; relatively small;
+  changes slowly.
+
+**Slowly Changing Dimensions (SCD).** How a dimension records change over time:
+- *Type 1* — overwrite; keep only current value (no history). Simple, loses
+  the past.
+- *Type 2* — add a new row per change with effective-from/to dates and a
+  current flag; preserves full history. The most important for correct
+  point-in-time analysis ("what was this customer's segment *when* they
+  ordered?").
+- *Type 3* — keep a "previous value" column; limited history.
+Getting SCD wrong silently corrupts historical reporting — a classic data bug.
+
+**Data quality dimensions.** Completeness, uniqueness, validity, consistency,
+accuracy, and **freshness/timeliness**. Tested via assertions (not-null, unique,
+accepted-values, referential integrity, row-count/volume anomalies).
+
+**Data contracts.** A versioned, enforced agreement (schema + semantics +
+freshness + ownership) between a producing team and consumers — checked in CI
+and at ingestion so a breaking source change *fails loudly* instead of silently
+poisoning downstream tables.
+
+**Schema evolution.** Adding/removing/renaming/retyping columns over time.
+Additive changes (new nullable column) are safe; breaking changes (drop/rename/
+retype) need contracts, versioning, and coordination. Open table formats
+(Iceberg/Delta) make additive evolution safe without rewrites.
+
+**Governance, lineage, catalog.** *Lineage* traces a column's origin through
+every transform (essential for impact analysis and debugging). A *catalog*
+(DataHub, Unity Catalog, OpenMetadata) documents datasets, owners, and
+semantics so data is discoverable and trusted.
+
+## When to use / When NOT
+
+- **Star schema — use when:** building analytical/BI marts for slicing measures
+  by dimensions (almost all dashboards). **Avoid** forcing it on genuinely
+  unstructured/ML feature data, where wide denormalized tables may fit better.
+- **Snowflake schema — use when:** dimensions are large with heavy redundancy
+  and storage matters more than join count. **Avoid** as a default — extra
+  joins usually cost more than the storage they save.
+- **SCD Type 2 — use when:** you must answer point-in-time questions correctly
+  (segment/price/status *as of* an event). **Avoid** (use Type 1) when only the
+  current value matters and history is noise.
+- **Data contracts — use when:** multiple teams produce/consume shared data and
+  silent breakages are costly. **Avoid** heavyweight contracts for a single-team
+  throwaway pipeline — start with dbt tests.
+- **Idempotent transforms — always.** Model builds must be re-runnable
+  (overwrite/MERGE keyed on a grain), never append-on-rerun.
+
+## Tradeoffs
+
+Two tensions dominate. First, **denormalization vs redundancy**: star schemas
+trade duplicated dimension data and update complexity for fast, simple reads —
+the right trade for append-only analytics, the wrong one for OLTP. Second,
+**history fidelity vs simplicity** in SCDs: Type 2 gives correct point-in-time
+analysis but multiplies dimension rows and complicates joins; Type 1 is simple
+but forgets the past. And across the board, **quality enforcement costs upfront
+work** (tests, contracts, lineage) that pays back as trust and faster debugging.
+
+| Choice | Lighter option | Heavier option | Pick heavier when |
+| ------ | -------------- | -------------- | ----------------- |
+| Schema shape | Star (denormalized) | Snowflake (normalized dims) | Dim redundancy/storage is large |
+| History | SCD Type 1 (overwrite) | SCD Type 2 (versioned rows) | Point-in-time correctness required |
+| Quality | dbt tests | Enforced data contracts | Cross-team shared, breakage-costly |
+| Evolution | Ad-hoc column adds | Versioned contract + Iceberg | Breaking changes / many consumers |
+| Discovery | README | Catalog + lineage | Many datasets, many consumers |
+
+## Diagram
+
+A star schema: one fact table at the center, dimensions around it; an SCD Type
+2 dimension carries effective-dated rows for point-in-time joins.
+
+<Mermaid code={`graph TD
+  DC[dim_customer<br/>SCD2: valid_from / valid_to] --> F[fct_orders<br/>one row per order]
+  DP[dim_product] --> F
+  DD[dim_date] --> F
+  DS[dim_store] --> F
+  F --> Q[BI query:<br/>SUM measure GROUP BY dims]
+  CONTRACT{Data contract<br/>+ dbt tests} -.guards.-> F`} />
+
+## Try it
+
+Compare modeling/quality choices, then the when-and-why of contracts and SCDs.
+
+<CompareMatrix
+  client:visible
+  caption="Modeling and history choices"
+  columns={['Star', 'Snowflake', 'SCD Type 1', 'SCD Type 2']}
+  rows={[
+    { criterion: 'What it is', cells: ['Denormalized dims', 'Normalized dims', 'Overwrite dimension', 'Versioned dimension rows'] },
+    { criterion: 'Joins', cells: ['Fewer', 'More', 'n/a', 'n/a'] },
+    { criterion: 'Query speed', cells: ['Fast', 'Slower', 'Fast', 'Slightly slower (filter current)'] },
+    { criterion: 'Storage', cells: ['More (redundant)', 'Less', 'Minimal', 'More (row per change)'] },
+    { criterion: 'History kept', cells: ['n/a', 'n/a', 'No', 'Yes (full)'] },
+    { criterion: 'Point-in-time correct', cells: ['n/a', 'n/a', 'No', 'Yes'] },
+    { criterion: 'Use when', cells: ['Most BI marts', 'Huge redundant dims', 'Only current matters', 'Need history as-of event'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Quality, contracts, and idempotent transforms"
+  tabs={[
+    { label: 'When contracts', content: 'Introduce enforced data contracts when multiple teams share data and a silent upstream schema change would corrupt downstream tables and dashboards. Start lighter with dbt tests (not-null, unique, accepted-values, relationships) on a single-team pipeline and escalate to contracts as consumers multiply.' },
+    { label: 'Why SCD2', content: 'Slowly Changing Dimension Type 2 keeps a versioned row per change with valid-from/valid-to dates, so you can answer "what was this attribute WHEN the event happened?" Overwriting (Type 1) makes every historical report use the current value — a silent, common, and serious correctness bug in analytics.' },
+    { label: 'Why lineage', content: 'Column-level lineage traces every field back through every transform to its source. It is how you do impact analysis before a change, debug a wrong number to its origin, and satisfy governance/PII audits. A catalog plus lineage turns a warehouse from a mystery into a discoverable, trusted product.' },
+    { label: 'Why idempotent', content: 'Model builds must be idempotent: re-running a transform must overwrite or MERGE on the grain, never append duplicates. dbt enforces this pattern (full-refresh or incremental MERGE on a unique key), making backfills, retries, and reprocessing safe by construction.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Kimball dimensional modeling** (star schemas, facts/dims, SCDs) remains the
+  backbone of warehouse design across retail, finance, and SaaS analytics.
+- **dbt** made tests, documentation, and lineage first-class in transformation,
+  popularizing idempotent incremental models and in-repo data contracts.
+- **DataHub** (LinkedIn) and **Unity Catalog** (Databricks) provide lineage and
+  cataloging at scale for thousands of datasets.
+- **Data contracts** are championed by teams like GoCardless and Convoy to stop
+  silent upstream breakages from poisoning analytics.
+
+## Further reading
+
+- [The Data Warehouse Toolkit (Kimball)](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/) — the canonical dimensional modeling techniques, including SCDs.
+- [dbt — Tests & data contracts](https://docs.getdbt.com/docs/build/data-tests) — validation, contracts, and idempotent incremental models.
+- [Data contracts (Andrew Jones)](https://www.foundationaldata.com/) — why and how to enforce producer/consumer agreements.
+- [Slowly Changing Dimensions explained (Kimball)](https://www.kimballgroup.com/2008/08/slowly-changing-dimensions/) — Types 1–3 and when each applies.

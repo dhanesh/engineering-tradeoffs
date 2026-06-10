@@ -1,0 +1,187 @@
+---
+title: Pipelines, ETL & ELT
+description: ETL vs ELT, DAG orchestration with Airflow/Dagster, idempotency and backfills, ingestion via batch/CDC/streaming, incremental processing, dependency management, and pipeline reliability and observability.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A **data pipeline** is the automated path data takes from a source system to a
+trusted, queryable form. The pipeline's job is to do this *repeatedly*,
+*reliably*, and *idempotently* — every day, every hour, or continuously — while
+surviving partial failures, late data, schema changes, and the need to
+reprocess history. The hard part is rarely the transformation logic itself; it
+is making the pipeline trustworthy: re-runnable without duplicating data,
+observable when it breaks, and correct when a source backfills three days of
+late records.
+
+This page covers the two extraction strategies (**ETL vs ELT**),
+**orchestration** as directed acyclic graphs (DAGs) with Airflow/Dagster,
+**ingestion** modes (batch, change-data-capture, streaming), the core
+reliability properties (**idempotency, backfills, incremental processing,
+dependency management**), and pipeline **observability**. It builds on
+*Batch vs Streaming* (the processing model) and feeds *Storage* (where the
+output lands).
+
+## Mental model
+
+A pipeline is a **DAG of transformations** where each node is idempotent and
+restartable. Picture it as a recipe whose every step can be re-run from
+scratch on the same inputs and always produce the same output — so when step 4
+fails, you fix it and re-run from step 4 (or the whole thing) without
+corrupting anything.
+
+Two properties make this mental model work:
+
+- **Idempotency** — running a step twice produces the same result as running it
+  once. Achieved by *overwriting* a partition rather than appending, using
+  `MERGE`/upsert keyed on a natural key, or deduplicating on a unique ID. The
+  enemy is blind `INSERT`, which double-writes on retry.
+- **Partitioning by time** — process and store data in time-bounded partitions
+  (e.g. one per day). This makes **backfills** (reprocessing historical
+  partitions) and **incremental processing** (only the new partition) both
+  reduce to "run the same idempotent job over a different partition."
+
+Get those two right and most pipeline reliability problems dissolve: retries
+are safe, backfills are routine, and a failed run never leaves half-written
+garbage.
+
+## Types / Variants
+
+**ETL (Extract → Transform → Load).** Transform data *before* loading it into
+the warehouse, typically on a separate compute engine (historically
+Informatica/Spark). The warehouse only ever holds clean, modeled data. Fits
+when storage was expensive, transforms are heavy/non-SQL, or compliance
+requires masking PII before it lands.
+
+**ELT (Extract → Load → Transform).** Load *raw* data into the warehouse first,
+then transform *inside* it using its compute (the dbt + Snowflake/BigQuery
+pattern). Now dominant because cloud warehouses made storage cheap and compute
+elastic: you keep raw data for re-modeling, and transformations are just SQL
+under version control. The transform step becomes a DAG of SQL models with
+tests and lineage.
+
+**Ingestion modes** (how *Extract* and *Load* happen):
+- *Batch / full-snapshot* — periodically pull the whole table or a file dump.
+  Simple, but heavy and stale between runs.
+- *Incremental batch* — pull only rows changed since a high-water mark (an
+  `updated_at` cursor). Efficient but misses hard deletes and depends on a
+  reliable timestamp.
+- *Change Data Capture (CDC)* — stream the source database's write-ahead/binlog
+  (Debezium, Fivetran) so every insert/update/**delete** is captured in
+  near-real-time. The gold standard for keeping a warehouse in sync with an
+  OLTP source; captures deletes that incremental cursors miss.
+- *Streaming ingestion* — events flow continuously from a broker (Kafka) into
+  the lake/warehouse.
+
+**Orchestrators** (run the DAG):
+- *Airflow* — the incumbent; Python-defined DAGs, rich scheduler, huge operator
+  ecosystem. Task-centric; can feel heavy for data-asset thinking.
+- *Dagster* — asset-centric ("software-defined assets"): you declare the
+  *tables* you want and their dependencies, and Dagster derives the DAG. Strong
+  on lineage, typing, and local testing.
+- *Prefect* — Pythonic, dynamic, lighter-weight flows.
+- *dbt* itself builds a DAG of SQL models with built-in tests; often run *by* an
+  orchestrator.
+
+## When to use / When NOT
+
+- **ELT — use when:** you're on a cloud warehouse/lakehouse with cheap storage
+  and elastic compute, want raw data retained for re-modeling, and your
+  transforms are expressible in SQL (dbt). The modern default.
+- **ETL — use when:** transforms are heavy or non-SQL (complex ML
+  featurization), you must mask/drop PII *before* it lands for compliance, or
+  the target store is expensive and should hold only refined data.
+- **CDC ingestion — use when:** you need the warehouse continuously in sync with
+  an OLTP source, including deletes, with low load on the source. **Avoid when:**
+  a daily snapshot is plenty and you don't want to operate a CDC connector and
+  binlog access.
+- **Incremental processing — use when:** datasets are large and only a recent
+  slice changes each run; process the new partition, not the whole table.
+  **Avoid premature incrementalization** when a full refresh is cheap — it adds
+  state and bug surface for no gain.
+- **Heavy orchestrator — adopt when:** you have many interdependent pipelines,
+  SLAs, and backfill needs. **Skip when:** a single cron'd dbt run covers you;
+  don't stand up Airflow for one job.
+
+## Tradeoffs
+
+The central tradeoff is **where transformation happens and how much state the
+pipeline carries.** ELT pushes transforms into the warehouse (simple, SQL,
+re-modelable, but raw PII lands and warehouse compute bills grow). ETL keeps
+the warehouse clean but adds a separate compute system and reprocessing means
+re-extracting. Incremental processing saves compute but adds high-water-mark
+state, late-data handling, and backfill complexity that full refreshes avoid.
+
+| Concern | ETL | ELT |
+| ------- | --- | --- |
+| Transform location | Separate engine, before load | Inside the warehouse |
+| Raw data retained? | Often not | Yes (re-modelable) |
+| Storage cost | Lower (only clean data) | Higher (raw + modeled) |
+| Compliance (PII) | Mask before landing | Raw lands; govern in-warehouse |
+| Tooling | Spark / legacy ETL | dbt + SQL, version-controlled |
+| Reprocessing | Re-extract + retransform | Re-run SQL over retained raw |
+| Best fit | Heavy/non-SQL, strict PII | Cloud warehouse, SQL transforms |
+
+Reliability levers that cut across both: **idempotency** (overwrite/merge, never
+blind insert) makes retries and backfills safe; **dependency management** (the
+DAG) ensures a model only runs after its inputs are fresh; **observability**
+(freshness checks, row-count anomaly detection, test results, lineage) is how
+you find out a pipeline silently produced wrong data before a consumer does.
+
+## Diagram
+
+An orchestrated DAG: ingest, then a dependency graph of transforms, each node
+idempotent and independently retriable.
+
+<Mermaid code={`graph TD
+  CDC[CDC / connector<br/>extract] --> RAW[(Raw / staging)]
+  RAW --> STG1[stg_orders]
+  RAW --> STG2[stg_customers]
+  STG1 --> DIM[dim_customer]
+  STG2 --> DIM
+  STG1 --> FACT[fct_orders]
+  DIM --> FACT
+  FACT --> MART[orders_mart]
+  MART --> TEST{Tests +<br/>freshness checks}
+  TEST -->|pass| SERVE[Serve to BI / ML]
+  TEST -->|fail| ALERT[Alert + halt]`} />
+
+## Try it
+
+When ELT, when ETL, and why idempotency is the load-bearing property.
+
+<WhenWhyTabs
+  client:visible
+  caption="ETL vs ELT, and pipeline reliability"
+  tabs={[
+    { label: 'When ELT', content: 'Default to ELT on a cloud warehouse/lakehouse: load raw, transform in-warehouse with dbt SQL under version control, and keep raw data so you can re-model when requirements change. Cheap storage and elastic compute make this the modern norm.' },
+    { label: 'When ETL', content: 'Choose ETL when transforms are heavy or non-SQL (complex ML featurization), when PII must be masked or dropped before it ever lands for compliance, or when the destination store is costly and should hold only refined data.' },
+    { label: 'Why idempotency', content: 'Idempotency is the property that makes everything else safe. If a step re-run yields the same result (via overwrite-partition or MERGE/upsert, never blind INSERT), then retries after failure are safe, backfills are just re-runs over old partitions, and a crashed run never leaves duplicated or half-written data. Build it in from the start.' },
+    { label: 'Why CDC', content: 'CDC streams the source database log so inserts, updates, and crucially DELETES are captured in near-real-time with minimal source load. Timestamp-cursor incremental loads miss hard deletes and depend on a trustworthy updated_at; CDC does not. Use it when the warehouse must faithfully mirror an OLTP source.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Airbnb** created Airflow to orchestrate its interdependent data pipelines;
+  it is now the most widely deployed open-source orchestrator.
+- **dbt** turned in-warehouse transformation into version-controlled, tested,
+  lineage-aware SQL and defined the ELT-on-warehouse pattern for thousands of
+  teams.
+- **Debezium** (CDC) streams MySQL/Postgres binlogs into Kafka, powering
+  near-real-time warehouse sync at companies like WePay and Stripe-style data
+  platforms.
+- **Dagster** popularized software-defined assets — declaring the tables you
+  want and letting the orchestrator derive and monitor the DAG.
+
+## Further reading
+
+- [The Apache Airflow documentation](https://airflow.apache.org/docs/) — DAGs, scheduling, backfills, and operators.
+- [dbt — How we structure our projects](https://docs.getdbt.com/best-practices/how-we-structure/1-guide-overview) — staging/marts layering and incremental models in ELT.
+- [Debezium documentation](https://debezium.io/documentation/) — log-based CDC for keeping analytics in sync with OLTP sources.
+- [Functional Data Engineering (Maxime Beauchemin)](https://maximebeauchemin.medium.com/functional-data-engineering-a-modern-paradigm-for-batch-data-processing-2327ec32c42a) — idempotent, partitioned, reproducible pipelines.

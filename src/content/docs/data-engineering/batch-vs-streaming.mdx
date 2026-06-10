@@ -1,0 +1,230 @@
+---
+title: Batch vs Streaming
+description: Batch, micro-batch, and stream processing compared — Lambda vs Kappa architectures, event time vs processing time, windowing, watermarks, exactly-once in streaming, and a decision tree for which model fits.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+The first fork in any data pipeline design is **when** you process data:
+accumulate it and process in bounded chunks (**batch**), or process each record
+as it arrives (**streaming**). This is not merely a latency knob — it changes
+your architecture, your correctness reasoning, your failure handling, and your
+cost profile. Batch is simpler, cheaper per record, and trivially
+reprocessable; streaming gives seconds-fresh results at the price of standing
+infrastructure and genuinely harder semantics around time and exactly-once.
+
+This page compares batch, micro-batch, and true streaming; the **Lambda** and
+**Kappa** architectures that combine or unify them; and the concepts that make
+streaming correct — **event time vs processing time, windowing, watermarks,
+and exactly-once**. For broker and delivery internals (Kafka offsets,
+at-least-once, idempotent producers), see the **Event-Driven Architecture**
+cluster; this page is about the *processing* layer on top.
+
+## Mental model
+
+Think of data as a stream that you choose **where to cut**.
+
+- **Batch** cuts the stream into large bounded chunks by time or size (a day,
+  an hour, a file) and runs a job over each chunk from start to finish. The job
+  has a beginning and an end; when it finishes, you have a complete answer for
+  that window.
+- **Streaming** never cuts: it treats data as an unbounded sequence and
+  maintains a continuously-updated answer, emitting results as events flow.
+- **Micro-batch** is streaming implemented as a rapid series of tiny batches
+  (e.g. Spark Structured Streaming's default): small chunks every few seconds,
+  trading a little latency for batch's operational simplicity.
+
+The second pillar of the model is **two clocks**. Every event has an **event
+time** (when it actually happened, stamped at the source) and a **processing
+time** (when your system saw it). In batch these rarely matter because you
+reprocess a whole day at once. In streaming the gap between them — caused by
+network delays, retries, mobile clients going offline — is the source of nearly
+every hard problem. Correct streaming reasons in *event time*, not processing
+time.
+
+## Types / Variants
+
+**Batch processing.** Bounded input, run to completion. Frameworks: Spark
+(batch), MapReduce (historical), dbt over a warehouse, plain SQL jobs.
+Strengths: simplest mental model, cheapest per record, easy backfills and
+reprocessing (just rerun the job), strong consistency within a run. Weakness:
+latency equals the batch interval plus runtime — answers are stale by minutes
+to hours.
+
+**Micro-batch.** Streaming-by-small-batches. Spark Structured Streaming is the
+canonical example: it processes data in small intervals and gives
+near-streaming latency (seconds) with batch's tooling and exactly-once via
+checkpointing. A pragmatic middle ground when sub-second latency isn't
+required.
+
+**True (record-at-a-time) streaming.** Each event processed as it arrives, with
+continuously-maintained state. Frameworks: **Apache Flink** (the reference for
+event-time, watermarks, and exactly-once), Kafka Streams, Spark Continuous
+Processing. Strengths: lowest latency, native event-time windowing and
+watermarks. Cost: standing infrastructure, stateful operators to manage, and
+the hardest correctness model.
+
+**Windowing variants** (how streaming bounds the unbounded for aggregation):
+- *Tumbling* — fixed, non-overlapping windows (every 5 min).
+- *Sliding* — fixed-size windows that overlap (5-min window every 1 min).
+- *Session* — windows defined by gaps of inactivity (a user session).
+
+**Watermarks.** A watermark is the streaming system's assertion that "I believe
+I have now seen all events with event time ≤ T." It lets the engine *close* an
+event-time window and emit a result despite the stream being unbounded.
+Late-arriving events (after the watermark) are handled by a policy: drop them,
+or update the already-emitted result. Watermarks are the core mechanism that
+reconciles the two clocks.
+
+## When to use / When NOT
+
+- **Batch — use when:** latency of minutes-to-hours is acceptable, you need
+  cheap large-scale reprocessing/backfills, the logic is complex and easier to
+  reason about over a fixed dataset, or you're modeling in a warehouse (dbt).
+  **Avoid when:** business needs sub-minute freshness (fraud, alerting,
+  live dashboards).
+- **Micro-batch — use when:** you want near-real-time (seconds) with batch's
+  simplicity and exactly-once, and your team already runs Spark. **Avoid when:**
+  you truly need sub-second latency or per-event reactions.
+- **True streaming — use when:** low latency is a hard requirement, you need
+  event-time correctness with out-of-order data, or you react per event (fraud
+  scoring, real-time features, anomaly detection). **Avoid when:** the workload
+  is naturally bounded and batch would be far simpler and cheaper.
+- **Reprocessing requirement test:** if you frequently need to recompute
+  history with new logic, prefer an architecture (Kappa, or batch) where
+  reprocessing is just rerunning over retained input.
+
+## Tradeoffs
+
+The core tension: **latency vs simplicity/cost vs correctness complexity.**
+Batch is the cheapest and simplest with the easiest reprocessing but the
+stalest output. Streaming is the freshest but introduces event-time reasoning,
+watermarks, stateful operators, and exactly-once machinery. The two
+**architectures** below are competing answers to "do we run both?"
+
+- **Lambda architecture** runs a **batch layer** (accurate, complete,
+  reprocessable) *and* a **speed/streaming layer** (fast, approximate) in
+  parallel, merging them at serving time. Pro: accuracy plus freshness. Con:
+  you maintain and reconcile *two codebases* implementing the same logic — the
+  notorious downside.
+- **Kappa architecture** drops the batch layer: **everything is a stream**, and
+  "batch" reprocessing is just replaying the retained log through the same
+  streaming code. Pro: one codebase, one mental model. Con: requires a durable
+  replayable log (Kafka) and streaming logic capable of handling reprocessing
+  at volume.
+
+| Dimension | Batch | Micro-batch | True streaming | Lambda | Kappa |
+| --------- | ----- | ----------- | -------------- | ------ | ----- |
+| Latency | Minutes–hours | Seconds | Sub-second–seconds | Both | Seconds |
+| Codebases | One | One | One | **Two** (batch + speed) | One |
+| Reprocessing | Trivial (rerun) | Rerun | Harder (replay) | Batch layer | Replay log |
+| Correctness model | Simple | Moderate | Hardest (event time) | Mixed | Streaming |
+| Cost per record | Lowest | Low | Higher (standing infra) | Highest | Moderate |
+| Exactly-once | N/A (idempotent rerun) | Checkpointed | Checkpoint + sink txn | Mixed | Checkpointed |
+
+**Exactly-once in streaming** deserves a note. End-to-end exactly-once is not
+free: it requires (1) replayable, offset-tracked input (Kafka), (2) consistent
+checkpointing of operator state (Flink's distributed snapshots / Spark's
+checkpoints), and (3) **transactional or idempotent sinks** so a replayed batch
+doesn't double-write. Without all three you get *at-least-once* with possible
+duplicates. "Effectively-once" is at-least-once plus idempotent writes — often
+the pragmatic target. See the EDA cluster's *Delivery semantics* page for the
+producer/consumer-side details.
+
+## Diagram
+
+Lambda runs two layers and merges; Kappa unifies on one replayable log.
+
+<Mermaid code={`graph TD
+  SRC[Event source] --> LOG[Durable log<br/>Kafka]
+  subgraph Lambda
+    LOG --> BL[Batch layer<br/>accurate, slow]
+    LOG --> SL[Speed layer<br/>fast, approximate]
+    BL --> SV1[Serving / merge view]
+    SL --> SV1
+  end
+  subgraph Kappa
+    LOG --> ST[Single streaming job]
+    ST --> SV2[Serving view]
+    LOG -. replay for reprocessing .-> ST
+  end`} />
+
+## Try it
+
+Compare the models, then walk the decision tree to a recommendation.
+
+<CompareMatrix
+  client:visible
+  caption="Processing models compared"
+  columns={['Batch', 'Micro-batch', 'True streaming']}
+  rows={[
+    { criterion: 'Unit of work', cells: ['Large bounded chunk', 'Tiny frequent batch', 'Single event'] },
+    { criterion: 'Latency', cells: ['Minutes–hours', 'Seconds', 'Sub-second–seconds'] },
+    { criterion: 'Time semantics', cells: ['Whole-window, rarely an issue', 'Event time supported', 'Event time + watermarks'] },
+    { criterion: 'Out-of-order data', cells: ['Reprocessed together', 'Handled via watermark', 'Handled via watermark + late policy'] },
+    { criterion: 'Reprocessing', cells: ['Rerun the job', 'Rerun', 'Replay the log'] },
+    { criterion: 'Exactly-once', cells: ['Idempotent rerun', 'Checkpoint', 'Checkpoint + txn sink'] },
+    { criterion: 'Ops burden', cells: ['Low', 'Moderate', 'High (stateful, standing)'] },
+    { criterion: 'Canonical tool', cells: ['Spark / dbt', 'Spark Structured Streaming', 'Flink / Kafka Streams'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Batch, streaming, or which architecture?"
+  root={{
+    question: 'What freshness does the business actually need?',
+    branches: [
+      {
+        label: 'Minutes to hours is fine',
+        next: { leaf: { recommendation: 'Batch', detail: 'Cheapest, simplest, easiest to reprocess. Run on a schedule (dbt over a warehouse, or Spark batch). Do not add streaming complexity you will not use.' } },
+      },
+      {
+        label: 'Seconds (near-real-time)',
+        next: {
+          question: 'Do you already run Spark and want batch-style tooling/exactly-once?',
+          branches: [
+            { label: 'Yes', next: { leaf: { recommendation: 'Micro-batch (Spark Structured Streaming)', detail: 'Seconds of latency with checkpointed exactly-once and familiar batch tooling. The pragmatic near-real-time default.' } } },
+            { label: 'No / want native event-time', next: { leaf: { recommendation: 'True streaming (Flink / Kafka Streams)', detail: 'Native event-time windowing, watermarks, and low latency. More operational surface but the correct tool for out-of-order, per-event work.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Sub-second / per-event reactions',
+        next: {
+          question: 'Do you also need a fully accurate, frequently-reprocessed historical view?',
+          branches: [
+            { label: 'Yes, and I can maintain a replayable log', next: { leaf: { recommendation: 'Kappa architecture', detail: 'One streaming codebase over a durable log (Kafka); reprocess by replaying. Avoids Lambda dual-codebase pain if your streaming logic handles replay at volume.' } } },
+            { label: 'Yes, and accuracy must come from batch', next: { leaf: { recommendation: 'Lambda architecture', detail: 'Batch layer for accuracy + speed layer for freshness, merged at serving. Accept the cost of maintaining two codebases that must stay in sync.' } } },
+            { label: 'No, just fast reactions', next: { leaf: { recommendation: 'True streaming (Flink)', detail: 'Single streaming job with event-time semantics and exactly-once via checkpoints + transactional sinks.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Flink** is the reference implementation of event-time processing,
+  watermarks, and exactly-once via distributed snapshots; used at Alibaba,
+  Uber, and Netflix for real-time pipelines.
+- **Spark Structured Streaming** popularized micro-batch with end-to-end
+  exactly-once through checkpointing and idempotent sinks.
+- **The Lambda architecture** was coined by Nathan Marz (Storm); its
+  dual-codebase pain directly motivated Jay Kreps's **Kappa** proposal at
+  LinkedIn, built on Kafka's replayable log.
+- **Uber** moved much real-time analytics to a streaming-first (Kappa-leaning)
+  platform to avoid maintaining parallel batch and speed logic.
+
+## Further reading
+
+- [Questioning the Lambda Architecture (Jay Kreps)](https://www.oreilly.com/radar/questioning-the-lambda-architecture/) — the original Kappa argument.
+- [Streaming 101 & 102 (Tyler Akidau, Google)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/) — the definitive treatment of event time, windowing, and watermarks.
+- [Flink — Event Time and Watermarks](https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/time/) — how watermarks close event-time windows in practice.

@@ -1,0 +1,183 @@
+---
+title: Data Engineering & Pipelines
+description: What data engineering is and why it's a discipline apart from app engineering — OLTP vs OLAP, the modern data stack, data-as-a-product, and the ingest to store to transform to serve analytics value chain.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Application engineering optimizes for serving one user's request fast and
+correctly; **data engineering** optimizes for turning *all* of an
+organization's data into something analysts, machine-learning models, and
+executives can trust. The two pull in opposite directions. An app database is
+tuned to read and write single rows by key with low latency under high
+concurrency. An analytics system is tuned to scan billions of rows, aggregate
+them, and join across history — a workload that would melt the same database
+that happily serves your checkout page.
+
+Data engineering is the discipline of moving, shaping, storing, and serving
+data so that those analytical and ML workloads are reliable, fresh, and
+affordable. This cluster covers the moving parts: batch versus streaming,
+pipelines (ETL/ELT and orchestration), storage (warehouses, lakes,
+lakehouses), modeling and quality, and the scale/cost levers. It references
+the **Event-Driven Architecture** cluster for Kafka and streaming internals,
+and the **Databases & CAP** cluster for the transactional systems data
+engineering reads *from*.
+
+## Mental model
+
+The durable mental model is the **analytics value chain**: data flows left to
+right through four stages, and every tool in the modern data stack plugs into
+one of them.
+
+- **Ingest** — get data out of source systems (app databases via CDC, event
+  streams, SaaS APIs, files) and land it somewhere central.
+- **Store** — keep the raw and refined data cheaply and durably (object
+  storage, a warehouse, a lakehouse).
+- **Transform** — clean, join, aggregate, and model raw data into trusted
+  tables (ETL/ELT, dbt, Spark).
+- **Serve** — expose the result to consumers: BI dashboards, ML features,
+  reverse-ETL back into operational tools, ad-hoc SQL.
+
+The single most important distinction underneath all of this is **OLTP vs
+OLAP**. OLTP (Online Transaction Processing) is the world of app databases:
+many small, point read/write transactions, row-oriented storage, normalized
+schemas. OLAP (Online Analytical Processing) is the world of analytics: few
+huge, scan-heavy queries, column-oriented storage, denormalized models. Data
+engineering is, at its core, the plumbing that gets data from the OLTP side to
+the OLAP side without breaking either.
+
+## Types / Variants
+
+The "modern data stack" is a loose set of layered, mostly-managed tools. The
+layers (not the brand names) are what matter:
+
+- **Ingestion / extraction** — Fivetran, Airbyte, Debezium (CDC), Kafka
+  Connect. Moves data from sources into the lake/warehouse.
+- **Storage / compute** — Snowflake, BigQuery, Databricks, Redshift,
+  ClickHouse, or object storage (S3/GCS) plus an OLAP engine. This is the
+  gravity center.
+- **Transformation** — dbt for SQL-based modeling; Spark/Flink for heavy or
+  streaming compute.
+- **Orchestration** — Airflow, Dagster, Prefect schedule and sequence the
+  pipelines as DAGs.
+- **Quality / governance / catalog** — Great Expectations, dbt tests, data
+  contracts, lineage and catalog tools (DataHub, OpenMetadata, Unity Catalog).
+- **Serving / activation** — BI (Looker, Tableau, Superset), ML feature
+  stores, reverse-ETL (Census, Hightouch).
+
+A second framing is **data-as-a-product**: instead of treating analytics
+tables as throwaway byproducts, teams treat curated datasets as products with
+owners, SLAs, documentation, schemas (contracts), and consumers. This is the
+organizing idea behind data mesh and behind why data quality and contracts
+(covered later in this cluster) get first-class treatment.
+
+## When to use / When NOT
+
+- **Invest in a data engineering function when:** you have multiple data
+  sources to join, analytics queries are slowing down (or endangering) your
+  production database, you need historical/time-series analysis, or ML/BI
+  consumers need trustworthy, documented datasets.
+- **Reach for OLAP storage when:** queries scan large fractions of tables,
+  aggregate, and join across history; row-by-key latency is not the goal.
+- **Stay on OLTP / skip the stack when:** your "analytics" is a handful of
+  dashboards over a small dataset that a read replica plus some indexed
+  queries can serve. Building a warehouse and pipelines for a few thousand
+  rows is over-engineering.
+- **Avoid running analytics on the primary OLTP database when:** scan-heavy
+  reports compete with user transactions for the same buffer pool and locks —
+  the classic cause of mysterious production slowdowns at report time.
+
+## Tradeoffs
+
+The defining tension is **OLTP vs OLAP**: optimizing for one actively
+pessimizes the other. Row storage makes point writes cheap and full scans
+expensive; column storage does the reverse. Normalized schemas keep writes
+consistent but make analytical joins costly; denormalized star schemas make
+queries fast but duplicate data. Data engineering exists precisely because no
+single system is good at both, so you maintain two and keep them in sync.
+
+| Dimension | OLTP (app database) | OLAP (analytics) |
+| --------- | ------------------- | ---------------- |
+| Workload | Many small point reads/writes | Few large scans + aggregations |
+| Storage layout | Row-oriented | Column-oriented |
+| Schema | Normalized (3NF) | Denormalized (star/wide) |
+| Query latency target | Milliseconds, high concurrency | Seconds–minutes, low concurrency |
+| Data scope | Current state | Full history (append-mostly) |
+| Indexing | B-tree on keys | Partition pruning, zone maps, clustering |
+| Examples | PostgreSQL, MySQL, DynamoDB | Snowflake, BigQuery, ClickHouse |
+| Optimizes for | Correctness + concurrency | Throughput on scans |
+
+## Diagram
+
+The value chain, with the OLTP-to-OLAP boundary crossed at ingestion.
+
+<Mermaid code={`graph LR
+  subgraph Sources [OLTP / source systems]
+    DB[(App DB)]
+    EV[Event stream]
+    SAAS[SaaS APIs]
+  end
+  subgraph Platform [OLAP / data platform]
+    ING[Ingest<br/>CDC / connectors] --> STORE[(Store<br/>lake / warehouse)]
+    STORE --> XFORM[Transform<br/>ETL / ELT / dbt]
+    XFORM --> SERVE[Serve]
+  end
+  DB --> ING
+  EV --> ING
+  SAAS --> ING
+  SERVE --> BI[BI dashboards]
+  SERVE --> ML[ML features]
+  SERVE --> REV[Reverse-ETL]`} />
+
+## Try it
+
+Compare the two worlds, then explore why data engineering is its own
+discipline.
+
+<CompareMatrix
+  client:visible
+  caption="OLTP vs OLAP at a glance"
+  columns={['OLTP (transactional)', 'OLAP (analytical)']}
+  rows={[
+    { criterion: 'Primary question', cells: ['What is the current state of one entity?', 'What is the aggregate trend across many?'] },
+    { criterion: 'Typical query', cells: ['SELECT by primary key', 'GROUP BY / JOIN over millions of rows'] },
+    { criterion: 'Storage', cells: ['Row-oriented', 'Column-oriented'] },
+    { criterion: 'Schema design', cells: ['Normalized for write integrity', 'Denormalized for read speed'] },
+    { criterion: 'Concurrency', cells: ['Thousands of concurrent txns', 'Few heavy queries'] },
+    { criterion: 'Freshness need', cells: ['Real-time, authoritative', 'Minutes to hours is often fine'] },
+    { criterion: 'Failure of running the wrong way', cells: ['Scans block user transactions', 'Point lookups waste a scan engine'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Why data engineering is separate from app engineering"
+  tabs={[
+    { label: 'When', content: 'Stand up a data engineering practice when data lives in multiple systems, analytical queries threaten production performance, or BI/ML consumers need trustworthy historical datasets with owners and SLAs. Before that, a read replica and a few indexed queries are enough.' },
+    { label: 'Why', content: 'OLTP and OLAP workloads have opposite optimal designs (row vs column, normalized vs denormalized, point vs scan). You cannot serve both well from one system, so a dedicated layer extracts, reshapes, and serves analytical data while protecting the transactional source.' },
+    { label: 'Why NOT', content: 'Do not build pipelines and a warehouse for tiny datasets or a couple of dashboards — it is pure operational overhead. And never bolt heavy analytics onto the primary OLTP database hoping to avoid the work; scan-heavy reports will contend with user transactions and degrade the app.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Airbnb** built Airflow to orchestrate its data pipelines; its "Minerva"
+  metrics layer is a canonical data-as-a-product example.
+- **Netflix** runs a large lake-on-S3 plus Iceberg/Spark/Flink platform feeding
+  experimentation, personalization, and finance.
+- **Uber** built a unified batch+streaming platform (and open-sourced Hudi) to
+  serve both real-time and historical analytics from one storage layer.
+- **Most SaaS companies** wire Fivetran/Airbyte into Snowflake or BigQuery,
+  model with dbt, and serve Looker/Tableau — the textbook modern data stack.
+
+## Further reading
+
+- [The Modern Data Stack (dbt Labs)](https://www.getdbt.com/blog/future-of-the-modern-data-stack) — the layered-stack framing from its biggest proponent.
+- [Designing Data-Intensive Applications (Kleppmann)](https://dataintensive.net/) — the definitive book on the OLTP/OLAP divide and the systems on each side.
+- [Data Mesh principles (Zhamak Dehghani)](https://martinfowler.com/articles/data-mesh-principles.html) — the data-as-a-product organizing idea.
