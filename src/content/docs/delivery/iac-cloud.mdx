@@ -1,0 +1,262 @@
+---
+title: Infrastructure as Code & Cloud
+description: Infrastructure as Code (declarative vs imperative, Terraform/Pulumi, state, drift), GitOps, cloud service models (IaaS/PaaS/SaaS/FaaS), serverless tradeoffs and cold starts, managed vs self-hosted, cost/FinOps, and the multi-cloud reality.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+The final layer of delivery is the infrastructure itself — the servers, networks,
+databases, load balancers, and queues your application runs on. **Infrastructure as Code
+(IaC)** is the practice of defining all of that in version-controlled, machine-readable
+files rather than by clicking through a cloud console — turning infrastructure into
+something you can review, diff, test, reproduce, and roll back like any other code. The
+era of hand-built "pet" servers that no one can reproduce is over; infrastructure is now an
+artifact.
+
+This page covers IaC (how it works, why declarative beats imperative, and the **state** and
+**drift** problems that bite everyone), **GitOps** (Git as the single source of truth for
+infrastructure *and* deployments), the **cloud service models** (IaaS to PaaS to SaaS to
+FaaS — how much of the stack the provider runs), the real tradeoffs of **serverless**
+(including the cold-start tax), the **managed-vs-self-hosted** decision that recurs for
+every component, and the unglamorous but decisive topics of **cost/FinOps** and the
+**multi-cloud** reality (which is usually less appealing than it sounds).
+
+## Mental model
+
+**Describe the infrastructure you *want*; let the tool figure out how to get there.** This
+is the **declarative** model and it is the heart of modern IaC. You don't script "create a
+VPC, then a subnet, then a load balancer" step by step (**imperative**); you declare the
+*desired end state* — "I want this VPC, these subnets, this load balancer, wired thus" — and
+the tool computes the diff between desired and actual and makes only the changes needed to
+converge. This is the same **reconciliation** idea as Kubernetes, applied to cloud
+resources: you own the destination, the tool owns the path. It makes infrastructure
+**idempotent** (apply twice, same result) and reviewable (the plan shows exactly what will
+change before it changes).
+
+The second model — and the one that causes the most operational pain — is **state**.
+Declarative IaC must remember *what it created* to compute future diffs, so it keeps a
+**state file** mapping your declared resources to real cloud resource IDs. State is the
+crown jewel: it must be stored remotely, locked (so two engineers don't apply
+simultaneously and corrupt it), and protected (it can contain secrets). And state enables
+the detection of **drift** — when someone changes a resource *outside* IaC (a hotfix in the
+console), actual diverges from both the code and the state, and your next apply may revert
+their change or fail. The discipline: **all changes go through the code; the console is
+read-only.** GitOps formalizes this — **Git is the single source of truth**, a controller
+continuously reconciles the live environment to match the repo, and drift is automatically
+detected and corrected.
+
+The third model: **the cloud service models are a spectrum of "how much do you want to
+manage?"** As you move IaaS to PaaS to FaaS to SaaS, you hand the provider more of the
+stack — and trade control and portability for reduced operational burden. The fourth model,
+the one finance keeps reminding you of: **in the cloud, architecture *is* cost.** Every
+design decision has a dollar figure attached, billed by the second; an idle over-provisioned
+fleet, an un-lifecycled S3 bucket, or chatty cross-AZ traffic quietly bleeds money. **FinOps**
+is the discipline of making those costs visible and owned by the engineers who incur them.
+
+## Types / Variants
+
+### IaC tools & approaches
+
+- **Declarative IaC:** **Terraform / OpenTofu** (HCL, cloud-agnostic, the de-facto
+  standard), **AWS CloudFormation** / **Azure Bicep** (cloud-native), **Pulumi** (declarative
+  *desired state* but expressed in real programming languages — TypeScript, Python, Go).
+- **Imperative / config management:** **Ansible**, **Chef**, **Puppet** — procedural,
+  better at configuring *existing* machines than provisioning cloud resources (though Ansible
+  spans both). Increasingly subsumed by declarative provisioning + immutable images.
+- **State** (Terraform-style): the remote, locked file mapping code to real resources;
+  `plan` shows the diff, `apply` converges. **Drift** = reality diverging from state/code.
+- **GitOps:** Git repo as the source of truth; an in-cluster controller (**Argo CD**,
+  **Flux**) continuously pulls and reconciles the live state to the repo — `git revert` is
+  your rollback, and drift is auto-corrected.
+
+### Cloud service models (least to most managed)
+
+- **IaaS (Infrastructure as a Service):** raw compute, storage, network — VMs, disks, VPCs
+  (EC2, Compute Engine). You manage the OS and everything above. Maximum control.
+- **PaaS (Platform as a Service):** the provider runs the platform; you deploy *code*
+  (App Engine, Heroku, Cloud Run, App Runner). No OS or scaling to manage.
+- **FaaS (Function as a Service) / serverless:** you deploy *functions* that run on demand,
+  billed per-invocation, scaling to zero (Lambda, Cloud Functions). No servers to think
+  about — and no idle cost.
+- **SaaS (Software as a Service):** fully managed *applications* you consume (Datadog,
+  Auth0, Snowflake). You manage nothing but configuration and data.
+- **Managed services** (databases, queues, caches — RDS, DynamoDB, SQS, ElastiCache) sit
+  across these: the provider runs the component; you use it.
+
+### Serverless / FaaS specifics
+
+- **Scale-to-zero & per-use billing:** pay only for actual execution — superb for spiky or
+  low-volume workloads; you pay nothing at idle.
+- **Cold starts:** when a function hasn't run recently, the platform must spin up a new
+  execution environment — adding latency (tens of ms to seconds, worse for heavy runtimes
+  like the JVM). Mitigated with provisioned concurrency, lighter runtimes, or smaller
+  packages.
+- **Constraints:** execution time limits, statelessness, limited local resources, and
+  **vendor lock-in** to the provider's event/runtime model.
+
+## When to use / When NOT
+
+- **Use IaC for:** essentially all infrastructure beyond a throwaway experiment. Reviewable,
+  reproducible, rollback-able infra is a baseline expectation. **The only excuse to
+  click-ops** is a genuine one-off you'll delete tomorrow — and even then it breeds bad
+  habits.
+- **Use GitOps when:** you run Kubernetes (or declarative platforms) and want Git as the
+  audited source of truth with automatic drift correction. **It's overkill for** a couple of
+  VMs where plain Terraform-in-CI is enough.
+- **Choose the cloud model by how much you want to operate:** **IaaS** for maximum control or
+  unusual needs; **PaaS** to ship apps without managing servers; **FaaS** for event-driven,
+  spiky, or scale-to-zero workloads; **SaaS/managed** for undifferentiated heavy lifting
+  (databases, auth, monitoring) you shouldn't be running yourself.
+- **Use serverless/FaaS when:** workloads are **spiky, event-driven, or low/intermittent
+  volume**, and per-request latency tolerance is loose enough to absorb occasional cold
+  starts. **Avoid serverless when:** you have **steady high-volume** traffic (always-on
+  compute is often cheaper than per-invocation at scale), need **low, predictable latency**
+  (cold starts hurt), run **long or stateful** workloads, or want to avoid deep lock-in.
+- **Prefer managed over self-hosted when:** the component is undifferentiated (a database,
+  a queue, a cache) and the managed version's cost is less than the engineering time to run
+  it well (backups, patching, HA, scaling). **Self-host when:** you need control the managed
+  version can't give, the managed premium is genuinely prohibitive at your scale, or
+  compliance forbids it — and you have the team to operate it.
+- **Do FinOps from day one** — tag resources, set budgets/alerts, and attribute cost to
+  teams. **Pursue multi-cloud only with eyes open:** real portability is expensive (you
+  forfeit each cloud's best managed services to the lowest common denominator), and most
+  "multi-cloud" is actually *accidental* multi-cloud or a specific-redundancy requirement —
+  not a strategy worth its complexity for most teams.
+
+## Tradeoffs
+
+The cloud service models trade **control and portability** for **reduced operational
+burden** as you climb the stack:
+
+| Model | You manage | Provider manages | Best for | Watch out for |
+| ----- | ---------- | ---------------- | -------- | ------------- |
+| IaaS | OS, runtime, app, scaling | Hardware, virtualization | Max control, lift-and-shift, special needs | You operate everything above the VM |
+| PaaS | App + config | OS, runtime, scaling, platform | Shipping apps fast | Platform constraints; some lock-in |
+| FaaS / serverless | Function code | All infra, scaling, idle | Spiky / event-driven / scale-to-zero | Cold starts, time limits, lock-in |
+| SaaS / managed | Config + data | The whole service | Undifferentiated heavy lifting | Lock-in; cost at scale; less control |
+
+The orthogonal tradeoffs that recur:
+
+| Decision | Lean A | Lean B | The real question |
+| -------- | ------ | ------ | ----------------- |
+| Declarative vs imperative IaC | Declarative (Terraform/Pulumi) | Imperative (Ansible/scripts) | Desired-state + idempotency vs step-by-step control |
+| Serverless vs always-on | FaaS (pay per use) | Containers/VMs (pay for uptime) | Spiky/low-volume vs steady high-volume economics |
+| Managed vs self-hosted | Managed (RDS, etc.) | Self-hosted | Is this differentiated work, and can you afford the premium vs the operating cost? |
+| Single vs multi-cloud | Single (use best managed services) | Multi (portability/redundancy) | Is portability worth the lowest-common-denominator tax? |
+
+The throughline: **moving up the managed stack and toward declarative/GitOps reduces toil
+and increases reproducibility, at the cost of control and some lock-in.** The most common
+expensive mistakes are *self-hosting undifferentiated components* (running your own database
+HA when RDS exists) and *chasing multi-cloud portability* you don't need — both pay a heavy
+tax for benefits that rarely materialize.
+
+## Diagram
+
+The GitOps reconciliation flow over Infrastructure as Code — Git as the source of truth, a
+controller continuously converging reality to the repo and correcting drift.
+
+<Mermaid code={`flowchart TD
+  DEV[Engineer: PR to infra repo<br/>declares DESIRED state] --> REVIEW[Review + merge to main]
+  REVIEW --> GIT[(Git repo — single source of truth)]
+  GIT --> CTRL[GitOps controller<br/>Argo CD / Flux / Terraform-in-CI]
+  CTRL -->|plan: diff desired vs actual| PLAN{Changes needed?}
+  PLAN -->|yes| APPLY[Apply: converge cloud to match Git]
+  PLAN -->|no| OK[In sync]
+  APPLY --> CLOUD[(Live cloud infrastructure)]
+  CLOUD -.->|someone click-ops a change → DRIFT| CTRL
+  CTRL -.->|auto-detect drift → revert to Git state| APPLY`} />
+
+Every change to infrastructure is a reviewed commit to the repo; the controller diffs
+declared desired state against live reality and applies only what's needed to converge.
+A manual console change creates **drift** — reality diverging from Git — which the
+controller detects and corrects back to the committed state. `git revert` is your rollback.
+
+## Try it
+
+The cloud models side by side, then a decision tree for the recurring "serverless,
+managed, or self-hosted?" call.
+
+<CompareMatrix
+  client:visible
+  caption="Cloud service models — how much does the provider run?"
+  columns={['IaaS', 'PaaS', 'FaaS / serverless', 'SaaS / managed']}
+  rows={[
+    { criterion: 'You deploy', cells: ['VMs / infra', 'App code', 'Functions', 'Nothing (you configure)'] },
+    { criterion: 'You manage', cells: ['OS + up', 'App + config', 'Function code only', 'Config + data'] },
+    { criterion: 'Scaling', cells: ['You (or autoscaler)', 'Platform', 'Automatic, to zero', 'Provider'] },
+    { criterion: 'Idle cost', cells: ['Pay for running VMs', 'Pay for running app', 'Zero (scale to zero)', 'Subscription'] },
+    { criterion: 'Lock-in', cells: ['Low', 'Medium', 'High', 'High'] },
+    { criterion: 'Best for', cells: ['Control / special needs', 'Ship apps fast', 'Spiky / event-driven', 'Undifferentiated work'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Serverless, managed, or self-hosted for this workload?"
+  root={{
+    question: 'Is this an undifferentiated commodity component (database, queue, cache, auth, monitoring) rather than your core product?',
+    branches: [
+      {
+        label: 'Yes — it is plumbing, not our differentiator',
+        next: {
+          question: 'Is there a managed offering at acceptable cost, and does compliance allow it?',
+          branches: [
+            {
+              label: 'Yes — managed exists and is affordable',
+              next: { leaf: { recommendation: 'Use the managed service (RDS, DynamoDB, SQS, etc.)', detail: 'Don’t run your own database HA, backups, and patching when the provider does it better. Spend your engineering on your actual product. Self-hosting commodity infra is the most common expensive mistake.' } },
+            },
+            {
+              label: 'No — managed too costly at our scale or compliance forbids it',
+              next: { leaf: { recommendation: 'Self-host — but staff it properly', detail: 'Valid when the managed premium is genuinely prohibitive at scale or regulation requires it. Budget for the real operating cost: HA, backups, patching, on-call. Don’t self-host to save money you’ll spend twice over in toil.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — this is our own application code',
+        next: {
+          question: 'Is the traffic spiky, event-driven, or low/intermittent volume, with loose latency tolerance?',
+          branches: [
+            {
+              label: 'Yes — bursty / event-driven / scale-to-zero fits',
+              next: { leaf: { recommendation: 'Serverless / FaaS (Lambda, Cloud Functions, Cloud Run)', detail: 'Pay only for execution, scale to zero at idle, no servers to manage. Accept cold-start latency and execution limits. Ideal for glue, webhooks, batch triggers, and unpredictable spikes.' } },
+            },
+            {
+              label: 'No — steady high volume, low predictable latency, or long/stateful',
+              next: { leaf: { recommendation: 'Always-on containers/VMs (PaaS or K8s)', detail: 'At steady high volume, always-on compute is usually cheaper than per-invocation billing, and you avoid cold starts. Use a PaaS for simplicity or Kubernetes if you already have the fleet — see the orchestration page.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Terraform / OpenTofu** (HashiCorp; OpenTofu the OSS fork) is the de-facto
+  cloud-agnostic IaC tool — declarative HCL, remote locked state, `plan`/`apply` —
+  and the canonical example of the state-and-drift model.
+- **Pulumi** expresses declarative desired state in general-purpose languages (TypeScript,
+  Python, Go), appealing to teams who want loops, types, and tests in their infra code.
+- **Argo CD and Flux** are the leading **GitOps** controllers for Kubernetes — continuously
+  reconciling clusters to a Git repo and auto-correcting drift, with `git revert` as rollback.
+- **AWS Lambda** defined the **FaaS / serverless** category — per-invocation billing,
+  scale-to-zero, and the cold-start tradeoff every serverless team learns to manage.
+- **The FinOps Foundation** codified **cloud cost management** as a discipline (tagging,
+  showback/chargeback, rightsizing) — a direct response to the "architecture is cost" reality
+  of pay-per-second infrastructure.
+
+## Further reading
+
+- [Terraform — what it is and how state works](https://developer.hashicorp.com/terraform/intro) — declarative IaC, state, and the plan/apply model.
+- [Martin Fowler — Infrastructure As Code](https://martinfowler.com/bliki/InfrastructureAsCode.html) — the principles and why reproducibility matters.
+- [OpenGitOps — principles](https://opengitops.dev/) — the four GitOps principles (declarative, versioned, pulled, continuously reconciled).
+- [AWS — Types of cloud computing (IaaS/PaaS/SaaS)](https://aws.amazon.com/types-of-cloud-computing/) — the service-model spectrum.
+- [FinOps Foundation — what is FinOps](https://www.finops.org/introduction/what-is-finops/) — making cloud cost an engineering responsibility.

@@ -1,0 +1,249 @@
+---
+title: CI/CD Pipelines
+description: The deployment pipeline in detail — build/test/scan/package stages, artifacts and registries, trunk-based vs gitflow, pipeline-as-code, caching and parallelization, quality gates, secrets, and supply-chain security (SLSA, SBOM).
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A CI/CD pipeline is the automated assembly line that turns a commit into a deployable,
+verified artifact — and optionally ships it. Where the [delivery
+overview](/delivery/) frames *what* CI/CD means, this page is the *how*: the concrete
+stages a change passes through (build, test, scan, package), where the resulting
+artifacts live (registries), the branching model that feeds it (trunk-based vs gitflow),
+and the cross-cutting concerns that separate a toy pipeline from a production one —
+caching, parallelization, quality gates, secret handling, and supply-chain integrity.
+
+The pipeline is the single most leveraged piece of infrastructure most teams own: it runs
+on *every* change, it is the gate that every line of code passes through, and its speed
+directly sets your lead time. A slow, flaky, or insecure pipeline taxes every engineer on
+every commit. This page treats it as a first-class system to be designed — with the same
+care you'd give a request path — because in effect it *is* one.
+
+## Mental model
+
+**A pipeline is a sequence of increasingly expensive, increasingly production-like gates,
+and the design goal is to fail as early and as cheaply as possible.** Order the stages so
+the fastest, most likely-to-fail checks run first: a 10-second lint or unit-test failure
+should never wait behind a 15-minute integration suite. Every stage is a filter; a change
+only earns the right to the next, costlier stage by passing the current one. This is
+**fail-fast**, and it is the organizing principle of the whole structure.
+
+The second model: **build once, promote the same artifact.** A change is compiled and
+packaged *exactly once* into an immutable artifact, and *that identical artifact* is then
+promoted through environments — test, staging, production. You never rebuild per
+environment, because a rebuild can differ (different dependency version, different build
+host) and means the thing you tested is not the thing you shipped. Configuration that
+varies per environment is injected at deploy time, not baked in. **Test the artifact you
+will ship; ship the artifact you tested.**
+
+The third model: **the pipeline is code.** The pipeline definition lives in the repo
+(`.github/workflows`, `.gitlab-ci.yml`, a `Jenkinsfile`), versioned and reviewed like any
+other code — **pipeline-as-code**. This makes the build reproducible, auditable, and
+changeable via pull request rather than by clicking through a server UI whose state no one
+can reconstruct. The fourth model, increasingly load-bearing: **the pipeline is part of
+your attack surface.** It has credentials to production, it pulls third-party
+dependencies, and it produces the artifacts users run — so **supply-chain security**
+(verifying what went in, signing what comes out) belongs in the pipeline, not as an
+afterthought.
+
+## Types / Variants
+
+### Pipeline stages (typical order)
+
+1. **Source / trigger.** A commit or merge to mainline (or a PR) fires the pipeline.
+2. **Build / compile.** Produce binaries or bundles from source. Should be hermetic and
+   reproducible — same input, same output.
+3. **Test.** Layered, fast-first: **unit** (seconds) to **integration** (minutes) to
+   **end-to-end / acceptance** (slowest). Fail fast on the cheap ones.
+4. **Static analysis & security scans.** Linting, **SAST** (static application security
+   testing), **dependency/SCA scanning** (known CVEs in libraries), license checks, IaC
+   scanning, secret scanning.
+5. **Package.** Bundle the verified build into an immutable, versioned **artifact** — a
+   container image, a `.jar`, an `npm` tarball, an OS package.
+6. **Publish to registry.** Push the artifact to an **artifact registry** (container
+   registry, package registry) addressed by an immutable digest.
+7. **Deploy / promote.** Roll the artifact out — automatically (deployment) or on a gate
+   (delivery) — through environments. See [deployment
+   strategies](/delivery/deployment-strategies/).
+
+### Artifacts & registries
+
+- **Artifact:** the immutable, versioned output of a build (container image, package).
+  Identified by a content digest so "what's running" is unambiguous.
+- **Registry:** the store and distribution point for artifacts — container registries
+  (Docker Hub, GHCR, ECR, Artifact Registry) and package registries (npm, Maven Central,
+  PyPI, internal proxies like Artifactory/Nexus). The registry is also a supply-chain
+  control point: signing, vulnerability scanning, and admission policies live here.
+
+### Branching models
+
+- **Trunk-based development.** Everyone commits to a single mainline (`main`) at least
+  daily; branches are tiny and short-lived (hours to a day) or non-existent; unfinished
+  work hides behind **feature flags**. This is what makes *Continuous* Integration
+  continuous — integration happens constantly, conflicts are tiny. The model DORA
+  associates with elite performance.
+- **GitHub Flow.** Lightweight branch-per-change off `main`, PR, review, merge, deploy.
+  Trunk-based in spirit if branches stay short-lived. The common default for web teams.
+- **Gitflow.** Long-lived `develop`, `release`, and `hotfix` branches plus `main`. Built
+  for *versioned, scheduled* releases (think shipped desktop software or strict release
+  trains). Powerful but heavy: long-lived branches mean painful, batched integration —
+  the antithesis of CI for continuously-deployed services.
+
+### Pipeline-as-code platforms
+
+GitHub Actions, GitLab CI, Jenkins (Pipeline/Jenkinsfile), CircleCI, Buildkite, Argo
+Workflows, Tekton. All express the pipeline as a versioned file in the repo, with stages,
+jobs, and dependencies declared rather than clicked.
+
+### Supply-chain security
+
+- **SBOM (Software Bill of Materials).** A machine-readable inventory of every component
+  and dependency in an artifact (SPDX, CycloneDX formats). Answers "what's actually in
+  this image?" — essential when the next Log4Shell drops and you need to know if you're
+  exposed.
+- **SLSA (Supply-chain Levels for Software Artifacts).** A framework of escalating
+  guarantees about build *provenance* and *integrity* — that an artifact was built from
+  the expected source by a trusted, tamper-resistant builder, with a signed attestation.
+- **Artifact signing & provenance** (Sigstore/cosin, in-toto attestations) — cryptographic
+  proof of *what* was built and *how*, verified at deploy/admission time.
+
+## When to use / When NOT
+
+- **Use trunk-based development when:** you want true continuous integration and frequent
+  deploys (most web/service teams). **Avoid it when:** you genuinely ship versioned,
+  long-supported releases to many environments you don't control (some packaged software,
+  firmware) — there, gitflow's release/hotfix branches earn their keep.
+- **Use gitflow when:** multiple versions are live in the field simultaneously and need
+  independent hotfixes. **Avoid it for** a continuously-deployed web service — long-lived
+  branches re-introduce the big, painful merges CI exists to eliminate.
+- **Parallelize and cache stages when:** the pipeline is slow enough to hurt lead time
+  (almost always, past a point). **Don't over-engineer** caching for a pipeline that
+  already runs in two minutes — added complexity and cache-invalidation bugs aren't worth
+  it.
+- **Add quality gates (coverage, scan thresholds, required checks) when:** you want to
+  enforce a standard automatically rather than by reviewer vigilance. **Avoid gates that
+  are flaky or arbitrary** — a quality gate that fails 20% of the time for no reason
+  trains engineers to retry blindly, which is worse than no gate.
+- **Invest in supply-chain controls (SBOM, signing, SLSA) when:** you ship software others
+  run, are subject to regulation, or your dependency graph is large and untrusted.
+  **Don't skip dependency/secret scanning even on small teams** — those are cheap, high-
+  value, and the most common real attack vector.
+
+## Tradeoffs
+
+| Concern | Cheap / fast option | Robust option | The tradeoff |
+| ------- | ------------------- | ------------- | ------------ |
+| Test layering | Mostly unit, few E2E | Full pyramid incl. E2E | Confidence vs pipeline time + flakiness |
+| Caching | None — clean build each run | Dependency/layer/test caches | Speed vs cache-invalidation bugs + complexity |
+| Parallelization | Sequential stages | Fan-out independent jobs | Wall-clock speed vs orchestration + cost |
+| Quality gates | Advisory (warn only) | Blocking (fail the build) | Enforcement vs friction/flakiness |
+| Secrets | Env vars / files | Vault + short-lived OIDC tokens | Simplicity vs blast radius if leaked |
+| Supply chain | Scan dependencies | SBOM + signing + SLSA provenance | Setup cost vs tamper/CVE resilience |
+| Branching | Gitflow (familiar) | Trunk-based + flags | Comfort vs true continuous integration |
+
+The recurring theme: every robust option costs setup and some ongoing complexity but pays
+back in *confidence per deploy*. The trap at both ends is real — a bare pipeline ships
+unverified, untraceable artifacts; an over-built one is so slow and flaky that engineers
+route around it. **Optimize for fast, trustworthy feedback, not maximal ceremony.**
+
+## Diagram
+
+A representative pipeline: fail-fast stages, build-once-promote-many, with scanning and
+signing in the artifact path, and the trunk-based source model feeding it.
+
+<Mermaid code={`flowchart TD
+  PR[Commit / PR to main] --> LINT[Lint + unit tests<br/>seconds — fail fast]
+  LINT --> INT[Integration tests<br/>minutes]
+  INT --> SCAN[SAST + dependency/SCA scan<br/>+ secret scan]
+  SCAN --> BUILD[Build artifact ONCE]
+  BUILD --> SBOM[Generate SBOM + sign<br/>SLSA provenance]
+  SBOM --> REG[(Artifact registry<br/>immutable digest)]
+  REG --> E2E[Promote to staging<br/>E2E / acceptance]
+  E2E --> GATE{Quality gates pass?}
+  GATE -->|yes| PROD[Promote SAME artifact to prod]
+  GATE -->|no| FAIL[Block + report]`} />
+
+The same immutable artifact built after the scan stage is what flows through staging to
+production — never rebuilt. Security scanning gates *before* the build, and SBOM
+generation plus signing happen *at* build time so provenance travels with the artifact
+into the registry and on to production.
+
+## Try it
+
+Compare branching models, then decide which one fits your release reality.
+
+<CompareMatrix
+  client:visible
+  caption="Branching models for CI/CD"
+  columns={['Trunk-based', 'GitHub Flow', 'Gitflow']}
+  rows={[
+    { criterion: 'Branch lifetime', cells: ['Hours / none', 'Hours–days', 'Days–weeks (long-lived)'] },
+    { criterion: 'Integration frequency', cells: ['Continuous (daily to main)', 'Per PR', 'Batched at merge to develop/release'] },
+    { criterion: 'Hides unfinished work via', cells: ['Feature flags', 'Short branches', 'develop branch'] },
+    { criterion: 'Best for', cells: ['Continuous deployment', 'Web teams / GitHub default', 'Versioned, scheduled releases'] },
+    { criterion: 'Merge pain', cells: ['Minimal (tiny diffs)', 'Low', 'High (big batched merges)'] },
+    { criterion: 'CI fit', cells: ['Ideal', 'Good', 'Fights continuous integration'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which branching model should we use?"
+  root={{
+    question: 'Do you ship multiple versions to the field that need independent, simultaneous hotfixes (e.g. on-prem software, firmware, SDKs)?',
+    branches: [
+      {
+        label: 'Yes — many supported versions live at once',
+        next: { leaf: { recommendation: 'Gitflow (or a release-train variant)', detail: 'Long-lived release/hotfix branches let you patch v2.3 while v3.0 ships. Accept the batched-merge cost — it is the price of supporting multiple versions. This is a minority case.' } },
+      },
+      {
+        label: 'No — we run one version (a service we operate)',
+        next: {
+          question: 'Is your team mature with feature flags and able to keep mainline always-green?',
+          branches: [
+            {
+              label: 'Yes — flags + strong test discipline',
+              next: { leaf: { recommendation: 'Trunk-based development', detail: 'Commit to main daily, hide unfinished work behind flags, keep diffs tiny. This is the branching model DORA links to elite performance and the one that makes continuous deployment safe.' } },
+            },
+            {
+              label: 'Not yet — we need PR review gates and ramp-up',
+              next: { leaf: { recommendation: 'GitHub Flow (trunk-based in spirit)', detail: 'Short-lived branch per change, PR review, merge to main, deploy. Keep branches under a day or two and you get most of trunk-based’s benefits while retaining a review checkpoint. Migrate toward full trunk-based as flag discipline matures.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google** runs a famously large monorepo with **trunk-based development** and a
+  build/test system (Blaze, the basis for open-source **Bazel**) that makes hermetic,
+  cached, parallel builds practical at billions-of-lines scale — the canonical proof that
+  trunk-based scales.
+- **GitHub Actions / GitLab CI** are the dominant **pipeline-as-code** platforms: the
+  pipeline is a YAML file in the repo, with caching, matrix parallelization, reusable
+  workflows, and **OIDC-based short-lived cloud credentials** replacing long-lived secrets.
+- **Sigstore (cosin) and SLSA** emerged from the post-SolarWinds / Log4Shell push for
+  **supply-chain integrity** — keyless artifact signing and provenance attestation now
+  built into major registries and pipelines.
+- **Netflix Spinnaker** encodes multi-stage promotion and automated canary analysis as a
+  reusable delivery platform — pipeline-as-code for deployment, not just build.
+- **Dependabot / Renovate** automate **dependency scanning and update PRs**, closing the
+  most common supply-chain gap (known-vulnerable transitive dependencies) inside the
+  normal PR-and-CI flow.
+
+## Further reading
+
+- [Jez Humble & David Farley — *Continuous Delivery* (deployment pipeline)](https://continuousdelivery.com/) — the canonical model this page follows.
+- [Trunk Based Development (trunkbaseddevelopment.com)](https://trunkbaseddevelopment.com/) — the model, its variants, and why long-lived branches hurt.
+- [SLSA — Supply-chain Levels for Software Artifacts](https://slsa.dev/) — the provenance/integrity framework and its levels.
+- [Sigstore — keyless artifact signing](https://www.sigstore.dev/) — practical artifact signing and verification.
+- [Atlassian — Gitflow vs trunk-based workflow comparison](https://www.atlassian.com/git/tutorials/comparing-workflows) — a clear side-by-side of branching strategies.

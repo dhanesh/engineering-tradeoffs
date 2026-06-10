@@ -1,0 +1,223 @@
+---
+title: Containers
+description: What containers actually are — Linux namespaces and cgroups, images and layers, Dockerfile best practices, image size and security, registries, containers vs VMs, the OCI standard, and rootless containers.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A container packages an application together with its dependencies into a single,
+portable, immutable unit that runs identically on a laptop, in CI, and in production —
+solving the oldest deployment problem there is: "it works on my machine." But a container
+is *not* a lightweight virtual machine, even though it's often described as one.
+Understanding what it actually is — a set of ordinary Linux processes, isolated by kernel
+features, sharing the host kernel — is what lets you reason about its security model, its
+performance, and its limits.
+
+Containers are the substrate the rest of this cluster builds on: the artifact your
+[pipeline](/delivery/ci-cd-pipelines/) produces is usually a container **image**, the
+thing [orchestration](/delivery/orchestration-kubernetes/) schedules is a container, and
+the unit your [deployment strategy](/delivery/deployment-strategies/) rolls out is a
+container. This page covers what containers are at the kernel level, how images and layers
+work, how to build small and secure ones, how they differ from VMs, and the standards
+(OCI) and security postures (rootless) that matter in production.
+
+## Mental model
+
+**A container is just a normal process that the kernel has been told to lie to.** There is
+no "container" object in the Linux kernel — there is a process whose view of the world has
+been restricted by two kernel features:
+
+- **Namespaces** control *what a process can see*. Separate namespaces give the process its
+  own view of the process tree (PID), network stack (NET), mounts/filesystem (MNT), users
+  (USER), hostname (UTS), and IPC. Inside, the process thinks it's PID 1 on its own machine;
+  it's actually just another process on the host.
+- **cgroups (control groups)** control *what a process can use* — CPU, memory, I/O, PIDs.
+  They enforce resource limits and accounting so one container can't starve the others.
+
+That's the whole trick: namespaces for isolation of *visibility*, cgroups for limiting
+*consumption*. The container shares the **host kernel** — there is no guest OS — which is
+why containers start in milliseconds and have near-zero overhead, and *also* why their
+isolation is weaker than a VM's (a kernel exploit escapes the container; the kernel is the
+shared trust boundary).
+
+The second model: **an image is a stack of read-only layers, and a running container adds
+one writable layer on top.** Each instruction in a Dockerfile produces a layer; layers are
+content-addressed and **shared/cached** across images and builds — change one line and only
+the layers from that point down rebuild. This is why **layer order matters enormously**:
+put the things that change rarely (base image, dependency install) *early* and the things
+that change every commit (your source code) *late*, so the expensive layers stay cached.
+The third model: **build-time vs run-time.** An image is the immutable, versioned *build
+artifact* (the class); a container is a running *instance* of it (the object). Treat
+containers as **immutable and ephemeral** — you don't patch a running container, you build
+a new image and replace the container.
+
+## Types / Variants
+
+### The isolation primitives
+
+- **Namespaces (7+ types):** PID, NET, MNT, UTS, IPC, USER, cgroup, time — each isolates
+  one dimension of the system view.
+- **cgroups (v1/v2):** hierarchical resource limits and accounting (CPU shares/quotas,
+  memory caps, I/O throttling).
+- **Capabilities & seccomp/AppArmor/SELinux:** further restrict what the (already isolated)
+  process can do — drop Linux capabilities, filter syscalls, apply mandatory access
+  control. Defense in depth around the shared kernel.
+
+### Images & layers
+
+- **Base image:** the starting layer (`ubuntu`, `alpine`, `debian-slim`, or `scratch` /
+  **distroless** — no shell, no package manager, minimal attack surface).
+- **Layers:** one per Dockerfile instruction, read-only, content-addressed, cached and
+  shared. The writable container layer sits on top via a union/overlay filesystem.
+- **Multi-stage builds:** build in a fat image with compilers and toolchains, then `COPY`
+  only the resulting binary/assets into a tiny final image — the standard way to get small,
+  secure production images.
+
+### Runtimes & the standard
+
+- **OCI (Open Container Initiative):** the vendor-neutral **standards** that decoupled
+  containers from Docker — the **image spec** (image format), **runtime spec** (how to run
+  it), and **distribution spec** (how registries serve it). Because of OCI, Docker, Podman,
+  containerd, and Kubernetes all interoperate.
+- **High-level runtimes:** Docker, Podman, containerd, CRI-O — build/manage images and
+  containers.
+- **Low-level runtimes:** **runc** (the OCI reference, namespaces+cgroups), and stronger-
+  isolation alternatives — **gVisor** (user-space kernel) and **Kata Containers**
+  (lightweight VMs per container) — which trade some speed for VM-grade isolation.
+
+### Rootless & registries
+
+- **Rootless containers:** run the whole container stack as an unprivileged user (via the
+  USER namespace), so a container escape doesn't land on the host as root. The modern
+  default security posture (Podman is rootless by default).
+- **Registries:** store and distribute images by immutable digest (Docker Hub, GHCR, ECR,
+  Artifact Registry, Harbor) — also the control point for vulnerability scanning, signing,
+  and admission policy.
+
+## When to use / When NOT
+
+- **Use containers when:** you want consistent environments across dev/CI/prod, fast
+  startup, dense packing, and a portable artifact for orchestration — i.e. almost all
+  modern server software. **They are the default unit of deployment** for a reason.
+- **Avoid / reconsider containers when:** you need **hard multi-tenant isolation** between
+  untrusted workloads (a shared kernel is a shared blast radius — use VMs, or gVisor/Kata
+  to harden); for **stateful databases**, containerize carefully (persistent volumes,
+  StatefulSets) or use a managed service; for tiny single-server apps a container may add
+  ceremony without payoff.
+- **Use distroless / `scratch` base images when:** you want minimal size and attack
+  surface (no shell to exploit). **Avoid them when:** you genuinely need a shell or package
+  manager for debugging — keep a debug image variant instead of bloating production.
+- **Run rootless when:** you can (most workloads) — it removes the most dangerous escape
+  outcome. **Stick with rootful only when** a workload truly needs host-level privilege,
+  and then isolate it hard.
+- **Use multi-stage builds when:** your build needs compilers/toolchains the runtime
+  doesn't — which is most compiled and bundled apps. **Skip them only** for already-minimal
+  interpreted apps where there's nothing to strip.
+
+## Tradeoffs
+
+Containers vs virtual machines is the foundational comparison — same goal (isolate
+workloads), different layer. A VM virtualizes *hardware* and runs a full guest OS+kernel; a
+container virtualizes the *OS* and shares the host kernel.
+
+| Dimension | Containers | Virtual machines |
+| --------- | ---------- | ---------------- |
+| Isolation boundary | Shared host kernel (namespaces/cgroups) | Full hypervisor + guest kernel |
+| Isolation strength | Weaker (kernel = shared trust boundary) | **Stronger** (hardware-virtualized) |
+| Startup time | **Milliseconds** | Seconds–minutes |
+| Overhead / density | Near-zero, very dense | Per-VM OS overhead, less dense |
+| Image size | MBs (just app + deps) | GBs (whole OS) |
+| Portability | Run anywhere with a compatible kernel | Hypervisor-dependent |
+| Best for | Microservices, stateless apps, CI, dense packing | Untrusted multi-tenancy, full-OS or kernel-level needs |
+
+The core tradeoff is **isolation strength vs efficiency**. Containers win decisively on
+speed, density, and portability; VMs win on isolation because they don't share a kernel.
+This isn't either/or in practice — **containers usually run *inside* VMs** (every cloud
+node is a VM full of containers), getting VM-grade tenant isolation between customers and
+container efficiency within. And for untrusted code on shared infrastructure, **gVisor and
+Kata** deliberately blur the line, giving containers VM-like isolation at some speed cost.
+
+## Diagram
+
+The container stack versus the VM stack — where the shared kernel sits, and how images
+layer.
+
+<Mermaid code={`graph TB
+  subgraph VMs [Virtual machines]
+    HW1[Host hardware] --> HV[Hypervisor]
+    HV --> G1[Guest OS + kernel #1]
+    HV --> G2[Guest OS + kernel #2]
+    G1 --> A1[App A]
+    G2 --> A2[App B]
+  end
+  subgraph CONTAINERS [Containers]
+    HW2[Host hardware] --> HK[Single shared host kernel<br/>namespaces + cgroups]
+    HK --> C1[Container A<br/>app + deps only]
+    HK --> C2[Container B<br/>app + deps only]
+    HK --> C3[Container C]
+  end`} />
+
+VMs stack a full guest OS and kernel per workload on a hypervisor — strong isolation, heavy.
+Containers share one host kernel, isolated only by namespaces and cgroups — light and fast,
+but the kernel is the shared trust boundary. Each container is a thin stack of read-only
+image layers plus one writable layer.
+
+## Try it
+
+Containers vs VMs at a glance, then when each isolation primitive and image practice
+earns its place.
+
+<CompareMatrix
+  client:visible
+  caption="Containers vs virtual machines"
+  columns={['Containers', 'Virtual machines', 'Hardened containers (gVisor/Kata)']}
+  rows={[
+    { criterion: 'Virtualizes', cells: ['The OS (shares host kernel)', 'The hardware (own kernel)', 'OS, with extra isolation layer'] },
+    { criterion: 'Isolation strength', cells: ['Weaker (shared kernel)', 'Strongest', 'Near-VM'] },
+    { criterion: 'Startup', cells: ['Milliseconds', 'Seconds–minutes', 'Tens of ms'] },
+    { criterion: 'Density / overhead', cells: ['Very high / near-zero', 'Low / per-OS', 'High / small overhead'] },
+    { criterion: 'Image / footprint', cells: ['MBs', 'GBs', 'MBs'] },
+    { criterion: 'Best for', cells: ['Microservices, stateless, CI', 'Untrusted multi-tenancy', 'Untrusted code, container ergonomics'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="Container internals & build practices — what and why"
+  tabs={[
+    { label: 'Namespaces & cgroups', content: 'WHAT: the two kernel features that MAKE a container. Namespaces isolate what a process can SEE (its own PID tree, network, mounts, users); cgroups limit what it can USE (CPU, memory, I/O). WHY IT MATTERS: there is no magic — a container is an ordinary process the kernel restricts. This is why containers start in milliseconds (no boot, no guest kernel) AND why their isolation is weaker than a VM’s: the host kernel is a shared trust boundary, so a kernel exploit escapes the container.' },
+    { label: 'Images & layer caching', content: 'WHAT: an image is a stack of read-only, content-addressed layers, one per Dockerfile instruction, shared and cached across builds. WHY IT MATTERS: layer ORDER controls rebuild cost. Put rarely-changing steps (base image, dependency install) early and frequently-changing steps (COPY your source) late, so a code change only rebuilds the cheap tail layers. Getting this wrong rebuilds your whole dependency tree on every commit and bloats your CI.' },
+    { label: 'Small & secure images', content: 'WHAT: minimize size and attack surface with multi-stage builds (compile in a fat image, COPY only the binary into a tiny final image) and distroless/scratch bases (no shell, no package manager). WHY IT MATTERS: smaller images pull and start faster, and fewer packages means fewer CVEs and nothing for an attacker to pivot through. RULE: pin base image digests, run as a non-root user, scan images in the pipeline, and never bake secrets into layers (they persist in history even if deleted later).' },
+    { label: 'OCI & rootless', content: 'WHAT: OCI is the vendor-neutral standard (image, runtime, distribution specs) that decoupled containers from Docker — so Docker, Podman, containerd, and Kubernetes all interoperate. Rootless runs the whole stack as an unprivileged user via the USER namespace. WHY IT MATTERS: OCI means no lock-in — your image runs on any compliant runtime. Rootless means a container escape lands as an unprivileged user, not host root — the single highest-leverage hardening step, and Podman’s default.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Docker** popularized containers by wrapping pre-existing kernel features (namespaces,
+  cgroups, union filesystems) in an ergonomic image format and CLI — then donated the
+  format to the **OCI**, decoupling the ecosystem from Docker itself.
+- **Google** ran containers internally for years (the **cgroups** feature was contributed
+  to Linux by Google engineers) before Docker; **Borg** scheduled containerized workloads
+  long before Kubernetes externalized the idea.
+- **Distroless (Google) and Alpine** are the standard minimal base images — distroless
+  ships no shell or package manager, shrinking both size and attack surface dramatically.
+- **gVisor (Google) and Kata Containers** provide stronger isolation for untrusted
+  workloads — gVisor intercepts syscalls in a user-space kernel; Kata wraps each container
+  in a lightweight VM — used by serverless platforms running arbitrary customer code.
+- **Podman (Red Hat)** runs **rootless and daemonless** by default, the security-forward
+  alternative to the Docker daemon model.
+
+## Further reading
+
+- [Open Container Initiative (OCI) specifications](https://opencontainers.org/) — the image, runtime, and distribution standards.
+- [Docker — image-building best practices](https://docs.docker.com/build/building/best-practices/) — layer caching, multi-stage builds, small images.
+- [Julia Evans — "What even is a container?"](https://jvns.ca/blog/2016/10/10/what-even-is-a-container/) — namespaces and cgroups demystified from first principles.
+- [Google — Distroless container images](https://github.com/GoogleContainerTools/distroless) — minimal, shell-less base images and why they matter.
+- [gVisor — container runtime sandbox](https://gvisor.dev/) — stronger isolation for untrusted containers, and the tradeoffs.

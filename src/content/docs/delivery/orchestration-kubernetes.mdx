@@ -1,0 +1,261 @@
+---
+title: Orchestration & Kubernetes
+description: Why container orchestration exists — Kubernetes objects (pod, deployment, service, ingress), the reconciliation control loop, scheduling, autoscaling (HPA/VPA/cluster), service mesh, and the honest question of when you do and don't need Kubernetes.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A single container is easy. A *fleet* of containers across many machines — placed onto
+hosts with enough capacity, kept at the right replica count when nodes die, given stable
+network identities, load-balanced, rolled out and rolled back, and scaled with demand — is
+hard, and doing it by hand does not survive contact with production. **Container
+orchestration** is the automation of that fleet management, and **Kubernetes (K8s)** is its
+de-facto standard.
+
+Kubernetes is also, deservedly, the most over-adopted technology of its era. It is
+genuinely excellent at running large fleets of services and genuinely a tax — operationally
+and cognitively — that small teams pay without need. So this page does two things: explains
+*how Kubernetes actually works* (its objects and, crucially, its **reconciliation control
+loop**), and answers the question that matters more than any feature list — **do you
+actually need it?** The honest answer for many teams is "not yet," and getting that wrong
+costs more than any deployment bug.
+
+## Mental model
+
+**Kubernetes is a control loop that continuously drives the actual state of the world
+toward a declared desired state.** This is *the* mental model; everything else is detail.
+You don't tell Kubernetes "start three copies of this container" (imperative). You
+*declare* "I want three healthy replicas of this" and store that desired state in the API
+server. Controllers then run an endless loop: **observe** actual state to **compare**
+against desired to **act** to close the gap to repeat. A node dies and a replica vanishes?
+The loop notices `actual=2, desired=3` and schedules a replacement. You change desired to 5?
+The loop creates two more. **You describe the destination; the system continuously steers
+toward it.** This is why Kubernetes is "self-healing" — it's not magic, it's a thermostat.
+
+The second model: **the pod is the atom, and everything else wraps it.** A **Pod** (one or
+more co-located containers sharing a network/storage namespace) is the smallest schedulable
+unit — but you almost never create pods directly, because a bare pod isn't self-healing. You
+declare a higher-level object that *manages* pods for you: a **Deployment** (stateless
+replicas with rolling updates), a **StatefulSet** (stable identity/storage for databases), a
+**DaemonSet** (one pod per node), or a **Job/CronJob** (run-to-completion). Those controllers
+run the reconciliation loop *on the pods*.
+
+The third model: **pods are cattle, so you need stable abstractions in front of them.** Pods
+are ephemeral and get IP addresses that change as they're rescheduled — so you never talk to
+a pod directly. A **Service** gives a stable virtual IP and DNS name that load-balances
+across the current healthy pods; an **Ingress** (or Gateway) routes external HTTP traffic to
+Services with hostnames, paths, and TLS. The indirection is the point: the abstraction stays
+put while the pods behind it churn. The fourth model is the sober one: **Kubernetes solves
+*your* problems only if you have *its* problems** — many services, many machines, dynamic
+scaling, a platform team to run it. If you have three services on two boxes, Kubernetes is a
+distributed system you now have to operate *in addition to* your app.
+
+## Types / Variants
+
+### Core objects (the ones you must know)
+
+- **Pod:** smallest deployable unit — one or more containers sharing network and storage.
+  Ephemeral; managed by a controller, rarely created directly.
+- **Deployment:** declares a desired replica count of stateless pods and manages **rolling
+  updates and rollbacks** via a ReplicaSet. The workhorse for stateless services.
+- **StatefulSet:** like a Deployment but with **stable network identity and persistent
+  storage per pod** (`pod-0`, `pod-1`) — for databases, queues, anything that cares which
+  instance it is.
+- **DaemonSet:** one pod per node — for node-level agents (log shippers, metrics, CNI).
+- **Job / CronJob:** run-to-completion and scheduled batch work.
+- **Service:** stable virtual IP + DNS load-balancing across a set of pods (ClusterIP
+  internal, NodePort/LoadBalancer external).
+- **Ingress / Gateway API:** HTTP(S) routing from outside the cluster to Services —
+  host/path rules, TLS termination.
+- **ConfigMap / Secret:** inject configuration and credentials into pods at runtime
+  (config separate from image — see [containers](/delivery/containers/)).
+- **Namespace:** a virtual cluster for multi-tenancy and scoping (not the same as a Linux
+  kernel namespace).
+
+### The control plane
+
+- **API server:** the front door and single source of truth; all desired state goes here.
+- **etcd:** the distributed key-value store holding cluster state (the database of record).
+- **Scheduler:** assigns pending pods to nodes based on resource **requests**, **affinity/
+  anti-affinity**, **taints/tolerations**, and constraints.
+- **Controller manager:** runs the reconciliation loops (Deployment, ReplicaSet, node,
+  etc.) that drive actual toward desired.
+- **kubelet:** the per-node agent that actually runs containers (via an OCI runtime through
+  the CRI) and reports health.
+
+### Scaling
+
+- **HPA (Horizontal Pod Autoscaler):** add/remove *pod replicas* based on CPU, memory, or
+  custom/external metrics. The common one — scale *out*.
+- **VPA (Vertical Pod Autoscaler):** adjust a pod's CPU/memory *requests* — scale *up*.
+  (HPA and VPA on the same resource metric conflict; combine carefully.)
+- **Cluster Autoscaler / Karpenter:** add/remove *nodes* when pods can't be scheduled or
+  nodes sit idle — scaling the underlying machines, not just the pods.
+
+### Service mesh
+
+A dedicated infrastructure layer (Istio, Linkerd) that puts a **sidecar proxy** (or a
+sidecar-less mesh) beside each pod to handle service-to-service mTLS, retries, timeouts,
+traffic splitting (for canaries), and observability — *without* changing app code. Powerful
+and a significant added operational surface; adopt only when you have the cross-cutting
+networking problems it solves.
+
+## When to use / When NOT
+
+- **Use Kubernetes when:** you run **many services across many machines**, need dynamic
+  autoscaling and self-healing, want a uniform deploy/rollout/rollback abstraction across a
+  large fleet, and **have the team (a platform/SRE function) to operate it.** It shines at
+  scale and with organizational standardization.
+- **Avoid (or defer) Kubernetes when:** you have a handful of services, a small team, and no
+  platform engineers. A managed PaaS (App Runner, Cloud Run, Fly.io, Render, Heroku-likes)
+  or plain VMs/serverless will ship you faster with a fraction of the operational burden.
+  **K8s is a distributed system you must operate** — its complexity is only worth it when
+  the scale problems it solves are problems you actually have.
+- **Prefer managed Kubernetes (EKS/GKE/AKS) over self-hosted when:** you've decided you need
+  K8s but don't want to run the control plane, etcd, and upgrades yourself (almost everyone).
+  **Self-host the control plane only** with a strong reason and the team to back it.
+- **Add a service mesh when:** you have many services needing uniform mTLS, fine-grained
+  traffic control, and per-call observability — and the existing networking is genuinely
+  painful. **Avoid it when:** a handful of services don't justify a second control plane and
+  a sidecar per pod. Most teams adopt a mesh later than they think and earlier than they
+  need.
+- **Use StatefulSets / run databases on K8s carefully** — or use a **managed database**
+  instead. Stateful workloads are where Kubernetes is least forgiving; "just run Postgres on
+  K8s" is a frequent source of pain for small teams.
+
+## Tradeoffs
+
+| Dimension | Kubernetes | Managed PaaS / serverless | Plain VMs |
+| --------- | ---------- | ------------------------- | --------- |
+| Operational burden | **High** (you run a distributed system) | Low (provider runs it) | Medium |
+| Flexibility / control | Very high | Constrained to the platform | High |
+| Scaling | Pods + nodes, fine-grained, automated | Automatic, platform-managed | Manual / scripted |
+| Self-healing | Built-in (control loop) | Platform-provided | DIY |
+| Portability | Cloud-agnostic (avoids lock-in) | Often provider lock-in | Portable |
+| Right-sized for | Many services, large fleet, platform team | Small-to-mid teams, fast shipping | Simple, stable workloads |
+| Time-to-first-deploy | Slow (cluster + manifests + tooling) | Fast | Medium |
+
+The honest summary: **Kubernetes buys you fleet-scale automation, portability, and a uniform
+operational model — at the cost of running a complex distributed system.** Its power is real
+and so is its tax. The most common architectural mistake in this space is adopting it
+*early*, paying the full operational cost for scale benefits you won't use for years. Choose
+it for the problems you *have*, not the scale you imagine.
+
+## Diagram
+
+The Kubernetes control plane and the reconciliation loop — desired state in, controllers
+continuously steering actual state to match.
+
+<Mermaid code={`graph TB
+  USER[Engineer: kubectl apply<br/>declares DESIRED state] --> API[API server]
+  API --> ETCD[(etcd — source of truth)]
+  API --> CTRL[Controllers<br/>observe → compare → act]
+  CTRL -->|actual ≠ desired → reconcile| API
+  API --> SCHED[Scheduler<br/>assign pods to nodes]
+  SCHED --> N1[kubelet — Node 1]
+  SCHED --> N2[kubelet — Node 2]
+  N1 --> P1[Pods]
+  N2 --> P2[Pods]
+  P1 -. report health .-> API
+  P2 -. report health .-> API
+  SVC[Service: stable VIP/DNS] -. load-balances .-> P1
+  SVC -. load-balances .-> P2
+  ING[Ingress] --> SVC`} />
+
+You declare desired state to the API server (stored in etcd); controllers run an endless
+observe-compare-act loop that reconciles actual toward desired, the scheduler places pods on
+nodes, and kubelets run and health-report them. A Service fronts the churning pods with a
+stable identity; Ingress routes external traffic in. Nothing here is imperative — it is a
+thermostat for your fleet.
+
+## Try it
+
+First, the decision that matters most — do you need Kubernetes at all? Then a comparison of
+where to run containers.
+
+<DecisionTree
+  client:visible
+  caption="Do you actually need Kubernetes?"
+  root={{
+    question: 'Do you run many services (10+) across many machines, OR need fine-grained autoscaling and a uniform fleet-wide operational model?',
+    branches: [
+      {
+        label: 'No — a few services, modest scale',
+        next: {
+          question: 'Is your workload a good fit for a managed platform (HTTP services, stateless or with managed state)?',
+          branches: [
+            {
+              label: 'Yes — standard web services',
+              next: { leaf: { recommendation: 'Managed PaaS / serverless containers', detail: 'Cloud Run, App Runner, Fly.io, Render, container PaaS. You get scaling, rollouts, and self-healing without operating a cluster. Ship features instead of running a control plane. Revisit K8s when scale or customization forces it.' } },
+            },
+            {
+              label: 'No — unusual runtime, long-lived stateful, or special needs',
+              next: { leaf: { recommendation: 'Plain VMs (or managed services per component)', detail: 'A couple of well-managed VMs with a simple deploy script beat a cluster for a small, stable footprint. Use managed databases/queues for state. Lowest cognitive overhead.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'Yes — large fleet / dynamic scaling / standardization',
+        next: {
+          question: 'Do you have a platform/SRE team (or capacity) to operate Kubernetes — upgrades, security, on-call?',
+          branches: [
+            {
+              label: 'Yes — and we want to avoid cloud lock-in',
+              next: { leaf: { recommendation: 'Managed Kubernetes (EKS / GKE / AKS)', detail: 'Get the fleet automation, self-healing, and portability of K8s while the provider runs the control plane and etcd. The right default once you genuinely have K8s-scale problems and the team to run it.' } },
+            },
+            {
+              label: 'Not really — small team, no platform function',
+              next: { leaf: { recommendation: 'Defer K8s — managed PaaS for now', detail: 'You have the scale signal but not the operational capacity. Adopting K8s without a platform team means it becomes everyone’s second job. Start on a managed PaaS and migrate to K8s when you can staff it properly.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Where to run your containers"
+  columns={['Self-managed K8s', 'Managed K8s (EKS/GKE/AKS)', 'PaaS / serverless containers']}
+  rows={[
+    { criterion: 'Who runs the control plane', cells: ['You', 'The cloud provider', 'The provider (hidden)'] },
+    { criterion: 'Operational burden', cells: ['Highest', 'High (you run workloads)', 'Lowest'] },
+    { criterion: 'Flexibility', cells: ['Total', 'Very high', 'Constrained to platform'] },
+    { criterion: 'Lock-in', cells: ['None', 'Low (portable manifests)', 'Higher (platform-specific)'] },
+    { criterion: 'Time to first deploy', cells: ['Slow', 'Medium', 'Fast'] },
+    { criterion: 'Right for', cells: ['Special needs + strong platform team', 'K8s-scale + want managed plane', 'Small-to-mid teams shipping fast'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Kubernetes** itself descends from Google's internal **Borg** cluster manager; the
+  reconciliation-loop, declarative-API design is Borg's lessons externalized and donated to
+  the **CNCF**, which now stewards the broader cloud-native ecosystem.
+- **GKE, EKS, and AKS** (Google, AWS, Azure) provide **managed control planes** — the
+  near-universal way real teams run Kubernetes, since operating etcd and the control plane
+  yourself is rarely worth it.
+- **Istio and Linkerd** are the leading **service meshes** — Linkerd emphasizing simplicity
+  and a lightweight Rust proxy, Istio emphasizing features and configurability; both add mTLS,
+  traffic control, and observability via sidecars.
+- **Karpenter (AWS)** modernized **node autoscaling** — provisioning right-sized nodes in
+  seconds based on pending pods, replacing slower cluster-autoscaler patterns.
+- **The "you might not need Kubernetes" genre** (widely echoed across engineering blogs and
+  by practitioners like Kelsey Hightower) is itself a real-world signal: many teams that
+  adopted K8s early have publicly documented regretting the operational cost at their scale.
+
+## Further reading
+
+- [Kubernetes — Concepts (official docs)](https://kubernetes.io/docs/concepts/) — objects, the control plane, and the reconciliation model.
+- [Borg, Omega, and Kubernetes (Google, ACM Queue)](https://queue.acm.org/detail.cfm?id=2898444) — the lineage and the design lessons behind K8s.
+- [Kelsey Hightower — Kubernetes The Hard Way](https://github.com/kelseyhightower/kubernetes-the-hard-way) — what the managed control plane is doing for you.
+- [CNCF — Cloud Native Landscape](https://landscape.cncf.io/) — the orchestration and mesh ecosystem around Kubernetes.
+- [Linkerd — service mesh, and when you need one](https://linkerd.io/what-is-a-service-mesh/) — a clear, honest framing of the mesh tradeoff.

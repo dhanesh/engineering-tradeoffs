@@ -1,0 +1,223 @@
+---
+title: Delivery & Operations
+description: The path to production — DORA metrics (deploy frequency, lead time, MTTR, change-fail rate), continuous integration vs delivery vs deployment, the deployment pipeline, and you-build-it-you-run-it ownership.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Every other cluster in this primer is about *designing* a system; this one is about
+*getting it into production and keeping it running*. Delivery and operations is the
+machinery between a commit on a laptop and bytes serving real users — the build, the
+tests, the artifact, the deploy, the rollback, and the people who own the result at 3am.
+It is where architecture meets reality: a beautifully designed service that takes two
+weeks and a change-advisory board to ship is, in practice, a slow and fragile system.
+
+The central claim of modern delivery — backed by a decade of **DORA** (DevOps Research
+and Assessment) research — is counter-intuitive to traditional ops: **shipping smaller
+changes more often makes you *more* stable, not less.** Large, infrequent releases batch
+up risk; small, frequent ones shrink the blast radius of any one change and make the
+cause of a failure obvious. Speed and stability are not a tradeoff you balance — the same
+practices (automation, small batches, fast feedback) buy you both. This page frames the
+whole cluster: how to *measure* delivery (DORA), the spectrum from continuous integration
+to continuous deployment, the deployment pipeline that connects them, and the ownership
+model — **you build it, you run it** — that closes the loop between the people who write
+code and the people who operate it.
+
+## Mental model
+
+**Delivery is a flow problem, and your job is to maximize the rate of small, safe changes
+reaching production.** Think of every change as a unit of work moving down a pipe: commit
+to build to test to deploy. Three things matter: how *fast* a change flows (lead time),
+how *often* changes flow (deploy frequency), and what fraction *break* on the way out
+(change-fail rate) plus how fast you *recover* when they do (MTTR). Those four are the
+**DORA metrics**, and they are not vanity numbers — they correlate with organizational
+performance, and crucially they form **two pairs that move together, not against each
+other**: throughput (frequency + lead time) and stability (change-fail rate + MTTR).
+Elite teams are good at *both*, because the same lever — small batches automated end to
+end — improves all four.
+
+The second model is the **CI / CD / CD ladder**, three escalating levels of automation
+that are constantly conflated:
+
+- **Continuous Integration (CI):** every commit is automatically merged to mainline and
+  *verified* (build + tests + scans). The discipline: integrate small and often so
+  conflicts and breakages surface in minutes, not at a painful end-of-sprint merge.
+- **Continuous Delivery (CD):** every change that passes CI is automatically taken all
+  the way to a *release-ready, deployable artifact* — but the final push to production is
+  a **human decision** (a button click). You are *always able* to ship; you choose *when*.
+- **Continuous Deployment (CD):** the same pipeline, but the human is removed — every
+  change that passes all gates **deploys to production automatically**. No button.
+
+The third model: **the deployment pipeline is your immune system.** Each stage is a gate
+that a change must pass before progressing, and gates get more expensive and more
+production-like as you go (fast unit tests first, slow end-to-end and manual approvals
+last) — **fail fast and cheap.** A change that fails a 20-second unit test should never
+reach a 20-minute integration suite. The fourth and most cultural model is **you build
+it, you run it** (Werner Vogels, Amazon): the team that writes a service also operates it,
+carries its pager, and feels its production pain. This is not just an org chart — it is a
+*feedback loop* that aligns incentives. Developers insulated from operations build
+operationally hostile systems; developers who get paged at 3am build systems that don't
+page.
+
+## Types / Variants
+
+The delivery automation spectrum, from least to most automated:
+
+- **Manual / scripted deploys.** A human runs steps (or a script) to release. No
+  enforced gates. Fine for a side project; a liability at scale — error-prone, slow,
+  and tribal-knowledge-bound.
+- **Continuous Integration (CI).** Automated build + test on every commit to mainline.
+  The non-negotiable foundation: catches integration breakage in minutes. *Stops at a
+  green build* — does not necessarily produce a deployable artifact or deploy anything.
+- **Continuous Delivery (CD).** CI plus automated packaging and promotion through
+  environments to a *release-ready* state, with a **manual gate** before production.
+  Every commit is *deployable*; releasing is a business decision (a click).
+- **Continuous Deployment (CD).** CD with the manual gate removed: pass the pipeline,
+  go live automatically. Requires very high test confidence, robust monitoring, and
+  fast automated rollback — the gates *are* the safety, since no human reviews each push.
+
+Two related axes shape how the above behave:
+
+- **Trunk-based vs feature-branch development.** CI works best with **trunk-based**
+  development (everyone commits to mainline daily, behind feature flags). Long-lived
+  feature branches defeat the *Integration* in Continuous Integration — see
+  [CI/CD pipelines](/delivery/ci-cd-pipelines/).
+- **Deploy vs release.** Decoupling *deploying* code (it's running in production) from
+  *releasing* a feature (users can see it) — via **feature flags** — is what makes
+  continuous deployment safe. You deploy constantly and dark; you release deliberately —
+  see [deployment strategies](/delivery/deployment-strategies/).
+
+## When to use / When NOT
+
+- **Adopt CI for:** essentially every team with more than one engineer. There is no
+  credible argument against automated build-and-test on every commit. **The only reason
+  to skip it** is a throwaway prototype that will never be maintained.
+- **Adopt Continuous Delivery when:** you want to *release* on a business cadence
+  (marketing, compliance, customer comms) but still want every change deployable on
+  demand. The manual gate is a *deliberate* product decision, not a lack of automation.
+  **Most regulated and enterprise teams live here** — and that's correct.
+- **Adopt Continuous Deployment when:** you have strong automated test coverage,
+  comprehensive monitoring/alerting, fast automated rollback, and a culture of small
+  changes. **Avoid it when:** a bad deploy has irreversible or high-stakes consequences
+  (financial ledgers, medical, aviation) without the safety nets — or when your test
+  suite can't be trusted to gate unattended. Removing the human before the safety nets
+  exist just automates incidents.
+- **Use DORA metrics to:** find your bottleneck (is lead time dominated by code review?
+  by a slow test suite? by manual deploy steps?) and to track whether changes actually
+  improve flow. **Don't weaponize them** as individual performance targets — they are
+  *system* health metrics; gaming them (e.g. splitting changes to inflate deploy
+  frequency) destroys their value.
+- **Apply you-build-it-you-run-it when:** teams own services end to end and you want
+  fast feedback aligning design with operability. **Be wary when:** on-call burden is
+  unsustainable, or a dedicated platform/SRE team genuinely provides better leverage for
+  shared infrastructure — ownership is a spectrum, not a religion.
+
+## Tradeoffs
+
+The CI to CD to CD progression trades *human control points* for *speed and consistency*.
+Each step removes a manual checkpoint and replaces it with automated confidence — which
+is only safe if the automated confidence is real.
+
+| Dimension | Continuous Integration | Continuous Delivery | Continuous Deployment |
+| --------- | ---------------------- | ------------------- | --------------------- |
+| What's automated | Build + test on every commit | + package + promote to release-ready | + push to production |
+| Production gate | N/A (no deploy) | **Manual** (human clicks deploy) | **None** (auto on green) |
+| Prerequisite confidence | Good test suite | Strong suite + staging | Excellent suite + monitoring + auto-rollback |
+| Lead time to prod | Hours–days (manual deploy) | Minutes–hours (on click) | Minutes (automatic) |
+| Best fit | Every team | Regulated / business-cadence releases | High-trust, high-frequency teams |
+| Main risk | Stops short of deployable | Manual gate can become a bottleneck | A bad change ships with no human in the loop |
+
+The deeper tradeoff is **batch size**. Smaller batches mean more frequent deploys, lower
+per-deploy risk, faster feedback, and easier debugging — but require investment in
+automation and test reliability to keep the per-deploy *cost* near zero. Larger batches
+amortize a slow, expensive deploy process but concentrate risk and make failures hard to
+diagnose. The DORA finding is unambiguous: **reduce batch size and the cost of deploying,
+and both speed and stability improve together.**
+
+## Diagram
+
+The path to production as a deployment pipeline, with the DORA metrics overlaid on the
+flow they measure, and the CI / CD / CD boundaries marked.
+
+<Mermaid code={`graph LR
+  COMMIT[Commit to mainline] --> BUILD[Build]
+  BUILD --> TEST[Automated tests + scans]
+  TEST --> ART[Release-ready artifact]
+  ART -->|manual gate = Continuous Delivery| PROD
+  ART -->|auto on green = Continuous Deployment| PROD[Production]
+  PROD --> OBS[Monitor / observe]
+  OBS -.->|incident → MTTR| PROD
+  subgraph CI [Continuous Integration]
+    COMMIT
+    BUILD
+    TEST
+  end
+  COMMIT -. lead time for changes .-> PROD
+  PROD -. deploy frequency .-> PROD`} />
+
+The four DORA metrics map onto this flow: **lead time for changes** is commit to
+production, **deploy frequency** is how often the rightmost arrow fires, **change-fail
+rate** is the fraction of those deploys that trigger the dashed incident loop, and
+**MTTR** is how fast that loop closes. CI ends at a green build; Continuous Delivery adds
+the manual production gate; Continuous Deployment removes it.
+
+## Try it
+
+The CI / CD / CD ladder side by side, and when each rung is the right one.
+
+<CompareMatrix
+  client:visible
+  caption="Continuous Integration vs Delivery vs Deployment"
+  columns={['Continuous Integration', 'Continuous Delivery', 'Continuous Deployment']}
+  rows={[
+    { criterion: 'Automates', cells: ['Build + test per commit', 'CI + package + promote to release-ready', 'CD + push to production'] },
+    { criterion: 'Reaches production?', cells: ['No', 'On a human click', 'Automatically on green'] },
+    { criterion: 'Production gate', cells: ['—', 'Manual (deliberate)', 'None'] },
+    { criterion: 'Needs to be safe', cells: ['Reliable test suite', '+ staging + promotion', '+ monitoring + auto-rollback'] },
+    { criterion: 'Typical lead time', cells: ['Build minutes (deploy still manual)', 'Minutes once you click', 'Minutes, unattended'] },
+    { criterion: 'Who should do it', cells: ['Every team', 'Regulated / business-cadence', 'High-trust, high-frequency'] },
+  ]}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="The four DORA metrics — what each tells you and how to move it"
+  tabs={[
+    { label: 'Deploy frequency', content: 'WHAT: how often you successfully release to production (elite: on-demand, multiple times per day). WHY IT MATTERS: high frequency is the signature of small batches — it forces and proves that your pipeline can deploy cheaply and safely. HOW TO IMPROVE: shrink batch size, automate the deploy, decouple deploy from release with feature flags. GOTCHA: it is an OUTCOME metric, not a target — do not split changes artificially to inflate it.' },
+    { label: 'Lead time for changes', content: 'WHAT: time from a commit landing on mainline to it running in production. WHY IT MATTERS: it measures the responsiveness of your whole delivery system — how fast you can ship a fix or a feature. HOW TO IMPROVE: find the dominant delay (slow tests? manual review queues? manual deploy steps?) and attack THAT — it is usually one stage, not the code itself. Elite teams measure this in under an hour.' },
+    { label: 'Change-fail rate', content: 'WHAT: the percentage of deploys that cause a degradation requiring remediation (rollback, hotfix, patch). WHY IT MATTERS: it is your stability signal — quality of what you ship, not speed. HOW TO IMPROVE: better automated tests, smaller changes (easier to verify), progressive delivery (canary catches failures before full rollout). Counter-intuitively, higher deploy frequency tends to LOWER this rate because each change is smaller and easier to validate.' },
+    { label: 'MTTR (time to restore)', content: 'WHAT: how long to restore service after a production incident. WHY IT MATTERS: failures are inevitable; recovery speed is what bounds their damage. HOW TO IMPROVE: fast automated rollback, good observability to detect and localize fast, runbooks, and decoupled deploys so you can roll back one change without reverting everything. A one-click rollback turns a SEV1 into a non-event. See the reliability cluster for incident management.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Amazon** popularized **you-build-it-you-run-it** (Werner Vogels) and famously deploys
+  to production thousands of times per day across its services — the canonical proof that
+  high frequency and high stability coexist when batches are small and automation is total.
+- **The DORA / *Accelerate* research program** (Nicole Forsgren, Jez Humble, Gene Kim)
+  established the four metrics and the statistically-validated link between delivery
+  performance and organizational performance — the empirical backbone of this whole cluster.
+- **Etsy** was an early public exemplar of continuous deployment, going from infrequent
+  releases to dozens of deploys a day, and open-sourced much of the tooling and culture
+  (feature flags, dashboards, blameless postmortems) that made it safe.
+- **GitHub Flow / trunk-based development at Google** show the branching discipline that
+  underpins real CI: short-lived branches or direct-to-trunk commits behind flags, merged
+  daily, so integration is continuous rather than a quarterly event.
+- **Netflix** built **Spinnaker** (open-sourced) to run continuous delivery with automated
+  canary analysis at scale, encoding progressive delivery and automated rollback into the
+  pipeline itself.
+
+## Further reading
+
+- [DORA — DevOps capabilities and the State of DevOps reports](https://dora.dev/) — the four key metrics and the research behind them.
+- [Martin Fowler — Continuous Integration](https://martinfowler.com/articles/continuousIntegration.html) — the foundational definition and discipline.
+- [Martin Fowler — Continuous Delivery vs Continuous Deployment](https://martinfowler.com/bliki/ContinuousDelivery.html) — disentangles the two CDs precisely.
+- [Jez Humble & David Farley — *Continuous Delivery*](https://continuousdelivery.com/) — the deployment-pipeline book that named the field.
+- [Werner Vogels — "You build it, you run it" (ACM Queue interview)](https://queue.acm.org/detail.cfm?id=1142065) — the origin of the ownership model.

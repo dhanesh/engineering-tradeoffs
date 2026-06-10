@@ -1,0 +1,246 @@
+---
+title: Deployment Strategies
+description: How to ship a new version safely — recreate, rolling, blue-green, canary, shadow/dark launch, feature flags vs deploy, progressive delivery, rollback vs roll-forward, and backward-compatible database migrations.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A deployment strategy is *how* you replace a running version of a service with a new one
+without (ideally) anyone noticing. The pipeline produces a verified artifact; the strategy
+decides how that artifact takes over from the old one — all at once, gradually, or
+side-by-side — and, critically, how you *undo* it when the new version misbehaves. This is
+where availability is won or lost: the same artifact deployed with a recreate strategy
+causes downtime, and deployed as a canary causes none.
+
+The strategies form a spectrum trading **deploy speed and cost** against **risk exposure**.
+At one end, recreate is instant and trivial but takes you down; at the other, canary and
+progressive delivery expose a new version to 1% of traffic, watch the metrics, and abort
+automatically before most users ever touch it. Layered on top is the most important
+distinction of all — **deploy is not release.** Decoupling the act of running new code
+from the act of exposing a feature (via feature flags) is what lets you deploy constantly
+and dark, then release deliberately and reversibly. And underneath every strategy lurks
+the hardest part: **database schema changes**, which must be backward-compatible or every
+clever traffic-shifting trick above them is worthless.
+
+## Mental model
+
+**Every deployment is a bet that the new version is good, and the strategy is how much you
+wager before you find out.** Recreate bets 100% of traffic instantly. Rolling bets a node
+at a time. Canary bets 1%, measures, then raises the stake only if the metrics hold. The
+core question each strategy answers is: *how small can I make the blast radius of a bad
+deploy, and how fast can I detect and undo it?* Minimizing blast radius and time-to-detect
+is the entire game.
+
+The second, decisive model: **separate deploy from release.** *Deploying* means the new
+binary is running in production. *Releasing* means users can actually reach the new
+behavior. Feature flags drive a wedge between them: you deploy code dark (flag off),
+verify it's healthy, then *release* by flipping the flag — instantly, for 1% of users,
+for internal staff only, reversibly, and **without another deploy**. A bad feature becomes
+a config toggle to flip off, not an emergency rollback. This is why mature teams deploy
+many times a day yet release features on a product cadence: the two are decoupled.
+
+The third model: **prefer rollback to roll-forward when things break.** When a deploy goes
+wrong, the fastest path back to safety is almost always to return to the *known-good*
+previous version (**rollback**) rather than to write, test, and ship a fix (**roll-forward**).
+Roll-forward is sometimes forced — a bad database migration can't always be un-applied, a
+data-corrupting bug already wrote bad data — but as a default, *get back to known-good
+first, diagnose after.* This mirrors the incident rule: mitigate before you root-cause.
+
+The fourth model, the one that constrains everything: **the database is the hard part, and
+the rule is expand/contract (a.k.a. parallel-change).** During any non-trivial deploy, the
+old and new code versions run *simultaneously* — so the schema must be readable and
+writable by **both**. You never make a breaking schema change in one step. You **expand**
+(add the new column/table, additively), **migrate** (backfill, deploy code that writes
+both old and new), then **contract** (remove the old) in a *later, separate* deploy once
+no code references it. Skip this and your rolling/canary deploy breaks the moment v1 and
+v2 disagree about the schema.
+
+## Types / Variants
+
+- **Recreate (stop-the-world).** Shut down all instances of the old version, then start
+  the new. Simple, no version overlap (no schema-compat worries), but causes **downtime**
+  for the duration. Fine for batch jobs, dev, or systems with a maintenance window.
+- **Rolling (ramped).** Replace instances in batches — take down a few, bring up the new
+  version, repeat — so the service stays up throughout. The common Kubernetes default. New
+  and old run *simultaneously* (so backward compat is required). Rollback means rolling
+  back, which is slower than a blue-green flip.
+- **Blue-green.** Run two complete identical environments — **blue** (current) and
+  **green** (new). Deploy and smoke-test green in isolation, then switch all traffic
+  (load balancer / DNS) from blue to green atomically. **Instant rollback** = switch back.
+  Cost: double the infrastructure during the cutover; and stateful concerns (in-flight
+  sessions, the shared database) still need care.
+- **Canary.** Route a small slice of real traffic (1–5%) to the new version, watch error
+  rate, latency, and business metrics, and *progressively* increase the slice if healthy —
+  or **abort and roll back** if not. The lowest-blast-radius strategy: a bad version hits
+  a tiny fraction of users before it's caught. Needs good observability and traffic
+  routing to do well.
+- **Shadow / dark launch.** Send a *copy* of production traffic to the new version but
+  **discard its responses** — users still get the old version's answers. Tests the new
+  version against real load and real inputs with zero user risk. Used to de-risk big
+  rewrites and performance changes. Caution: shadowed requests must not cause real side
+  effects (no double-charging, no duplicate emails).
+- **Feature flags (deploy ≠ release).** Not a deploy strategy per se but the layer that
+  makes the others safe: ship code dark, release by toggling. Enables percentage rollouts,
+  targeted releases (internal users, a region), instant kill-switches, and A/B tests —
+  *all without redeploying.*
+- **Progressive delivery.** The umbrella term for canary-style gradual exposure governed
+  by **automated metric analysis** (Argo Rollouts, Flagger, Spinnaker): auto-promote if
+  SLOs hold, auto-rollback if they don't. Canary + feature flags + automation as a coherent
+  practice.
+
+### Rollback vs roll-forward
+
+- **Rollback:** revert to the previous known-good version/artifact. Fast, low-risk, the
+  default. Blue-green makes it instant; rolling makes it a re-roll.
+- **Roll-forward:** ship a forward fix. Necessary when rollback is impossible (irreversible
+  migration, already-corrupted data) but slower and riskier — you're shipping new,
+  less-tested code during an incident.
+
+## When to use / When NOT
+
+- **Recreate — use when:** downtime is acceptable (internal tools, batch, a maintenance
+  window) and simplicity matters. **Avoid for** anything user-facing with availability
+  expectations.
+- **Rolling — use when:** you want zero-downtime with no extra infrastructure and your app
+  tolerates version overlap (it must — enforce backward compat). **Avoid when:** you need
+  *instant* full rollback (blue-green is better) or can't run two versions at once.
+- **Blue-green — use when:** you want instant, atomic switchover and rollback and can
+  afford to run two full environments briefly. **Avoid when:** infra cost is prohibitive,
+  or you have lots of stateful, long-lived connections / shared mutable state that the
+  atomic switch can't cleanly handle.
+- **Canary / progressive delivery — use when:** the change is risky, you have strong
+  observability and traffic routing, and you want the smallest possible blast radius.
+  **Avoid when:** you lack the metrics to judge canary health (you'll promote a bad version
+  blindly) or traffic is too low for a 1% slice to be statistically meaningful.
+- **Shadow / dark launch — use when:** de-risking a major rewrite or perf change against
+  real traffic. **Never use when** the new path has side effects you can't safely
+  suppress (payments, notifications, external writes).
+- **Feature flags — use when:** you want to decouple deploy from release, do targeted or
+  percentage rollouts, or need a kill-switch (almost always worth it for risky features).
+  **Beware** flag debt — stale flags are dead conditional code and a config-explosion
+  liability; remove them once a feature is fully rolled out.
+- **Expand/contract migrations — always, for any schema change** that overlapping versions
+  will touch. There is no "avoid" — the only alternative is downtime (recreate) or
+  breakage.
+
+## Tradeoffs
+
+| Strategy | Downtime | Rollback speed | Infra cost | Blast radius | Needs |
+| -------- | -------- | -------------- | ---------- | ------------ | ----- |
+| Recreate | Yes | Re-deploy old | 1x | All users | Nothing (but a window) |
+| Rolling | No | Re-roll (slow-ish) | 1x | Grows as it rolls | Backward compat |
+| Blue-green | No | **Instant** (switch back) | **2x** during cutover | All-or-nothing at switch | Two environments |
+| Canary | No | Abort early | ~1x + a little | **Tiny** (1–5%) | Observability + routing |
+| Shadow | No | N/A (no user impact) | Extra compute | **Zero** to users | Side-effect isolation |
+| Feature flag | No (decoupled) | **Toggle off** | ~0 | Whatever you target | Flag system + discipline |
+
+The headline tradeoffs: **blue-green buys instant rollback with double infra; canary buys
+the smallest blast radius with an observability requirement; feature flags buy the most
+control with flag-management discipline.** And undergirding all of them: the more
+sophisticated the strategy, the more it depends on **backward-compatible schema changes**
+to allow the version overlap it requires.
+
+## Diagram
+
+A canary / progressive-delivery rollout with automated analysis and an abort path —
+the lowest-blast-radius strategy.
+
+<Mermaid code={`flowchart TD
+  ART[New artifact ready] --> DEPLOY[Deploy new version<br/>0% traffic — dark]
+  DEPLOY --> C1[Route 1% to canary]
+  C1 --> ANALYZE{Error rate / latency /<br/>business metrics healthy?}
+  ANALYZE -->|no| ABORT[Abort → roll back to known-good]
+  ANALYZE -->|yes| C2[Raise to 10%]
+  C2 --> ANALYZE2{Still healthy?}
+  ANALYZE2 -->|no| ABORT
+  ANALYZE2 -->|yes| C3[Raise to 50% → 100%]
+  C3 --> DONE[Promote: new version is now primary]
+  DB[(Schema: expand/contract<br/>readable + writable by BOTH versions)] -.-> DEPLOY`} />
+
+Traffic shifts in stages, each gated on automated metric analysis; any unhealthy stage
+aborts back to the known-good version instead of proceeding. The schema must tolerate both
+versions at once (expand/contract) for the overlap to be safe — that constraint, shown
+feeding the deploy, is what every traffic-shifting strategy quietly depends on.
+
+## Try it
+
+Compare the strategies head to head, then walk the decision tree for your situation.
+
+<CompareMatrix
+  client:visible
+  caption="Deployment strategies compared"
+  columns={['Recreate', 'Rolling', 'Blue-green', 'Canary']}
+  rows={[
+    { criterion: 'Downtime', cells: ['Yes', 'No', 'No', 'No'] },
+    { criterion: 'Version overlap', cells: ['None', 'Yes', 'At cutover only', 'Yes (small)'] },
+    { criterion: 'Rollback', cells: ['Redeploy old', 'Re-roll (slower)', 'Instant switch-back', 'Abort canary'] },
+    { criterion: 'Infra cost', cells: ['1x', '1x', '2x during cutover', '~1x'] },
+    { criterion: 'Blast radius of a bad deploy', cells: ['Everyone', 'Grows during roll', 'Everyone at switch', 'Tiny (1–5%)'] },
+    { criterion: 'Key requirement', cells: ['Maintenance window', 'Backward compat', 'Double capacity', 'Observability + routing'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which deployment strategy?"
+  root={{
+    question: 'Can you tolerate any downtime (internal tool, batch job, or a maintenance window)?',
+    branches: [
+      {
+        label: 'Yes — a brief window is fine',
+        next: { leaf: { recommendation: 'Recreate', detail: 'Simplest possible: stop old, start new. No version overlap means no backward-compat headache. Only sane when downtime is genuinely acceptable.' } },
+      },
+      {
+        label: 'No — must stay up',
+        next: {
+          question: 'Is this change risky, and do you have solid observability (error/latency/business metrics) plus traffic routing?',
+          branches: [
+            {
+              label: 'Risky change + good observability',
+              next: { leaf: { recommendation: 'Canary / progressive delivery', detail: 'Expose 1–5% of traffic, watch the metrics, auto-promote or auto-rollback. Lowest blast radius. Pair with feature flags to decouple release from deploy. Requires backward-compatible schema (expand/contract).' } },
+            },
+            {
+              label: 'Need instant, atomic rollback and can afford 2x infra briefly',
+              next: { leaf: { recommendation: 'Blue-green', detail: 'Stand up the new environment in full, smoke-test it, switch traffic atomically. Rollback = switch back instantly. Costs double capacity during cutover and needs care for in-flight sessions and the shared DB.' } },
+            },
+            {
+              label: 'Standard change, no spare capacity, app tolerates version overlap',
+              next: { leaf: { recommendation: 'Rolling deployment', detail: 'Zero-downtime with no extra infra — the Kubernetes default. Old and new run together, so you MUST keep changes backward-compatible. Rollback is a re-roll, slower than blue-green’s instant flip.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Kubernetes** ships **rolling updates** as the default Deployment strategy
+  (`maxSurge`/`maxUnavailable` knobs) and supports recreate; **Argo Rollouts** and
+  **Flagger** add canary and blue-green with automated metric analysis on top.
+- **Netflix Spinnaker** pioneered **automated canary analysis** (ACA) at scale — statistical
+  comparison of canary vs baseline to auto-promote or auto-rollback.
+- **LaunchDarkly / Flagsmith / Unleash** are dedicated **feature-flag** platforms enabling
+  deploy-release decoupling, percentage rollouts, targeting, and kill-switches across large
+  organizations.
+- **Facebook/Meta** popularized **dark launches** — shipping code that runs against
+  production traffic with responses discarded — to de-risk huge changes (the canonical
+  example: testing Messenger infrastructure under real load before exposing it).
+- **The expand/contract (parallel-change) pattern** is standard practice for zero-downtime
+  schema migrations at every continuously-deployed shop (documented by Martin Fowler and
+  baked into tools like Flyway and Liquibase workflows).
+
+## Further reading
+
+- [Martin Fowler — BlueGreenDeployment](https://martinfowler.com/bliki/BlueGreenDeployment.html) — the canonical write-up of the pattern and its caveats.
+- [Martin Fowler — CanaryRelease](https://martinfowler.com/bliki/CanaryRelease.html) — canary releases explained.
+- [Martin Fowler — Parallel Change (expand/contract)](https://martinfowler.com/bliki/ParallelChange.html) — backward-compatible schema migration in three steps.
+- [Martin Fowler — Feature Toggles (Pete Hodgson)](https://martinfowler.com/articles/feature-toggles.html) — types of flags, decoupling deploy from release, and managing flag debt.
+- [Argo Rollouts — progressive delivery](https://argo-rollouts.readthedocs.io/) — canary and blue-green with automated analysis on Kubernetes.

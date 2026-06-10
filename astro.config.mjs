@@ -197,6 +197,17 @@ export default defineConfig({
             { label: 'Quality practices', slug: 'testing/quality-practices' },
           ],
         },
+        {
+          label: 'Delivery & Operations',
+          items: [
+            { label: 'Overview', slug: 'delivery' },
+            { label: 'CI/CD pipelines', slug: 'delivery/ci-cd-pipelines' },
+            { label: 'Deployment strategies', slug: 'delivery/deployment-strategies' },
+            { label: 'Containers', slug: 'delivery/containers' },
+            { label: 'Orchestration & Kubernetes', slug: 'delivery/orchestration-kubernetes' },
+            { label: 'Infrastructure as Code & Cloud', slug: 'delivery/iac-cloud' },
+          ],
+        },
       ],
     }),
   ],
