@@ -1,0 +1,198 @@
+---
+title: LLM Applications
+description: Using LLMs as a component — prompting, retrieval-augmented generation (RAG), context windows, embeddings, hallucination and grounding, evaluation, agents and tool-use, structured output, and guardrails — with the prompt vs RAG vs fine-tune decision.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+A large language model is not an application — it is a **stochastic component** you
+build *around*. The engineering work is everything that surrounds the model call:
+getting the right context in, constraining the output, grounding it in facts you
+trust, and verifying it did not make something up. The single most important
+pattern is **RAG (retrieval-augmented generation)**: retrieve relevant documents
+and put them in the prompt so the model answers from *your* data instead of its
+frozen, possibly-wrong memory. This page covers the application-level building
+blocks — prompting, RAG, embeddings, agents, structured output, guardrails — and
+the recurring architectural choice: **prompt, retrieve, or fine-tune?** (Serving,
+cost, and security are in `llm-production`.)
+
+## Mental model
+
+Treat the LLM as a **very capable, very confident intern with no memory and no
+access to your systems**. It is excellent at language, reasoning over text you give
+it, and following instructions — but it knows nothing about your data, forgets
+everything between calls, and will *confidently fabricate* rather than say "I don't
+know." Your job as the engineer is to manage what that intern sees and does:
+
+- **It only knows what is in the prompt** (the *context window*) plus its frozen
+  training data. So put the facts it needs *into the prompt* — that is RAG.
+- **It hallucinates** — generates fluent, plausible, wrong text — because it
+  predicts likely tokens, not true ones. **Grounding** (giving it sources and
+  asking it to answer only from them) is the primary defense.
+- **It is non-deterministic.** The same prompt yields different outputs. You design
+  for a *distribution* of answers, not one — which is why evaluation and guardrails
+  are not optional.
+
+The whole discipline is **context engineering**: deciding what goes into that
+limited window, and **verification**: checking what comes out.
+
+## Types / Variants
+
+**Prompting.** The instructions and examples you send. *Zero-shot* (just ask),
+*few-shot* (include examples), *system prompts* (set role and rules),
+*chain-of-thought* (ask it to reason step by step for harder tasks). Cheapest
+lever; try it before anything heavier.
+
+**Embeddings.** Map text to dense vectors where similar meaning is geometrically
+close (`see relevance-ranking for vectors, ANN, and cosine similarity`). The
+substrate of RAG: you embed your documents once, store the vectors in a vector
+index, and at query time embed the question and retrieve nearest neighbors.
+
+**RAG (retrieval-augmented generation).** The core pattern. *Index time:* chunk
+your documents, embed each chunk, store in a vector database. *Query time:* embed
+the user's question, retrieve the top-K relevant chunks (often **hybrid** —
+BM25 + vectors with RRF, then a reranker), and stuff them into the prompt as
+context with an instruction to answer *only from the provided context*. RAG gives
+the model fresh, private, citable knowledge without retraining and is the default
+way to put an LLM on top of your own data.
+
+**Context window.** The token budget for prompt + output. Bigger windows let you
+include more retrieved context, but stuffing everything in degrades quality
+(*lost-in-the-middle*: models attend poorly to the middle of long contexts) and
+costs more. Retrieve *the right* chunks, do not dump everything.
+
+**Hallucination & grounding.** Hallucination is confident fabrication.
+*Grounding* counters it: provide sources, instruct "answer only from context, say
+you don't know otherwise," and **cite** which chunk each claim came from so
+answers are checkable. Grounded RAG with citations is the standard reliability
+pattern.
+
+**Structured output.** Force the model to emit JSON matching a schema (function
+calling / tool schemas / constrained decoding / JSON mode) so downstream code can
+parse it reliably instead of regexing prose. Essential whenever the LLM feeds
+another system.
+
+**Agents & tool-use.** Give the model *tools* (functions, search, code execution,
+APIs) and let it decide which to call, observe results, and iterate toward a goal
+(the ReAct loop: reason → act → observe). Powerful for multi-step tasks, but each
+step compounds latency, cost, and failure probability — and an agent that calls
+real systems needs hard guardrails.
+
+**Evaluation.** You cannot ship what you cannot measure, and LLM output has no
+single right answer. Approaches: golden test sets with reference answers,
+*LLM-as-judge* (a model grades outputs against a rubric), human review, and
+RAG-specific metrics (retrieval recall, *faithfulness* — is the answer supported by
+the retrieved context?, answer relevance). Build an eval set *before* iterating on
+prompts.
+
+**Guardrails.** Input and output filters: block prompt injection and disallowed
+requests on the way in; validate schema, check for PII, toxicity, and groundedness
+on the way out. (Security depth in `llm-production` and the `security` cluster.)
+
+## When to use / When NOT
+
+- **Prompting alone — use when:** the task needs only general capability and
+  instructions, no private/fresh facts (summarize, rewrite, classify, extract).
+  **Avoid when:** the model needs knowledge it was not trained on.
+- **RAG — use when:** answers must come from *your* data, data changes often, you
+  need citations/auditability, or the knowledge base is large. The default for
+  "chat with our docs/policies." **Avoid when:** the task is about *behavior/format*
+  rather than facts, or no retrievable knowledge source exists.
+- **Fine-tuning — use when:** you need a consistent *style/format/behavior*, a
+  narrow specialized task, lower latency/cost via a smaller tuned model, or to bake
+  in domain tone — and you have quality training examples. **Avoid when:** you mainly
+  need *facts* (use RAG — fine-tuning teaches behavior, not fresh knowledge) or you
+  lack good training data.
+- **Agents/tool-use — use when:** the task genuinely needs multiple steps,
+  external actions, or dynamic tool selection. **Avoid when:** a single prompt or a
+  fixed pipeline does the job — agents multiply latency, cost, and failure modes.
+- **Structured output — use whenever** an LLM result is consumed by code, not a
+  human.
+
+## Tradeoffs
+
+| Approach | Adds fresh/private knowledge? | Changes behavior/style? | Cost to build | Cost per call | Best for |
+| -------- | ----------------------------- | ----------------------- | ------------- | ------------- | -------- |
+| Prompting | No | A little (instructions) | Lowest | Low | General tasks, no private data |
+| RAG | Yes (citable, updatable) | No | Medium | Medium (retrieval + bigger prompt) | Answering from your data |
+| Fine-tuning | No (don't use for facts) | Yes (strongly) | High (data + training) | Lower (smaller model) | Consistent style/format/task |
+| RAG + fine-tune | Yes | Yes | Highest | Medium | Specialized assistant on private data |
+
+## Diagram
+
+RAG flow: embed and index documents once; at query time retrieve relevant chunks,
+ground the LLM in them, and return a cited answer.
+
+<Mermaid code={`graph TD
+  subgraph Index time
+    DOC[Documents] --> CHUNK[Chunk]
+    CHUNK --> EMB1[Embed chunks]
+    EMB1 --> VDB[(Vector index)]
+  end
+  subgraph Query time
+    Q[User question] --> EMB2[Embed query]
+    EMB2 --> RET[Retrieve top-K: hybrid + rerank]
+    VDB --> RET
+    RET --> CTX[Build grounded prompt with sources]
+    CTX --> LLM[LLM]
+    LLM --> ANS[Answer with citations]
+  end`} />
+
+## Try it
+
+Walk the central decision: prompt, RAG, or fine-tune.
+
+<DecisionTree
+  client:visible
+  caption="Prompt, RAG, or fine-tune?"
+  root={{
+    question: 'Does the task need knowledge the base model does not have (your private data, or facts newer than training)?',
+    branches: [
+      {
+        label: 'Yes — it needs specific/fresh facts',
+        next: {
+          question: 'Does that knowledge change often, and do you need citations/auditability?',
+          branches: [
+            { label: 'Yes — changing and/or must be cited', next: { leaf: { recommendation: 'RAG', detail: 'Retrieve relevant chunks (hybrid + rerank) and ground the model in them with citations. Update the index, not the model. The default for answering from your own data.' } } },
+            { label: 'Knowledge is stable and narrow', next: { leaf: { recommendation: 'RAG first; consider fine-tune only if format/latency demands it', detail: 'Still start with RAG — fine-tuning is poor at injecting facts and goes stale. Add fine-tuning only to fix style/format or shrink the model, layered on top of RAG.' } } },
+          ],
+        },
+      },
+      {
+        label: 'No — it is about behavior/format, not facts',
+        next: {
+          question: 'Can a good prompt (instructions + few-shot examples) get you there reliably?',
+          branches: [
+            { label: 'Yes — prompting is enough', next: { leaf: { recommendation: 'Prompting (zero/few-shot, system prompt)', detail: 'Cheapest, fastest, no infra. Iterate on instructions and examples against an eval set before reaching for anything heavier.' } } },
+            { label: 'No — need consistent style/format or lower cost', next: { leaf: { recommendation: 'Fine-tuning', detail: 'Train on quality examples to bake in tone/format/behavior or to run a smaller cheaper model. Teaches behavior, NOT fresh facts — pair with RAG if it also needs knowledge.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Perplexity and Bing/Google AI answers** are RAG at scale: retrieve from the
+  web, ground the LLM, and **cite sources** so answers are checkable.
+- **"Chat with your docs"** products (Notion AI, GitHub Copilot Chat over a repo,
+  customer-support bots) are textbook RAG over a private corpus with hybrid
+  retrieval and reranking.
+- **LangChain and LlamaIndex** are the dominant frameworks for wiring RAG,
+  tool-use agents, and structured output; **Ragas** is a common RAG **evaluation**
+  library (faithfulness, retrieval recall, answer relevance).
+- **OpenAI/Anthropic function calling** is the standard mechanism for **structured
+  output and tool-use**, returning schema-valid JSON for downstream code.
+
+## Further reading
+
+- [Retrieval-Augmented Generation (Lewis et al., the original RAG paper)](https://arxiv.org/abs/2005.11401) — where the pattern and the name come from.
+- [Lost in the Middle: How Language Models Use Long Contexts (Liu et al.)](https://arxiv.org/abs/2307.03172) — why stuffing the context window degrades quality and you must retrieve the *right* chunks.
+- [LlamaIndex RAG documentation](https://docs.llamaindex.ai/en/stable/understanding/rag/) — practical chunking, retrieval, reranking, and response synthesis.
+- [Ragas — evaluation for RAG pipelines](https://docs.ragas.io/) — faithfulness, context recall, and answer-relevance metrics for grounding.

@@ -1,0 +1,207 @@
+---
+title: Serving & Inference
+description: Online vs batch vs streaming inference, latency/throughput, model serving over REST/gRPC/embedded, request batching, GPU vs CPU, quantization and distillation, prediction caching, scaling, and the cost of inference.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Training gets the attention, but **inference is what runs in production forever** —
+and it dominates lifetime compute cost. Serving is the engineering problem of
+taking a trained model and answering predictions at the latency, throughput, and
+cost your product needs. The decisions here are classic systems decisions wearing
+ML clothing: synchronous vs asynchronous, where the compute lives, how to batch,
+CPU vs GPU, and what to cache. A model that is 2% more accurate but 10x slower or
+more expensive to serve frequently loses to the cheaper one. This page is about
+making inference fast and affordable without retraining anything.
+
+## Mental model
+
+Inference is a **request/response service with an unusually expensive, stateless
+compute step**. The trained model is a (large) read-only function; serving it is
+the same problem as serving any compute-heavy stateless endpoint — except the
+compute can be 100x heavier, may need a GPU, and *throughput improves
+dramatically if you batch requests together*. So the levers are the familiar ones,
+re-weighted:
+
+- **Where does the compute run?** A separate model server (scale independently),
+  embedded in the app (no network hop), or at the edge/on-device (privacy,
+  offline).
+- **Online or offline?** Predict per-request in the hot path, or precompute in
+  bulk and look up.
+- **Make each call cheaper** (quantization, distillation, smaller model) **or do
+  fewer calls** (cache predictions, batch them).
+
+The defining tension is **latency vs throughput**: batching more requests raises
+throughput and GPU utilization but adds queueing latency. Tuning that knob is most
+of serving.
+
+## Types / Variants
+
+**Online (real-time) inference.** Predict synchronously inside a request, p99
+latency budget in milliseconds. Recommendations, fraud checks, autocomplete. Needs
+low-latency feature lookups and tight tail-latency control.
+
+**Batch (offline) inference.** Score a large dataset on a schedule and store the
+results; serving is then a cheap lookup. Daily churn scores, nightly
+recommendations, lead scoring. Highest throughput, lowest cost per prediction, but
+predictions are stale between runs.
+
+**Streaming inference.** Predict on events as they flow through a stream (Kafka,
+Flink) — near-real-time without a synchronous request. Anomaly detection on
+telemetry, real-time personalization. Sits between online and batch.
+
+**Serving interfaces.**
+- *REST/HTTP* — universal, simple, fine for most online inference.
+- *gRPC* — binary, lower latency, streaming, strong typing; the default for
+  high-throughput internal model services (`see grpc-rpc`).
+- *Embedded / in-process* — load the model into the app (ONNX Runtime,
+  TensorFlow Lite); no network hop, lowest latency, but couples model and app
+  lifecycle.
+- *On-device / edge* — runs on phone/browser/IoT; privacy and offline at the cost
+  of model size limits.
+
+**Batching.** Combine several requests into one forward pass. *Dynamic batching*
+waits a few milliseconds to gather a batch — large throughput/GPU-utilization
+wins, small latency cost. Essential on GPUs.
+
+**Hardware: GPU vs CPU.** GPUs win for large deep models and batched throughput;
+CPUs are cheaper and simpler for classical/tabular models and low-volume traffic.
+Most gradient-boosted-tree and small models serve fine on CPU; transformers and
+large vision models usually want GPU.
+
+**Model compression.**
+- *Quantization* — store/compute weights in lower precision (FP16, INT8, even
+  INT4). 2–4x smaller and faster with small accuracy loss; the highest-leverage,
+  lowest-effort optimization.
+- *Distillation* — train a small "student" model to mimic a large "teacher";
+  big speedups when you control training.
+- *Pruning* — remove low-importance weights.
+
+**Prediction caching.** Cache outputs for repeated/identical inputs, or precompute
+for known inputs. Trivial wins when the same inputs recur (popular queries,
+catalog items); see `caching` cluster for invalidation.
+
+## When to use / When NOT
+
+- **Online inference — use when:** the prediction must reflect the *current*
+  request and freshness matters (fraud at swipe time, live ranking). **Avoid when:**
+  inputs are known ahead of time — batch is far cheaper.
+- **Batch inference — use when:** inputs are enumerable in advance and slight
+  staleness is fine (daily scores). **Avoid when:** predictions depend on live,
+  per-request context.
+- **Streaming — use when:** you need low-latency reaction to a continuous event
+  flow but not a synchronous answer. **Avoid when:** a simple batch job or a
+  synchronous call already meets the need.
+- **gRPC over REST — use when:** internal, high-throughput, latency-sensitive
+  model traffic. **REST when:** public API, simplicity, browser clients.
+- **GPU — use when:** large deep models or high batched throughput. **CPU when:**
+  tabular/classical models, low volume, or cost-sensitive — do not pay for GPUs a
+  tree ensemble never needs.
+- **Quantize/distill — use when:** latency or cost is binding and you can spare a
+  little accuracy. **Avoid when:** accuracy is already on the edge of acceptable.
+
+## Tradeoffs
+
+| Mode | Latency | Throughput / cost | Freshness | Best for |
+| ---- | ------- | ----------------- | --------- | -------- |
+| Online (real-time) | Lowest (ms budget) | Lower throughput, higher cost/pred | Always current | Fraud, live ranking, autocomplete |
+| Streaming | Low (near real-time) | High | Seconds fresh | Anomaly detection, live personalization |
+| Batch (offline) | N/A (precomputed) | Highest, cheapest/pred | Stale until next run | Daily scores, bulk recommendations |
+
+| Optimization | Effort | Speed/cost win | Accuracy cost |
+| ------------ | ------ | -------------- | ------------- |
+| Quantization (INT8/FP16) | Low | High | Small |
+| Dynamic batching | Low–medium | High (throughput) | None (adds latency) |
+| Prediction caching | Low | High when inputs repeat | None (staleness risk) |
+| Distillation | High (retrain) | High | Small–medium |
+| GPU vs CPU | Infra | Large for big models | None |
+
+## Diagram
+
+A typical online serving path: gateway, batching queue, replicated model servers
+on GPU/CPU, with a prediction cache short-circuiting repeats.
+
+<Mermaid code={`graph TD
+  C[Client request] --> GW[API gateway / load balancer]
+  GW --> CACHE{Prediction cache hit?}
+  CACHE -->|yes| RESP[Return cached prediction]
+  CACHE -->|no| Q[Dynamic batching queue]
+  Q --> MS1[Model server replica 1]
+  Q --> MS2[Model server replica 2]
+  MS1 --> FS[(Online feature store)]
+  MS2 --> FS
+  MS1 --> CACHE
+  MS2 --> RESP`} />
+
+## Try it
+
+Pick an inference mode, then compare serving interfaces.
+
+<DecisionTree
+  client:visible
+  caption="Which inference mode and where to run it?"
+  root={{
+    question: 'Are the inputs you need to score known in advance (enumerable), or do they arrive per live request?',
+    branches: [
+      {
+        label: 'Known in advance / enumerable',
+        next: {
+          question: 'Is some staleness between runs acceptable?',
+          branches: [
+            { label: 'Yes — daily/hourly is fine', next: { leaf: { recommendation: 'Batch inference + lookup', detail: 'Score in bulk on a schedule, store results, serve as a cheap key lookup. Highest throughput, lowest cost per prediction.' } } },
+            { label: 'No — must be fresh', next: { leaf: { recommendation: 'Streaming inference', detail: 'Predict on events as they flow (Kafka/Flink). Near-real-time freshness without a synchronous request in the hot path.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Per live request',
+        next: {
+          question: 'What is the dominant constraint?',
+          branches: [
+            { label: 'Tight tail latency, high volume, internal', next: { leaf: { recommendation: 'Online via gRPC model servers + dynamic batching', detail: 'Replicated GPU/CPU model servers behind gRPC, dynamic batching for throughput, online feature store for inputs. Cache repeat predictions.' } } },
+            { label: 'Privacy / offline / no network', next: { leaf: { recommendation: 'On-device / embedded inference', detail: 'Run a quantized/distilled model on-device (ONNX Runtime, TF Lite). No data leaves the device; works offline; bounded by model size.' } } },
+            { label: 'Simplicity / public API / low volume', next: { leaf: { recommendation: 'Online via REST, CPU', detail: 'A REST endpoint over a CPU model server is plenty for classical/tabular models at modest volume. Add GPU/batching only when load demands it.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Model serving interfaces"
+  columns={['REST / HTTP', 'gRPC', 'Embedded (in-process)', 'On-device / edge']}
+  rows={[
+    { criterion: 'Latency', cells: ['Moderate', 'Low', 'Lowest (no network)', 'Low (local), size-bound'] },
+    { criterion: 'Throughput', cells: ['Good', 'High', 'App-bound', 'Device-bound'] },
+    { criterion: 'Independent scaling', cells: ['Yes', 'Yes', 'No (tied to app)', 'No'] },
+    { criterion: 'Best for', cells: ['Public APIs, browsers', 'High-throughput internal', 'Latency-critical, simple deploy', 'Privacy, offline, mobile/IoT'] },
+    { criterion: 'Main drawback', cells: ['Overhead vs gRPC', 'Less browser-friendly', 'Couples model + app lifecycle', 'Model size / update friction'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **NVIDIA Triton, TensorFlow Serving, TorchServe, and KServe** are the standard
+  model servers; all support **dynamic batching** and gRPC/REST and are the
+  reference designs for online serving.
+- **ONNX Runtime and TensorFlow Lite** are the common **embedded/on-device**
+  runtimes, with INT8 **quantization** to fit phones and browsers.
+- **Spark / Ray batch jobs** score billions of rows offline for nightly
+  recommendation and risk tables — the canonical batch-inference pattern.
+- **Feature stores (Feast, Tecton)** provide the **online store** that real-time
+  inference queries for per-request features within the latency budget.
+
+## Further reading
+
+- [NVIDIA Triton Inference Server docs](https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/) — dynamic batching, concurrent model execution, GPU/CPU serving in practice.
+- [KServe](https://kserve.github.io/website/) — Kubernetes-native model serving with autoscaling (including scale-to-zero) and standardized inference protocol.
+- [A Survey of Quantization Methods for Efficient Neural Network Inference](https://arxiv.org/abs/2103.13630) — the systems view of INT8/FP16 quantization tradeoffs.
+- [Distilling the Knowledge in a Neural Network (Hinton et al.)](https://arxiv.org/abs/1503.02531) — the original distillation paper behind small fast student models.

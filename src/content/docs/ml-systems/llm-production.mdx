@@ -1,0 +1,199 @@
+---
+title: LLMs in Production
+description: Running LLMs at scale — token-based cost and latency, streaming, prompt and semantic caching, rate limits and fallbacks, prompt injection and security, evaluation and observability, guardrails, the build-vs-API decision, and when fine-tuning pays off.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+Getting an LLM feature working in a notebook is easy; running it in production is a
+distinct systems problem dominated by **tokens, latency, cost, and trust**. Every
+call is metered by tokens (input *and* output), responses are slow enough that you
+must **stream** them, providers impose **rate limits** that will throttle you, and
+the model is an attack surface (**prompt injection**) and a source of unverifiable
+output. This page is the operations layer under `llm-applications`: how to make
+LLM calls fast, cheap, reliable, observable, and safe — and the two architectural
+decisions that dominate the economics: **build your own model vs call an API**, and
+**when fine-tuning actually pays off**.
+
+## Mental model
+
+Think of an LLM API as a **slow, expensive, rate-limited, occasionally-untrusted
+remote dependency** — and apply everything you already know about such
+dependencies. The novelties are three:
+
+- **Cost is per token, asymmetric, and prompt-dominated.** Output tokens usually
+  cost several times input tokens, but long prompts (RAG context, few-shot
+  examples) often dominate total spend. The cheapest optimization is sending fewer
+  tokens; the next is **caching** so you do not pay for the same work twice.
+- **Latency scales with output length and is *generated*, not fetched.** The model
+  emits tokens one at a time, so a full response can take seconds. **Streaming**
+  (server-sent events) lets you show tokens as they arrive — perceived latency is
+  time-to-first-token, which you can keep low even when total time is high.
+- **The input is untrusted and the output is unverified.** Retrieved or
+  user-supplied text in the prompt can carry **prompt injection** ("ignore your
+  instructions…"); the output can be wrong, toxic, or leak data. Treat the model
+  boundary like any trust boundary: validate in, validate out.
+
+## Types / Variants
+
+**Token economics & latency.** Price = (input tokens × input rate) + (output
+tokens × output rate). Levers: shorter prompts, smaller/cheaper models for easy
+requests (**model routing/cascade** — cheap model first, escalate only hard cases),
+capping `max_tokens`, and trimming retrieved context. Latency is driven by output
+length and model size; streaming hides it.
+
+**Caching.**
+- *Exact / prompt caching* — cache the response for an identical prompt, or reuse a
+  cached *prompt prefix* (system prompt + retrieved context) that providers can
+  cache server-side to cut input cost and latency. Big wins for repeated system
+  prompts.
+- *Semantic caching* — embed the query and return a cached answer for a
+  *semantically similar* prior query (cosine similarity above a threshold). Cuts
+  cost on near-duplicate questions, but a too-loose threshold serves wrong answers —
+  tune carefully.
+
+**Rate limits & fallbacks.** Providers cap requests- and tokens-per-minute. Handle
+them with retries + exponential backoff, request queuing, and **fallbacks**: a
+second provider or a smaller local model when the primary is throttled or down.
+Circuit breakers and timeouts apply exactly as in any service mesh
+(`see resilience-patterns`).
+
+**Prompt injection & security.** The defining LLM-specific vulnerability: untrusted
+text (user input, retrieved documents, tool outputs) smuggles instructions the
+model obeys, causing data exfiltration, unauthorized tool calls, or jailbreaks.
+Defenses: separate trusted instructions from untrusted data, never let model output
+trigger privileged actions without checks, least-privilege tool scopes,
+input/output filtering, and human-in-the-loop for sensitive actions. (Full depth in
+the `security` cluster.)
+
+**Guardrails.** Programmatic input/output validation: block injection and
+disallowed requests in; enforce JSON schema, strip PII, screen toxicity, and check
+**groundedness** out. Libraries (NeMo Guardrails, Guardrails AI) or hand-rolled
+validators sit on both sides of the model call.
+
+**Evaluation & observability for LLMs.** Production needs *online* eval, not just
+offline test sets: trace every call (prompt, retrieved context, output, tokens,
+latency, cost), sample for **LLM-as-judge** and human review, and track quality
+metrics (groundedness/faithfulness, refusal rate, user thumbs). You cannot debug a
+non-deterministic system you do not trace.
+
+**Build vs API.** *Call a provider API* (OpenAI, Anthropic, etc.) for speed to
+market, no infra, and frontier quality — at per-token cost and data-governance
+constraints. *Self-host an open model* (Llama, Mistral) for data control, fixed
+cost at scale, customization, and offline/on-prem — at the cost of GPU infra and
+serving expertise (vLLM, TGI). The crossover is usually *volume* and *data
+sensitivity*.
+
+**Fine-tuning in production.** Worth it to fix consistent *style/format*, special
+a narrow task, or shrink to a cheaper/faster model at high volume. Not for
+injecting facts (that is RAG) and not before prompting + RAG are exhausted — it
+adds a training and version-management burden.
+
+## When to use / When NOT
+
+- **Streaming — use whenever** a human reads the output; it transforms perceived
+  latency. **Skip when** the output feeds code that needs the whole result anyway.
+- **Semantic caching — use when** many queries are near-duplicates and answers are
+  stable (FAQ, support). **Avoid when** answers are personalized or time-sensitive,
+  or a wrong cache hit is costly — exact/prefix caching is safer.
+- **Self-host vs API — self-host when** volume makes per-token cost dominate, data
+  cannot leave your environment (fintech/regulated), or you need deep
+  customization. **Use the API when** time-to-market, frontier quality, and zero
+  infra matter more than per-call cost.
+- **Fine-tune — when** prompting + RAG cannot get consistent format/behavior, or
+  volume justifies a cheaper tuned small model. **Avoid when** you need facts, lack
+  data, or have not exhausted cheaper levers.
+- **Guardrails + injection defenses — always** when untrusted input or retrieved
+  content reaches the prompt, or the model can trigger actions. Non-negotiable for
+  anything customer-facing or agentic.
+
+## Tradeoffs
+
+| Dimension | Provider API | Self-hosted open model |
+| --------- | ------------ | ---------------------- |
+| Time to market | Fastest | Slow (infra + serving) |
+| Quality (frontier) | Highest | Strong, usually a step behind |
+| Cost model | Per token (scales with use) | Fixed GPU cost (amortizes at volume) |
+| Data governance | Data leaves your boundary | Full control, on-prem possible |
+| Customization | Limited (prompt/fine-tune via API) | Full (weights, fine-tune, quantize) |
+| Ops burden | Minimal | High (GPUs, vLLM/TGI, scaling) |
+| Best when | Low/medium volume, speed, quality | High volume, sensitive data, control |
+
+## Diagram
+
+A production LLM request path: guardrails and caching wrap the model call, with
+fallbacks for rate limits and full tracing for observability.
+
+<Mermaid code={`graph TD
+  U[User / upstream service] --> IN[Input guardrails: injection + policy filter]
+  IN --> SC{Cache hit? exact or semantic}
+  SC -->|hit| OUT
+  SC -->|miss| RL{Within rate limit?}
+  RL -->|no| FB[Fallback model / provider]
+  RL -->|yes| LLM[Primary LLM, streaming]
+  FB --> OUTG
+  LLM --> OUTG[Output guardrails: schema, PII, groundedness]
+  OUTG --> CACHEW[Write to cache]
+  CACHEW --> OUT[Stream response]
+  LLM --> TRACE[Trace: tokens, latency, cost, quality]`} />
+
+## Try it
+
+Slide from "all API" to "fully self-hosted," then compare on the dimensions that
+decide it.
+
+<TradeoffSlider
+  client:visible
+  caption="Build vs buy for LLMs"
+  leftAxis="Provider API (buy)"
+  rightAxis="Self-hosted open model (build)"
+  stops={[
+    { label: 'Pure provider API', description: 'Call OpenAI/Anthropic. Fastest to ship, frontier quality, zero infra. Pay per token; data leaves your boundary; limited control. The right default to validate the use case.' },
+    { label: 'API + prompt/semantic caching + routing', description: 'Keep the API but cut cost: cache repeated/similar calls, route easy requests to a cheaper model, escalate only hard ones. Big savings with no infra ownership.' },
+    { label: 'API + fine-tuned hosted model', description: 'Fine-tune a provider model for consistent format/behavior or to use a smaller cheaper tier. Lowers per-call cost and improves consistency; adds version management.' },
+    { label: 'Self-hosted open model (managed)', description: 'Run Llama/Mistral on managed GPU serving (vLLM/TGI on a cloud). Data control and fixed cost at volume; you own scaling and ops. Quality usually a step behind frontier.' },
+    { label: 'Fully self-hosted / on-prem', description: 'Open weights on your own/on-prem GPUs. Maximum data governance and customization (required for the most sensitive regulated data); highest ops burden and capex.' },
+  ]}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="LLM caching strategies in production"
+  columns={['Exact / prompt cache', 'Prefix cache (system + context)', 'Semantic cache']}
+  rows={[
+    { criterion: 'Hit condition', cells: ['Identical prompt', 'Shared prompt prefix', 'Similar meaning (cosine ≥ threshold)'] },
+    { criterion: 'Cost saved', cells: ['Full call', 'Input tokens of the prefix', 'Full call on near-duplicates'] },
+    { criterion: 'Risk of wrong answer', cells: ['None', 'None', 'Real — loose threshold serves wrong answers'] },
+    { criterion: 'Best for', cells: ['Deterministic repeats', 'Reused system prompt / RAG context', 'FAQ, support, paraphrased queries'] },
+    { criterion: 'Freshness handling', cells: ['TTL / invalidate', 'TTL', 'TTL + tight threshold'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **OpenAI and Anthropic prompt caching** cut input cost and latency by caching a
+  reused prompt prefix (system instructions + long context) server-side — the
+  highest-leverage production saving for RAG.
+- **vLLM and Hugging Face TGI** are the standard self-hosting serving stacks, using
+  paged-attention KV caching and continuous batching to serve open models
+  efficiently on GPUs.
+- **GPTCache** popularized **semantic caching** for LLM apps; production teams pair
+  it with a tight similarity threshold to avoid wrong cache hits.
+- **OWASP Top 10 for LLM Applications** codifies **prompt injection** as the #1
+  risk; agentic products enforce least-privilege tools and human-in-the-loop for
+  sensitive actions as a result.
+- **LLM observability tools** (LangSmith, Langfuse, Helicone) trace tokens,
+  latency, cost, and run LLM-as-judge evals on sampled production traffic.
+
+## Further reading
+
+- [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/) — prompt injection and the other production security risks, with mitigations.
+- [Anthropic — Prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) — how prefix caching cuts cost and latency for long, reused prompts.
+- [vLLM — high-throughput LLM serving](https://docs.vllm.ai/) — paged attention and continuous batching, the reference for self-hosting open models.
+- [Your AI Product Needs Evals (Hamel Husain)](https://hamel.dev/blog/posts/evals/) — practical, engineering-first guidance on evaluating LLM systems in production.

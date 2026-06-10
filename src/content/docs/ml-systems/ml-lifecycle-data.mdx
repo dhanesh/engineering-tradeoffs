@@ -1,0 +1,161 @@
+---
+title: The ML Lifecycle & Data
+description: Problem framing, data collection and labeling, feature engineering, the training/inference split and train-serve skew, data and label quality, feature stores, and dataset versioning — why data work dominates ML engineering.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+Most of the effort in shipping an ML system is not modeling — it is **data
+work**: framing the problem so a model can learn it, collecting and labeling
+examples, turning raw signals into features, and keeping all of that consistent
+between training and serving. Surveys put data preparation at 60–80% of ML
+project time, and the most common production failures are *data* failures, not
+model failures. This page walks the lifecycle from problem framing to a versioned,
+servable dataset, and names the traps an engineer hits at each step — chief among
+them **train-serve skew**, the single most common silent killer of ML systems in
+production.
+
+## Mental model
+
+Picture two pipelines that must agree but rarely do: the **training pipeline**
+(offline, batch, on historical data) and the **serving pipeline** (online,
+per-request, on live data). The model learns whatever the training pipeline shows
+it; in production it sees whatever the serving pipeline computes. **Any difference
+between the two — a feature computed differently, a default filled differently, a
+timestamp interpreted differently — is train-serve skew, and the model silently
+degrades.** Everything in the data lifecycle is, in effect, machinery to keep
+these two pipelines producing the *same numbers from the same inputs*. The feature
+store exists for exactly this; dataset versioning exists so you can reproduce what
+the training side saw.
+
+A second durable idea: **the label defines the problem.** "Is this transaction
+fraud?" is only learnable once you decide what counts as fraud, who decides, and
+how soon you know. Vague or noisy labels cap model quality no matter how good the
+model is — *garbage labels in, garbage model out*.
+
+## Types / Variants
+
+**Problem framing.** Turn a business goal into a learnable target: pick the
+*label* (what you predict), the *granularity* (per user? per request?), and the
+*metric* that maps to business value. Framing errors are the most expensive and
+the hardest to detect — a model can be excellent at the wrong objective.
+
+**Data collection.** Logs, events, transactions, third-party feeds. The key
+properties are *representativeness* (does training data match production traffic?)
+and *coverage* of the cases you care about (rare fraud, edge users). Selection bias
+here poisons everything downstream.
+
+**Labeling.** How you attach ground truth:
+- *Manual / human annotation* — accurate, slow, expensive; needs guidelines and
+  inter-annotator agreement checks.
+- *Programmatic / weak supervision* — rules and heuristics generate noisy labels
+  at scale (e.g. Snorkel); trade accuracy for volume.
+- *Implicit / behavioral* — clicks, purchases, churn as labels; cheap and abundant
+  but biased by what was shown.
+- *Delayed labels* — the truth arrives weeks later (did the loan default?),
+  forcing you to wait or proxy.
+
+**Feature engineering.** Transform raw data into model inputs: aggregations
+(count of logins last 7 days), encodings (categorical to numeric), normalization,
+embeddings (`see relevance-ranking for vectors`). Good features beat fancy models
+on tabular data; this is where domain knowledge pays off.
+
+**Training vs inference.** *Training* is offline, batch, compute-heavy, runs
+occasionally, optimizes parameters. *Inference* is the deployed model producing
+predictions — online or batch, latency-sensitive, runs constantly. The features
+feeding both must match exactly (see skew below).
+
+**The feature store.** A system that computes, stores, and serves features
+*consistently* for both training (offline store, point-in-time correct) and
+serving (online store, low-latency lookup). Solves train-serve skew, feature
+reuse across teams, and point-in-time correctness for time-series data.
+
+**Dataset & label versioning.** Snapshot the exact data a model was trained on so
+runs are reproducible. Tools: DVC, LakeFS, Delta Lake, or simply immutable
+partitioned snapshots. Without it, "which data produced this model?" is
+unanswerable — fatal for audits and debugging.
+
+## When to use / When NOT
+
+- **Invest heavily in a feature store when:** the same features are used across
+  many models/teams; you have online inference with real-time features;
+  train-serve skew has bitten you; or point-in-time correctness matters
+  (time-series, finance). **Skip it when:** you have one model, batch inference, a
+  handful of features — a feature store is heavyweight infra that is pure overhead
+  for a small system.
+- **Invest in rigorous labeling when:** labels are your quality ceiling and the
+  cost of errors is high (fraud, medical, lending). **Use weak/implicit labels
+  when:** volume matters more than per-label precision and you can tolerate noise.
+- **Version datasets when:** reproducibility, auditability, or debugging matter at
+  all — which in regulated domains is *always*. **Defer it only** for throwaway
+  experiments.
+
+## Tradeoffs
+
+| Concern | Cheap / fast path | Robust / costly path | When the costly path wins |
+| ------- | ----------------- | -------------------- | ------------------------- |
+| Labeling | Implicit/weak labels | Human annotation + QA | High error cost, regulated decisions |
+| Features (consistency) | Compute inline in each pipeline | Shared feature store | Online inference, multiple models, skew risk |
+| Dataset versioning | Latest snapshot only | Immutable, versioned datasets | Audits, reproducibility, debugging |
+| Data validation | Trust upstream | Schema + distribution checks | Production systems with drift risk |
+
+## Diagram
+
+Two pipelines, one source of truth: the feature store keeps training and serving
+features identical, killing train-serve skew.
+
+<Mermaid code={`graph TD
+  RAW[Raw data: logs, events, transactions] --> FE[Feature engineering / pipelines]
+  FE --> FS[Feature store]
+  FS --> OFF[Offline store: point-in-time, batch]
+  FS --> ON[Online store: low-latency lookup]
+  OFF --> TR[Training pipeline]
+  TR --> MDL[Versioned model]
+  ON --> INF[Serving / inference]
+  MDL --> INF
+  LBL[Labeling: human / weak / implicit] --> TR`} />
+
+## Try it
+
+Compare labeling strategies — the choice sets your quality ceiling and your cost.
+
+<CompareMatrix
+  client:visible
+  caption="Labeling strategies compared"
+  columns={['Human annotation', 'Weak supervision', 'Implicit / behavioral', 'Delayed (true outcome)']}
+  rows={[
+    { criterion: 'Label quality', cells: ['High', 'Noisy', 'Biased by exposure', 'High (ground truth)'] },
+    { criterion: 'Volume / scale', cells: ['Low', 'Very high', 'Very high', 'Limited by event rate'] },
+    { criterion: 'Cost', cells: ['High', 'Low', 'Very low', 'Low but slow'] },
+    { criterion: 'Latency to label', cells: ['Slow', 'Instant', 'Near real-time', 'Weeks to months'] },
+    { criterion: 'Main risk', cells: ['Annotator disagreement', 'Systematic label noise', 'Feedback loops, selection bias', 'Staleness, attribution'] },
+    { criterion: 'Best for', cells: ['Fraud, medical, lending', 'Bootstrapping at scale', 'Recommendations, ranking', 'Default / churn prediction'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Uber Michelangelo** popularized the **feature store** explicitly to eliminate
+  train-serve skew and let teams reuse features across models — the reference
+  architecture the whole industry copied (Feast, Tecton, Databricks).
+- **Snorkel** (Stanford) productionized **weak supervision**: programmatically
+  generating noisy labels at scale, used at Google and in healthcare where manual
+  labeling does not scale.
+- **Lending / credit models** rely on **delayed labels** — you only learn whether
+  a loan defaults months later — forcing careful framing of the prediction window
+  and proxy targets.
+- **DVC, LakeFS, and Delta Lake** are the common answers to **dataset
+  versioning**, giving git-like or transactional snapshots of training data for
+  reproducibility and audit.
+
+## Further reading
+
+- [Feast — open-source feature store](https://docs.feast.dev/) — the canonical OSS feature store; its docs explain online/offline stores and point-in-time correctness well.
+- [Meet Michelangelo: Uber's ML Platform](https://www.uber.com/blog/michelangelo-machine-learning-platform/) — origin of the feature-store pattern and train-serve skew framing.
+- [Data Validation for Machine Learning (Google TFX)](https://research.google/pubs/pub47967/) — schema and distribution checks that catch data bugs before they reach the model.
+- [Snorkel: Rapid Training Data Creation with Weak Supervision](https://arxiv.org/abs/1711.10160) — the weak-supervision paper.

@@ -241,6 +241,17 @@ export default defineConfig({
             { label: 'Pipeline scale & cost', slug: 'data-engineering/pipeline-scale-cost' },
           ],
         },
+        {
+          label: 'ML / AI Systems',
+          items: [
+            { label: 'Overview', slug: 'ml-systems' },
+            { label: 'The ML lifecycle & data', slug: 'ml-systems/ml-lifecycle-data' },
+            { label: 'Serving & inference', slug: 'ml-systems/serving-inference' },
+            { label: 'MLOps', slug: 'ml-systems/mlops' },
+            { label: 'LLM applications', slug: 'ml-systems/llm-applications' },
+            { label: 'LLMs in production', slug: 'ml-systems/llm-production' },
+          ],
+        },
       ],
     }),
   ],

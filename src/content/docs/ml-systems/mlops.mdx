@@ -1,0 +1,174 @@
+---
+title: MLOps
+description: Experiment tracking, model registry, CI/CD and continuous training for models, reproducibility, model and data versioning, drift monitoring (data, concept, prediction), retraining triggers, A/B testing models, and shadow deployment.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A model that works in a notebook is not a product. **MLOps** is the discipline of
+getting models into production *and keeping them healthy there* — the ML analogue
+of DevOps, plus two things software does not have: **data versioning** and
+**decay**. Because an ML system's behavior is defined by data and degrades as the
+world drifts, MLOps adds a continuous loop — **CT (continuous training)** —
+on top of the familiar CI/CD. The work is reproducibility (re-derive any model
+from versioned code + data + config), safe deployment (shadow, canary, A/B), and
+the part software engineers most underestimate: **monitoring for drift**, because
+an ML system can fail silently while every server stays green.
+
+## Mental model
+
+Software DevOps versions **code** and asks "did the build pass and the service stay
+up?" MLOps versions **code + data + model** and asks two extra questions software
+never has to: "could I reproduce this exact model?" and "is the model still
+*right*, given the world has moved?" The mental shift is from **deploy-and-forget**
+to **deploy-and-watch-for-decay**. A green dashboard means the service is *up*; it
+says nothing about whether predictions are still *good*. The defining MLOps
+artifacts exist to answer the extra questions: the **experiment tracker** (what did
+I try?), the **model registry** (what is deployable, and what is live?), and
+**drift monitoring** (is the live world still the world the model was trained on?).
+
+Three flavors of drift to keep distinct, because they need different responses:
+
+- **Data drift (covariate shift):** the *input distribution* changes — new user
+  mix, new price ranges. The model still maps inputs the same way; it just now
+  sees inputs it rarely trained on.
+- **Concept drift:** the *relationship between inputs and the label* changes — what
+  used to signal fraud no longer does. The most dangerous, because retraining on
+  old labels does not fix it.
+- **Prediction drift:** the *output distribution* shifts (e.g. fraud rate
+  predicted jumps). Often the first observable symptom, and detectable *without*
+  labels — which is why you monitor it.
+
+## Types / Variants
+
+**Experiment tracking.** Record every run's code version, data version,
+hyperparameters, metrics, and artifacts so results are comparable and
+reproducible. Tools: MLflow, Weights & Biases. Without it, "which run produced
+this?" is guesswork.
+
+**Model registry.** A versioned catalog of trained models with stage labels
+(staging, production, archived), lineage, and approvals. The single source of
+truth for *what is deployable* and *what is live* — and the gate for promotions and
+rollbacks.
+
+**Versioning & reproducibility.** Pin three things together: **code** (git),
+**data** (DVC/LakeFS/Delta snapshot), and **config/hyperparameters**. Reproducible
+means: given the same three, you re-derive the same model. Essential for audits and
+for debugging "why did quality drop?"
+
+**CI/CD for models.** CI validates code *and data* (schema, distribution checks)
+and runs training as a tested pipeline. CD promotes a registered model through
+shadow/canary/A-B to production. The pipeline, not the notebook, is the unit of
+delivery.
+
+**CT — continuous training.** The ML-specific extra: an automated pipeline that
+*retrains* on fresh data and re-deploys, triggered by schedule, by drift, or by a
+performance drop. CT is what keeps a decaying model alive without a human in the
+loop each time.
+
+**Monitoring (the heart of MLOps).** Watch *operational* signals (latency, errors,
+throughput) **and** *model* signals: input data drift, prediction drift, and —
+when labels arrive — actual accuracy/precision/recall. Use statistical distance
+(PSI, KL divergence, KS test) on feature and prediction distributions to detect
+drift before accuracy visibly collapses.
+
+**Retraining triggers.** *Scheduled* (retrain weekly), *performance-based*
+(retrain when accuracy on fresh labels drops below a threshold), or
+*drift-based* (retrain when input/prediction distributions shift past a bound).
+Performance- and drift-based beat blind schedules but need monitoring to fire.
+
+**Safe deployment for models.**
+- *Shadow deployment* — run the new model alongside production on real traffic but
+  **do not serve its output**; compare predictions offline. Zero user risk;
+  validates on real data before any exposure.
+- *Canary / progressive rollout* — send a small traffic slice to the new model,
+  watch metrics, ramp up.
+- *A/B testing models* — split traffic and measure the *business* metric (not just
+  offline accuracy), because offline gains often do not translate online.
+
+## When to use / When NOT
+
+- **Shadow deployment — use when:** a new model could cause real harm and you want
+  to validate on production traffic risk-free (fraud, lending, ranking). **Skip
+  when:** the model is trivial or offline metrics are fully trustworthy.
+- **A/B test models — use when:** the deciding metric is a *business* outcome
+  (conversion, default rate) that offline accuracy only proxies. **Skip when:** you
+  cannot measure the business metric cleanly or traffic is too low for
+  significance.
+- **Continuous training — use when:** data drifts meaningfully and fresh labels
+  arrive (fraud, recommendations, pricing). **Skip when:** the model is stable, the
+  domain barely changes, or labels are too delayed/expensive to retrain often —
+  scheduled or manual retraining is enough.
+- **Drift monitoring — always**, in any production ML system. It is the one MLOps
+  practice with no "skip" case: a model with no monitoring is a model failing
+  invisibly.
+- **Heavy registry/tracking infra — use when:** many models, teams, or audit
+  requirements. **Defer when:** a single model and a spreadsheet still suffice.
+
+## Tradeoffs
+
+| Practice | Cost / effort | What it buys | Skip only if |
+| -------- | ------------- | ------------ | ------------ |
+| Experiment tracking | Low | Comparable, reproducible runs | One-off experiment |
+| Model registry | Medium | Controlled promotion + rollback | Single model, manual deploy |
+| Data + model versioning | Medium | Reproducibility, audit | Throwaway work |
+| Drift monitoring | Medium | Catch silent decay early | Never skip in production |
+| Continuous training | High | Auto-recovery from drift | Stable domain, delayed labels |
+| Shadow deployment | Medium | Risk-free validation on live data | Low-stakes model |
+| A/B testing models | Medium | Real business-metric proof | Cannot measure outcome |
+
+## Diagram
+
+The MLOps loop: CI/CD ships a model, monitoring watches for drift, and a trigger
+fires continuous training to close the loop.
+
+<Mermaid code={`graph TD
+  CODE[Code + data + config, all versioned] --> CI[CI: validate code and data]
+  CI --> TRAIN[Train pipeline]
+  TRAIN --> EXP[Experiment tracking]
+  EXP --> REG[Model registry: stage to production]
+  REG --> SHADOW[Shadow / canary / A-B]
+  SHADOW --> PROD[Production serving]
+  PROD --> MON[Monitor: data / concept / prediction drift]
+  MON -->|drift or perf drop| TRIGGER[Retraining trigger]
+  TRIGGER --> TRAIN`} />
+
+## Try it
+
+Reason through when the ML-specific practices earn their keep.
+
+<WhenWhyTabs
+  client:visible
+  caption="Drift monitoring & continuous training"
+  tabs={[
+    { label: 'When to use', content: 'Monitor drift in EVERY production ML system. Add continuous training when data drifts meaningfully and fresh labels arrive fast enough to retrain on (fraud, recommendations, dynamic pricing, demand forecasting). Add shadow deployment and A/B testing when a bad model causes real harm or when the true metric is a business outcome.' },
+    { label: 'Why it matters', content: 'ML systems fail SILENTLY: servers stay green while predictions rot as the world drifts. Data drift shifts inputs, concept drift breaks the input-to-label relationship, prediction drift shows up in outputs first (and needs no labels to detect). Without monitoring you only learn the model broke from a business-metric crash weeks later. CT turns "page a human and retrain by hand" into an automatic recovery loop.' },
+    { label: 'Why NOT / costs', content: 'Continuous training is expensive infra and a foot-gun if your labels are noisy or delayed — you can automatically retrain a worse model. Concept drift is NOT fixed by retraining on stale labels. A/B tests need traffic volume for significance. Over-investing in MLOps tooling for a single stable model is the same mistake as building a feature store for one batch job: pure overhead.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **MLflow** is the de facto open standard for **experiment tracking + model
+  registry**; **Weights & Biases** is the common commercial alternative.
+- **Evidently AI and the WhyLabs/whylogs** stack are widely used for **drift and
+  data-quality monitoring**, computing PSI/KS-style distribution checks on
+  features and predictions.
+- **TFX (TensorFlow Extended)** and **Kubeflow Pipelines / Vertex AI Pipelines**
+  implement **continuous training** as production pipelines with built-in data
+  validation.
+- **Shadow deployment** is standard at large recommenders and ad systems (and a
+  staple of fraud teams) — running challenger models on live traffic with outputs
+  withheld before any A/B test.
+
+## Further reading
+
+- [MLOps: Continuous delivery and automation pipelines in ML (Google Cloud)](https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning) — the canonical MLOps maturity model (levels 0–2) and the CT concept.
+- [Monitoring ML Models in Production (Evidently AI guide)](https://www.evidentlyai.com/ml-in-production/model-monitoring) — practical drift detection (data/concept/prediction) and metrics.
+- [The ML Test Score (Google)](https://research.google/pubs/pub46555/) — a rubric of production-readiness tests for ML systems, including monitoring and reproducibility.
+- [MLflow documentation](https://mlflow.org/docs/latest/index.html) — tracking, registry, and model packaging in one place.

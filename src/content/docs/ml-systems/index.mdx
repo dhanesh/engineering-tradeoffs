@@ -1,0 +1,193 @@
+---
+title: ML / AI Systems
+description: How ML systems differ from traditional software (behavior is learned from data, outputs are probabilistic, models decay), when ML actually beats rules, the ML lifecycle, and the hidden technical debt that makes ML the high-interest credit card of engineering.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import DecisionTree from '../../../components/DecisionTree';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+A traditional program is behavior you *write*: explicit rules a human encoded.
+A machine-learning system is behavior you *grow*: you supply data and a learning
+procedure, and the rules emerge as parameters nobody typed. That single shift —
+behavior defined by data rather than code — changes everything downstream. The
+output is **probabilistic** (a score, not a guarantee), the system **decays** as
+the world drifts away from the training data, and the hardest bugs live in the
+*data*, not the code. This cluster is for the software engineer who has to build,
+serve, and operate these systems — not derive the math. The recurring question is
+not "which model is most accurate?" but "is ML even the right tool here, and what
+will it cost me to keep it alive in production?"
+
+## Mental model
+
+Think of an ML system as a **function fitted to examples instead of specified by
+hand**. You do not write `if score > 0.7 then fraud`; you show the system
+thousands of labeled transactions and it *finds* the boundary. Three consequences
+follow, and every page in this cluster is downstream of them:
+
+- **Data is the source code.** Change the data and the behavior changes, with no
+  code diff. This is why versioning, lineage, and data quality dominate ML ops.
+- **Outputs are probabilistic, not deterministic.** The same model gives a
+  *distribution*; you choose a threshold and trade false positives against false
+  negatives. There is no "correct" — only an operating point.
+- **Models decay.** The world moves (new fraud patterns, new slang, new prices)
+  but the model is frozen at training time. Accuracy silently rots — **drift** —
+  until someone retrains. A deployed model is a *perishable asset*, not a build
+  artifact you ship once.
+
+A useful rule of thumb: **if you can write the rule, write the rule.** ML earns
+its complexity only when the rules are unknown, too numerous, or change faster
+than humans can maintain them.
+
+## Types / Variants
+
+Engineers meet ML in a few distinct shapes, and the systems work differs sharply
+between them:
+
+- **Supervised learning.** Learn a mapping from inputs to *labeled* outputs
+  (spam/not-spam, price, click-through). The dominant production case; its cost
+  is the labeling pipeline.
+- **Unsupervised / clustering / anomaly detection.** Find structure with no
+  labels (customer segments, outliers). Cheaper on labels, harder to evaluate.
+- **Recommendation / ranking.** Order items for a user (feed, search, products).
+  Heavy on feature stores and online inference at request time.
+- **Classical ML (gradient-boosted trees, logistic regression).** Tabular data,
+  the workhorse of fintech and most business problems. Cheap to serve, easy to
+  explain, hard to beat on structured data.
+- **Deep learning (CNNs, transformers).** Images, audio, text. Expensive to
+  train and serve; needs GPUs and specialized serving.
+- **Foundation models / LLMs consumed as an API.** You do not train; you *prompt*
+  a pre-trained model and engineer the context around it. A fundamentally
+  different cost and ops profile — covered in `llm-applications` and
+  `llm-production`.
+
+The further down this list you go, the more the work shifts from "modeling" to
+"systems": GPUs, serving infrastructure, token budgets, and latency.
+
+## When to use / When NOT
+
+- **Use ML when:** the rules are genuinely unknown or too complex to enumerate
+  (image recognition, natural language, fraud signals that shift weekly); you
+  have (or can get) representative labeled data; an approximate, probabilistic
+  answer is acceptable; and the pattern changes faster than humans can hand-code
+  it. ML shines where the *cost of a wrong answer is bounded* and volume is high.
+- **Avoid ML when:** a simple rule or heuristic already works (a regex, a
+  threshold, a lookup table) — rules are deterministic, debuggable, free to run,
+  and need no retraining; you lack representative data; every decision must be
+  fully explainable or auditable for regulators (a learned model is harder to
+  justify to RBI than `interest > X`); errors are catastrophic and unbounded; or
+  the problem is small enough that the lifetime ops cost of a model dwarfs the
+  benefit. **A heuristic you understand beats a model you don't.**
+
+## Tradeoffs
+
+| Dimension | Traditional rules/code | ML system |
+| --------- | ---------------------- | --------- |
+| Behavior defined by | Explicit logic a human wrote | Patterns learned from data |
+| Output | Deterministic, exact | Probabilistic, an operating point |
+| Debuggability | Step through code | Inspect data, features, distributions |
+| Failure over time | Stable until code changes | Decays via drift; needs retraining |
+| Explainability | High (read the rules) | Low–medium (feature importance at best) |
+| Upfront cost | Logic + tests | Data + labels + pipeline + infra |
+| Ongoing cost | Low | High: monitoring, retraining, serving |
+| Best at | Known, stable, exact rules | Fuzzy, high-volume, shifting patterns |
+
+The deeper trap is **hidden technical debt** (Sculley et al., Google): ML systems
+accrue debt that traditional code does not. **Entanglement** — *Changing Anything
+Changes Everything* (CACE): no input is truly independent, so a tweak to one
+feature shifts the whole model. **Data dependencies** are unstable and untyped, and
+cost more than code dependencies. **Feedback loops** form when a model's outputs
+become its own future training data. And **glue code / pipeline jungles** mean the
+actual learning is a tiny box in a vast plumbing diagram. Budget for the plumbing,
+not the model.
+
+## Diagram
+
+The ML lifecycle is a loop, not a line: production feeds back into data, and drift
+forces continual retraining.
+
+<Mermaid code={`graph TD
+  P[Problem framing] --> D[Data collection and labeling]
+  D --> F[Feature engineering]
+  F --> T[Training and evaluation]
+  T --> S[Serving / inference]
+  S --> M[Monitoring: drift and quality]
+  M -->|drift detected| RT[Retrain]
+  RT --> T
+  S -->|predictions become new data| D`} />
+
+## Try it
+
+Reason through the "rules vs ML" decision, then weigh the why/why-not.
+
+<DecisionTree
+  client:visible
+  caption="Should this problem use ML at all?"
+  root={{
+    question: 'Can you write the decision rule by hand (a threshold, regex, lookup, or short policy) and have it stay correct?',
+    branches: [
+      {
+        label: 'Yes — a clear rule exists',
+        next: { leaf: { recommendation: 'Use rules / heuristics, not ML', detail: 'Deterministic, debuggable, auditable, zero retraining. A rule you understand beats a model you do not. Revisit ML only when the rule stops working.' } },
+      },
+      {
+        label: 'No — the pattern is fuzzy or shifting',
+        next: {
+          question: 'Do you have (or can you obtain) representative labeled data, and is a probabilistic answer acceptable?',
+          branches: [
+            {
+              label: 'Yes to both',
+              next: {
+                question: 'Must every decision be fully explainable to a regulator/auditor?',
+                branches: [
+                  { label: 'Yes — strict explainability', next: { leaf: { recommendation: 'Interpretable ML (logistic regression / GBT + reason codes) or rules', detail: 'Favor models you can explain feature-by-feature; pair with reason codes. In regulated lending, explainability often outranks a few points of accuracy.' } } },
+                  { label: 'No — accuracy matters most', next: { leaf: { recommendation: 'ML is a fit — pick model by data type', detail: 'Tabular: gradient-boosted trees. Text/image/audio: deep learning. Language understanding/generation: an LLM API. Budget for the full lifecycle, not just training.' } } },
+                ],
+              },
+            },
+            {
+              label: 'No labeled data / need exact answers',
+              next: { leaf: { recommendation: 'Not yet — fix data or use rules', detail: 'Without representative labels you cannot train or evaluate. Start with heuristics, instrument to collect labels, and revisit ML once you have data and tolerance for probabilistic output.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<WhenWhyTabs
+  client:visible
+  caption="ML: when, why, why not"
+  tabs={[
+    { label: 'When to use', content: 'Rules are unknown or too numerous to maintain; patterns shift faster than humans can hand-code; you have representative labeled data; a probabilistic answer is acceptable; and volume is high enough to amortize the ops cost. Classic fits: fraud/risk scoring, recommendations, NLP, vision, demand forecasting.' },
+    { label: 'Why it wins', content: 'ML captures patterns no one can fully articulate and adapts to scale and complexity that defeat hand-written rules. It turns abundant historical data into decisions, and can keep improving as more data arrives — if you build the retraining loop to feed it.' },
+    { label: 'Why NOT', content: 'ML adds permanent operational debt: data pipelines, labeling, drift monitoring, retraining, and serving infra. Outputs are probabilistic and hard to audit. Entanglement (CACE) means small changes ripple unpredictably. If a simple rule works, every one of these costs is pure waste.' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Google's "Hidden Technical Debt in Machine Learning Systems"** is the canonical
+  warning: at scale, the ML code is a tiny fraction of a vast surrounding system of
+  data plumbing, configuration, and monitoring.
+- **Credit / fraud scoring** (fintech): ML where patterns shift, but paired with
+  hard rules and reason codes because decisions must be explainable to regulators —
+  a textbook hybrid of rules and ML.
+- **Spam filtering** began as hand-written rules and moved to ML precisely because
+  spammers adapted faster than rule authors — the canonical "rules stopped scaling"
+  story.
+- **Netflix / YouTube recommendations** run continual feedback loops where today's
+  recommendations shape tomorrow's training data — the classic ML feedback-loop
+  debt made productive.
+
+## Further reading
+
+- [Hidden Technical Debt in Machine Learning Systems (Sculley et al., Google, NeurIPS '15)](https://papers.nips.cc/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html) — the foundational paper on CACE, data dependencies, and pipeline debt.
+- [Rules of Machine Learning (Martin Zinkevich, Google)](https://developers.google.com/machine-learning/guides/rules-of-ml) — "Rule #1: Don't be afraid to launch a product without machine learning." Engineering-first guidance.
+- [Machine Learning: The High-Interest Credit Card of Technical Debt](https://research.google/pubs/pub43146/) — the earlier short paper that names the problem.
+- [Designing Machine Learning Systems (Chip Huyen)](https://huyenchip.com/books/) — the standard systems-oriented (not math-oriented) ML book.
