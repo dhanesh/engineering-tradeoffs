@@ -1,0 +1,241 @@
+---
+title: Architectural Styles
+description: Layered/n-tier, hexagonal/ports-and-adapters, clean/onion, event-driven, microkernel/plugin, pipes-and-filters, space-based, and serverless — the major system-level styles and when each one fits.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+An **architectural style** is a named, reusable way of organizing an entire
+system — its top-level structure, the kinds of components it has, and how they
+interact. Where a *pattern* solves a recurring problem inside a system, a *style*
+characterizes the system as a whole; a single system often combines styles
+(microservices that are internally layered, with an event-driven backbone and a
+few serverless functions at the edge). Choosing a style is choosing a default
+shape and a default set of tradeoffs, so the choice should be driven by your
+prioritized quality attributes, not by familiarity or fashion.
+
+This page is the system-level catalogue. Several styles have a *code-structure*
+treatment elsewhere — Hexagonal, Clean/Onion, and Microkernel are covered as
+implementation shapes on the
+[Architectural patterns](/design-patterns/architectural-patterns/) page, and
+the event-driven style has a whole [Event-Driven Architecture](/event-driven/)
+cluster. Here we focus on *when and why* you would adopt each style at the level
+of the whole system, and how they compare.
+
+## Mental model
+
+Styles answer one question: **what is the primary organizing principle of the
+system?** Sort them by that principle:
+
+- **Organize by technical layer** → *Layered / n-tier.* Horizontal slices,
+  dependencies point down.
+- **Organize by what is core vs. peripheral** → *Hexagonal, Clean/Onion.*
+  Business logic at the center, I/O on the outside, dependencies point inward.
+- **Organize by reaction to events** → *Event-driven.* Components emit and react
+  to events; flow is decoupled in time.
+- **Organize by a stable core plus pluggable features** → *Microkernel /
+  plugin.* Minimal core, extensions via a contract.
+- **Organize by a data-transformation pipeline** → *Pipes-and-filters.*
+  Independent stages connected by streams.
+- **Organize by eliminating the central data store** → *Space-based.* Replicated
+  in-memory data grid for extreme throughput.
+- **Organize by ephemeral, event-triggered functions** → *Serverless / FaaS.*
+  No managed servers, scale-to-zero, per-invocation billing.
+
+The first three are about **dependency direction and coupling in time**; the rest
+are about **specialized runtime shapes** for extensibility, streaming, extreme
+load, or operational outsourcing. Most real systems are a *blend* — pick a
+primary style for the dominant concern and borrow others locally.
+
+## Types / Variants
+
+**Layered / n-tier.** Horizontal layers — presentation → application/service →
+domain → data access — each depending only on the one below. *Why:* the most
+familiar style; easy to staff, clear separation, good default for line-of-business
+apps. *Weakness:* the domain ends up depending on the data layer (dependency
+points the wrong way), "thin" layers become pass-through boilerplate, and leaky
+layers degrade into a big ball of mud.
+
+**Hexagonal (Ports & Adapters).** Business logic at the center; all I/O (DB, UI,
+message bus, external APIs) plugs in through **ports** (interfaces the core
+defines) and **adapters** (implementations). *Why:* the core depends on nothing
+external, so infrastructure is swappable and the domain is unit-testable in
+isolation. Best for complex, long-lived domains. *Cost:* more interfaces and
+indirection than thin CRUD warrants. (See
+[Architectural patterns](/design-patterns/architectural-patterns/) for the
+code-structure detail.)
+
+**Clean / Onion.** The same *dependency rule* as Hexagonal — dependencies point
+inward toward stable business rules — expressed as concentric rings (entities →
+use cases → interface adapters → frameworks/drivers). Treat Hexagonal, Clean, and
+Onion as one family: "keep the domain free of infrastructure dependencies."
+
+**Event-driven (EDA).** Components communicate by producing and consuming
+**events** through a broker, decoupled in time and identity. *Why:* loose
+coupling, asynchronous scalability, natural fit for reactive and streaming
+workloads and for integrating many services. *Cost:* eventual consistency,
+harder debugging, ordering and delivery-semantics complexity. (Full treatment in
+the [Event-Driven Architecture](/event-driven/) cluster.)
+
+**Microkernel (plugin).** A minimal **core** runtime plus **plugins** that add
+features through a stable extension contract. *Why:* the feature set must be
+extensible by third parties or vary per deployment — IDEs, browsers, build tools,
+ecommerce/CMS platforms. *Cost:* designing a stable, versioned plugin contract and
+isolating plugins is genuinely hard.
+
+**Pipes-and-filters.** A sequence of independent processing stages (**filters**)
+connected by **pipes** (streams/queues), each transforming and passing data on.
+*Why:* composable, parallelizable data-processing — ETL, stream processing,
+compilers, Unix pipelines, CI stages. *Cost:* poor fit for low-latency
+request/response; back-pressure and error handling across stages need design.
+
+**Space-based.** Eliminates the central database bottleneck by keeping data in a
+replicated **in-memory data grid** ("tuple space") shared across processing units,
+with async persistence behind it. *Why:* extreme, spiky throughput where a single
+database is the limit (high-volume trading, ticketing, betting). *Cost:* high
+complexity, memory cost, and eventual consistency with the backing store.
+
+**Serverless / FaaS.** Functions triggered by events run on fully-managed
+infrastructure that scales to zero and bills per invocation; managed backend
+services (auth, DB, queues) provide the rest. *Why:* spiky or low/unpredictable
+load, fast time-to-market, no server management, fine-grained cost. *Cost:* cold
+starts, execution-time and statelessness limits, vendor lock-in, and harder
+local testing/observability.
+
+## When to use / When NOT
+
+- **Layered — use when:** a conventional business/CRUD app and a team that wants a
+  familiar structure. **Avoid when:** the domain is complex and you need
+  infrastructure-independent, highly testable logic — go Hexagonal/Clean.
+- **Hexagonal / Clean / Onion — use when:** real domain complexity, long-lived
+  system, swappable infrastructure, strong unit-testing of business rules.
+  **Avoid when:** thin CRUD — the ports/adapters ceremony outweighs the benefit.
+- **Event-driven — use when:** loose coupling, async scalability, reactive or
+  streaming workloads, or integrating many services. **Avoid when:** you need
+  simple, strongly-consistent request/response and the debugging cost of
+  asynchrony isn't justified.
+- **Microkernel — use when:** third-party/plugin extensibility is a core
+  requirement. **Avoid when:** the feature set is fixed — the contract is overhead.
+- **Pipes-and-filters — use when:** staged data transformation, ETL, or stream
+  processing. **Avoid when:** low-latency interactive request/response.
+- **Space-based — use when:** extreme, spiky throughput a single database cannot
+  serve. **Avoid when:** normal load — the complexity is rarely justified.
+- **Serverless — use when:** spiky/low/unpredictable load, glue and event
+  handlers, fast time-to-market. **Avoid when:** steady high throughput (cost
+  flips against you), long-running or latency-critical work, or heavy stateful
+  processing.
+
+## Tradeoffs
+
+| Style | Primary organizing principle | Best at | Main cost |
+| ----- | ---------------------------- | ------- | --------- |
+| Layered / n-tier | Technical layers | Familiar separation | Domain → DB dependency; boilerplate |
+| Hexagonal / Clean | Core vs. infrastructure | Testable, swappable I/O | Indirection on simple apps |
+| Event-driven | Reaction to events | Loose coupling, async scale | Eventual consistency, debugging |
+| Microkernel | Core + plugins | Extensibility | Stable plugin contract is hard |
+| Pipes-and-filters | Data pipeline | Composable transformation | Bad for low-latency request/response |
+| Space-based | No central DB | Extreme throughput | High complexity, memory cost |
+| Serverless / FaaS | Ephemeral functions | Spiky load, no ops | Cold starts, limits, lock-in |
+
+Styles are not exclusive: microservices internally layered, communicating via
+event-driven integration, with serverless at the edges and a pipes-and-filters
+ingestion path, is a common and legitimate blend.
+
+## Diagram
+
+The dependency rule that unifies the Layered, Hexagonal, and Clean/Onion family:
+dependencies point *inward*, toward stable business logic, away from volatile
+infrastructure.
+
+<Mermaid code={`graph TD
+  FW[Frameworks and drivers - UI, DB, web] --> IA[Interface adapters]
+  IA --> UC[Use cases / application]
+  UC --> ENT[Entities / domain core]
+  ENT -.no outward dependency.-> ENT`} />
+
+## Try it
+
+Pick the dominant concern in the tree to land on a primary style, then compare
+the styles across the criteria that distinguish them.
+
+<DecisionTree
+  client:visible
+  caption="Which architectural style fits your dominant concern?"
+  root={{
+    question: 'What is the single most important thing this system must be good at?',
+    branches: [
+      {
+        label: 'Clean, testable, infra-independent business logic',
+        next: {
+          question: 'How rich is the domain logic?',
+          branches: [
+            { label: 'Complex, long-lived domain', next: { leaf: { recommendation: 'Hexagonal / Clean / Onion', detail: 'Domain at the center, I/O via ports and adapters, dependencies point inward. Swappable infrastructure and a unit-testable core. Overkill for thin CRUD.' } } },
+            { label: 'Conventional business app', next: { leaf: { recommendation: 'Layered / n-tier', detail: 'Familiar horizontal layers, easy to staff. Watch for the domain leaking a dependency on the data layer and for pass-through boilerplate.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Loose coupling and async scalability across components',
+        next: { leaf: { recommendation: 'Event-driven (see EDA cluster)', detail: 'Components react to events via a broker, decoupled in time. Great for reactive, streaming, many-service integration. Costs eventual consistency and harder debugging.' } },
+      },
+      {
+        label: 'Third-party extensibility / per-deployment feature variation',
+        next: { leaf: { recommendation: 'Microkernel (plugin)', detail: 'Minimal core plus plugins via a stable contract. For IDEs, browsers, platforms. The contract and plugin isolation are the hard parts.' } },
+      },
+      {
+        label: 'Staged transformation of data through a pipeline',
+        next: { leaf: { recommendation: 'Pipes-and-filters', detail: 'Independent filters connected by pipes/streams. Composable and parallelizable for ETL and stream processing. Poor fit for low-latency request/response.' } },
+      },
+      {
+        label: 'Surviving extreme, spiky throughput',
+        next: { leaf: { recommendation: 'Space-based', detail: 'In-memory data grid removes the central-DB bottleneck with async persistence behind it. For trading, ticketing, betting. High complexity and memory cost.' } },
+      },
+      {
+        label: 'No ops, spiky/unpredictable load, fast time-to-market',
+        next: { leaf: { recommendation: 'Serverless / FaaS', detail: 'Event-triggered functions, scale-to-zero, per-invocation billing. Watch cold starts, execution limits, and lock-in; cost flips against you at steady high throughput.' } },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Architectural styles compared"
+  columns={['Layered', 'Hexagonal/Clean', 'Event-driven', 'Microkernel', 'Pipes-filters', 'Space-based', 'Serverless']}
+  rows={[
+    { criterion: 'Coupling', cells: ['Layer-to-layer', 'Core decoupled from I/O', 'Loose, async', 'Core ↔ plugin contract', 'Stage-to-stage', 'Via shared grid', 'Function-level'] },
+    { criterion: 'Consistency', cells: ['Strong (one DB)', 'Strong', 'Eventual', 'In-process', 'Streaming', 'Eventual to store', 'Depends on backend'] },
+    { criterion: 'Scaling shape', cells: ['Whole tier', 'Whole app', 'Per consumer', 'Whole app', 'Per stage', 'Add grid nodes', 'Per function, auto'] },
+    { criterion: 'Operational cost', cells: ['Low', 'Low', 'Medium-high', 'Medium', 'Medium', 'High', 'Low (managed)'] },
+    { criterion: 'Best for', cells: ['CRUD/business apps', 'Complex domains', 'Reactive/integration', 'Extensible platforms', 'ETL/streaming', 'Extreme throughput', 'Spiky/glue workloads'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Layered / Hexagonal-Clean:** most Spring/.NET line-of-business backends are
+  layered; DDD-heavy and fintech services adopt Hexagonal/Clean to keep the
+  domain testable and infrastructure swappable.
+- **Event-driven:** Netflix, Uber, and most large platforms run an event-driven
+  backbone (Kafka) for integration and stream processing.
+- **Microkernel:** VS Code and Eclipse (extension APIs), Chrome (extensions),
+  Shopify/WordPress (plugins), Webpack/Rollup (loaders/plugins).
+- **Pipes-and-filters:** Unix pipelines, Apache Beam / Flink / Kafka Streams data
+  pipelines, and CI/CD stages.
+- **Space-based:** GigaSpaces, Hazelcast, and Apache Ignite power high-volume
+  trading, betting, and ticketing platforms that a single database could not feed.
+- **Serverless:** AWS Lambda / Azure Functions / Cloudflare Workers for event
+  handlers, API glue, and spiky workloads; many startups ship MVPs serverless-first.
+
+## Further reading
+
+- [Software Architecture Patterns — Mark Richards (O'Reilly, free)](https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/) — the canonical short tour of layered, event-driven, microkernel, microservices, and space-based.
+- [The Clean Architecture — Robert C. Martin](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html) — the dependency rule behind the Hexagonal/Clean/Onion family.
+- [Pipes and Filters — Microsoft Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters) — the data-pipeline style with guidance.
+- [Serverless Architectures — Martin Fowler / Mike Roberts](https://martinfowler.com/articles/serverless.html) — a thorough, even-handed take on FaaS and its tradeoffs.

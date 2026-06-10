@@ -1,0 +1,255 @@
+---
+title: Software Architecture
+description: What software architecture really is — the decisions that are expensive to reverse — plus quality attributes, architectural drivers, fitness functions, Conway's law, and architecture as the discipline of trading off.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+import TradeoffSlider from '../../../components/TradeoffSlider';
+
+## Overview
+
+**Software architecture is the set of decisions that are expensive to change
+later.** Not every design choice is architectural — the name of a variable, the
+shape of a function, the framework you pick for a leaf component are all cheap to
+revise once you learn more. Architecture is the small subset of decisions that
+everything else depends on: how the system is decomposed into parts, how those
+parts communicate, where state lives, what is allowed to fail independently, and
+which boundaries you are willing to defend. Get these wrong and you pay interest
+on them for years; the cost of reversal grows as the codebase, the team, and the
+data accrete on top of the original choice.
+
+The trap is treating architecture as a phase ("we did the architecture") or a
+diagram (the boxes-and-arrows poster nobody reads). It is neither. It is an
+ongoing stream of *significant* decisions, each of which should be made
+deliberately, recorded with its rationale, and revisited when the constraints
+that justified it change. This cluster is about that discipline at the
+**system and service level** — how to slice a system into services, where the
+boundaries come from, how the pieces communicate, and how to decide and record
+all of it. For *code-structure* patterns (Hexagonal, CQRS, Event Sourcing, Saga
+as implementation shapes) see the
+[Architectural patterns](/design-patterns/architectural-patterns/) page in the
+Design Patterns cluster; here we treat those concerns one level up, as choices
+about whole systems.
+
+## Mental model
+
+Hold three ideas together and most architecture decisions become legible.
+
+**1. Architecture is the high-cost-of-change set.** Ralph Johnson's definition —
+"architecture is the things that are hard to change" — and "the decisions you
+wish you could get right early." The test for whether a decision is
+architectural is simple: *how much would it cost, in time and risk, to reverse it
+a year from now with the system in production?* High cost means architectural,
+treat it with care. Low cost means it is a detail; defer it and stay flexible.
+
+**2. Architecture serves quality attributes, not features.** Functional
+requirements ("the user can reset their password") can usually be satisfied by
+almost any architecture. What separates a good architecture from a bad one is how
+well it delivers the **quality attributes** — the "-ilities": scalability,
+availability, latency, security, modifiability, testability, observability,
+deployability, cost-efficiency. These are the real drivers. An architecture is
+"right" only relative to the quality attributes that actually matter for this
+system, ranked and quantified.
+
+**3. Architecture is the art of trading off.** There is no best architecture,
+only the least-wrong architecture for a given set of prioritized constraints.
+Every "-ility" you optimize, you pay for in another. Strong consistency costs
+availability under partition. Low latency costs cost. High modifiability (many
+small services) costs operational complexity and end-to-end latency. The
+architect's job is not to maximize one attribute but to find the point on the
+tradeoff surface that the business actually wants — and to make that point
+explicit so the team isn't silently optimizing for the wrong thing.
+
+```mermaid
+graph TD
+  D[Architectural drivers] --> QA[Prioritized quality attributes]
+  QA --> DEC[Significant decisions]
+  DEC --> FF[Fitness functions guard them]
+  FF -.->|drift detected| DEC
+  DEC --> T[Tradeoffs accepted, recorded in ADRs]
+```
+
+## Types / Variants
+
+The raw materials of architectural thinking — the concepts you reason *with*.
+
+**Quality attributes (the -ilities).** The non-functional properties an
+architecture must deliver. They split roughly into *runtime* attributes
+(performance/latency, availability, scalability, security, resilience) and
+*development-time* attributes (modifiability, testability, deployability,
+buildability). They are in constant tension; you cannot maximize all of them, so
+they must be ranked. A useful sharpening tool is the **quality-attribute
+scenario**: "When [stimulus] occurs under [conditions], the system shall
+[response] within [measure]" — e.g. "When traffic spikes 10x within one minute,
+the system serves p99 under 300ms by autoscaling within two minutes." Vague -ilities
+("it should be scalable") are useless; scenarios make them testable.
+
+**Architectural drivers.** The inputs that *force* architectural decisions.
+Four kinds: (1) **prioritized quality attributes**; (2) **key functional
+requirements** — the handful of features that shape structure (a real-time bid
+engine, a regulatory ledger); (3) **constraints** you cannot change (must run on
+-prem, must use the existing Oracle DB, RBI data-residency rules, a fixed team);
+and (4) **architectural concerns** — cross-cutting things you must address
+(auth, logging, deployment) regardless of features. Drivers are the *why* behind
+every decision; if a decision can't be traced to a driver, question it.
+
+**Fitness functions.** Automated, objective checks that the architecture still
+holds the properties you care about — borrowed from *evolutionary architecture*
+(Ford, Parsons, Kua). Examples: a test that fails the build if the domain layer
+imports an infrastructure package (guards the dependency rule); a load test that
+fails if p99 latency regresses past a threshold; a cycle-detection check on the
+module dependency graph; a license/CVE scan. Fitness functions turn "the
+architecture says X" from a wish into an *enforced invariant* that survives team
+turnover and refactors.
+
+**Conway's law.** "Organizations design systems that mirror their own
+communication structure." This is not a slogan — it is a constraint you build
+*with* or fight *against*. If three teams build a system, you will get
+(approximately) three components, with the integration seams at the team
+boundaries. The **inverse Conway maneuver** uses this deliberately: design the
+team topology you want the architecture to have, and the architecture tends to
+follow. Microservice boundaries that cut across team boundaries fail; the
+org chart wins.
+
+**The cost of wrong abstractions.** "Duplication is far cheaper than the wrong
+abstraction" (Sandi Metz). A premature or wrong abstraction — a shared library,
+a generic "platform," a too-early microservice boundary — couples things that
+should have stayed independent, and is far harder to unwind than to have written
+the duplication and abstracted later once the real shape was visible. Wrong
+abstractions are a leading cause of accidental complexity; the architectural
+discipline is to defer abstraction until the pattern is genuinely clear (the
+**rule of three**) and to prefer a wrong-but-cheap-to-fix decision over a
+right-looking-but-expensive-to-reverse one.
+
+**Architecture as tradeoffs.** The meta-variant: every architectural style,
+pattern, and decision is a position on one or more tradeoff axes. The skill is
+not knowing the patterns (anyone can list them) but knowing *what each one
+costs* and matching that cost profile to your prioritized drivers.
+
+## When to use / When NOT
+
+This page is about the *discipline* of architecting, so "use when" is really
+"how much architecture is warranted."
+
+- **Invest heavily in upfront architecture when:** the cost of getting it wrong
+  is high and the constraints are well understood — regulated domains (lending,
+  payments, healthcare), systems with hard scale or latency SLAs from day one,
+  platforms many teams will build on, or anything where a structural mistake is
+  expensive to unwind. Here, deliberate decisions and recorded rationale pay off.
+- **Keep architecture deliberately thin and defer decisions when:** you are
+  early, the problem is poorly understood, or you are exploring product-market
+  fit. Premature architecture (microservices on day one, a generic platform
+  before the second use case) is a classic, costly mistake — you pay the
+  complexity now and frequently abstract the *wrong* thing. Start with the
+  simplest structure that could work (often a modular monolith) and let real
+  drivers pull complexity in.
+- **Always:** identify and rank quality attributes, trace decisions to drivers,
+  and record the significant ones. This is cheap and pays off at any scale.
+- **Avoid:** optimizing -ilities nobody asked for (gold-plating for a scale that
+  will never arrive), treating the architecture diagram as the deliverable, or
+  making structural decisions implicitly (where state lives, what can fail
+  independently) and discovering them only when they break.
+
+## Tradeoffs
+
+Architecture is *defined* by tradeoffs. The recurring tensions:
+
+| Axis | Optimizing the left costs you | Optimizing the right costs you |
+| ---- | ----------------------------- | ------------------------------ |
+| Simplicity ↔ Flexibility | Future change is harder/coupled | Accidental complexity now, YAGNI risk |
+| Consistency ↔ Availability | Reduced availability under partition | Stale/conflicting reads, reconciliation |
+| Performance ↔ Modifiability | Coupled, hard-to-change code | Indirection, latency overhead |
+| Few services ↔ Many services | Coupled deploys, scaling whole units | Network/ops complexity, distributed debugging |
+| Build ↔ Buy | Time, maintenance, opportunity cost | Vendor lock-in, fit gaps, less control |
+| Decide now ↔ Decide later | Risk of wrong-and-expensive choice | Uncertainty, rework if deferred too long |
+
+The discipline is to make these tradeoffs **explicit and prioritized** rather
+than stumbling into them. Two systems with identical features can sit at opposite
+ends of every axis above and both be correct — because their drivers differ.
+
+## Diagram
+
+The decision pipeline: drivers in, prioritized quality attributes, significant
+decisions made and recorded, fitness functions guarding them against drift.
+
+<Mermaid code={`graph LR
+  REQ[Functional requirements] --> DRV[Architectural drivers]
+  CON[Constraints] --> DRV
+  QAS[Quality-attribute scenarios] --> DRV
+  DRV --> PRI[Rank quality attributes]
+  PRI --> DEC[Make significant decisions]
+  DEC --> ADR[Record rationale - ADR]
+  DEC --> SYS[System structure]
+  SYS --> FF[Fitness functions]
+  FF -.->|fail on drift| DEC`} />
+
+## Try it
+
+Use the tabs to separate *what* architecture is from *when* to invest in it and
+*why* it pays off, then slide the central tradeoff axis — simplicity versus
+flexibility — to feel where deliberate architecture sits.
+
+<WhenWhyTabs
+  client:visible
+  caption="Architecture as a discipline"
+  tabs={[
+    {
+      label: 'What it is',
+      content:
+        'The subset of design decisions that are expensive to reverse: system decomposition, communication, where state lives, failure boundaries. Architecture exists to deliver prioritized quality attributes (the -ilities), not features — almost any structure can implement the features. It is an ongoing stream of significant, recorded decisions, not a phase or a poster.',
+    },
+    {
+      label: 'When to invest',
+      content:
+        'Invest upfront when the cost of being wrong is high and constraints are understood: regulated domains, hard SLAs, multi-team platforms. Keep it thin and defer when early or exploring product-market fit — premature architecture (day-one microservices, speculative platforms) buys complexity now and usually abstracts the wrong thing. Always rank quality attributes and trace decisions to drivers; that is cheap at any scale.',
+    },
+    {
+      label: 'Why it pays off',
+      content:
+        'Deliberate, recorded decisions let the team change the cheap things freely while protecting the expensive ones. Fitness functions turn architectural intent into enforced invariants that survive turnover. Conway\'s law means the org chart shapes the architecture whether you plan for it or not — designing the team topology on purpose (inverse Conway) makes the architecture you want the path of least resistance.',
+    },
+  ]}
+/>
+
+<TradeoffSlider
+  client:visible
+  caption="Simplicity ↔ Flexibility — how much structure to commit to now"
+  leftAxis="Maximal simplicity"
+  rightAxis="Maximal flexibility"
+  stops={[
+    { label: 'Single module, no seams', description: 'The least structure that works. Fastest to build and change while the problem is unknown. Pays interest later if the system must scale or split — but only if it actually grows. Right default for early, exploratory work.' },
+    { label: 'Modular monolith', description: 'Clear internal module boundaries, one deployable. Captures most of the modifiability of services without the network/ops tax. The pragmatic centre of gravity for most systems and the easiest base to split from later.' },
+    { label: 'Service boundaries at proven seams', description: 'Extract a service only where a driver demands it — independent scaling, isolation, or team autonomy. Flexibility where you have evidence you need it; simplicity everywhere else.' },
+    { label: 'Fine-grained services', description: 'Many independently deployable, independently scalable units. Maximum flexibility and team autonomy, paid for with distributed-systems complexity, network latency, and operational burden. Justified only by strong, present drivers — not by anticipation.' },
+    { label: 'Speculative platform', description: 'Generic abstractions and extension points built before the second real use case. Looks maximally flexible; usually the wrong abstraction. High accidental complexity, often unwound later. Avoid until the pattern is genuinely proven (rule of three).' },
+  ]}
+/>
+
+## Real-world examples
+
+- **Amazon's "two-pizza teams"** are a deliberate inverse-Conway move: small,
+  autonomous teams each owning a service, so the org structure produces the
+  service-oriented architecture Amazon wanted. The architecture mirrors the
+  teams by design, not by accident.
+- **Evolutionary architecture / fitness functions** are practiced at
+  ThoughtWorks and many platform teams via tools like ArchUnit (JVM) and
+  dependency-cruiser (JS), which fail the build on layering violations or
+  dependency cycles — making the dependency rule an enforced invariant.
+- **The "wrong abstraction" tax** shows up everywhere a shared internal library
+  or premature microservice had to be torn back out; many teams (famously
+  Segment, who *reverted* microservices back to a monolith) found the
+  abstraction cost exceeded its benefit and consolidated.
+- **Regulated fintech** (lending, payments) is a canonical "invest upfront"
+  case: data-residency, auditability, and consistency constraints are
+  architectural drivers that must shape structure from day one, because retro
+  fitting them is prohibitively expensive.
+
+## Further reading
+
+- [Software Architecture Guide — Martin Fowler](https://martinfowler.com/architecture/) — the "things that are hard to change" definition and why architecture matters.
+- [Building Evolutionary Architectures (Ford, Parsons, Kua)](https://www.thoughtworks.com/insights/books/building-evolutionary-architectures) — fitness functions and architecture that adapts over time.
+- [Conway's Law — Martin Fowler / melconway.com](https://www.melconway.com/Home/Conways_Law.html) — the original paper behind the org-mirrors-architecture observation.
+- [The Wrong Abstraction — Sandi Metz](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction) — why duplication beats a premature, wrong abstraction.

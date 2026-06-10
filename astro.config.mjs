@@ -153,6 +153,17 @@ export default defineConfig({
             { label: 'Cryptography & secrets', slug: 'security/crypto-secrets' },
           ],
         },
+        {
+          label: 'Software Architecture',
+          items: [
+            { label: 'Overview', slug: 'architecture' },
+            { label: 'Monolith to microservices', slug: 'architecture/monolith-microservices' },
+            { label: 'Domain-driven design', slug: 'architecture/domain-driven-design' },
+            { label: 'Architectural styles', slug: 'architecture/architectural-styles' },
+            { label: 'Integration & communication', slug: 'architecture/integration-communication' },
+            { label: 'Architecture decisions', slug: 'architecture/architecture-decisions' },
+          ],
+        },
       ],
     }),
   ],

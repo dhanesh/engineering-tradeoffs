@@ -1,0 +1,239 @@
+---
+title: Monolith to Microservices
+description: The full spectrum from monolith to modular monolith to microservices and SOA — coupling versus cohesion, when (and when not) to split, the distributed-monolith trap, team topology, and the real costs of going distributed.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+"Monolith versus microservices" is the most over-debated and most misunderstood
+decision in modern architecture. It is usually framed as a binary — old-and-bad
+monolith versus new-and-good microservices — when it is really a **spectrum** of
+deployment granularity, and the right point on that spectrum depends entirely on
+your drivers: team size, scaling needs, rate of change, and operational maturity.
+The genuinely important variable is not "how many deployable units" but
+**coupling and cohesion**: whether the things that change together live together,
+and whether the things that should be independent actually are.
+
+The most expensive mistake in this space is jumping straight to fine-grained
+microservices to chase a benefit (team autonomy, independent scaling) before you
+have the operational platform, the clear domain boundaries, or the organizational
+need that makes them pay off — and ending up with a **distributed monolith**:
+all the complexity of a distributed system with none of the independence. The
+modern, hard-won default for most systems is to start with a **modular
+monolith** and extract services only where a concrete driver demands it.
+
+## Mental model
+
+Picture a single dial labeled **deployment granularity**, and a separate, more
+important dial labeled **coupling**.
+
+- The granularity dial runs: *single deployable* → *a few coarse services* →
+  *many fine-grained services*. Turning it right buys independence
+  (deploy, scale, fail in isolation) and costs network hops, operational
+  surface, and distributed-systems complexity.
+- The coupling dial is what actually determines pain. You can have a
+  well-modularized monolith (low coupling, one deployable) or a badly-coupled
+  microservices mess (high coupling, many deployables — the distributed
+  monolith). **Microservices do not reduce coupling; they make coupling
+  expensive**, which forces you to confront it, but only if the boundaries are
+  drawn right.
+
+The decision is therefore: *turn the granularity dial right only as far as a
+driver pushes you, and never faster than you can keep the coupling dial low.*
+The killer test for a service boundary: **can this service be developed,
+deployed, and scaled independently of the others, without a chain of coordinated
+releases?** If a "service" must be released in lockstep with three others, it is
+not a service — it is a distributed module, and you are paying network cost for a
+function call.
+
+## Types / Variants
+
+**Monolith (single-process).** One deployable unit, one codebase, one database
+(usually), one process. *Strengths:* simplest to build, test, deploy, and debug;
+in-process calls are fast and transactional; no network failure modes; easy to
+refactor across boundaries. *Weaknesses:* as it and the team grow, modules tend to
+couple, the build/test/deploy cycle slows, and you must scale and deploy the whole
+thing together. A poorly-structured monolith becomes a **big ball of mud**. Note:
+"monolith" is not an insult — a clean monolith is the right answer for a large
+share of systems.
+
+**Modular monolith.** A single deployable, but with *strictly enforced internal
+module boundaries* — modules communicate through explicit interfaces, own their
+data (no reaching into another module's tables), and ideally have dependency
+rules enforced by fitness functions. *Strengths:* most of the modifiability and
+team-ownership benefits of services, with in-process speed, transactional
+simplicity, and one thing to operate. *Why it matters:* it keeps the *option* to
+extract a module into a service cheap, because the seam already exists. This is
+the recommended starting point for most non-trivial systems.
+
+**Service-Oriented Architecture (SOA).** The 2000s-era predecessor:
+coarse-grained services exposed over an enterprise service bus (ESB), often with
+shared databases and heavyweight protocols (SOAP/WS-*). *Intent:* reuse and
+integration across a large enterprise. *Weakness:* the ESB became a centralized,
+smart bottleneck and services frequently shared data, re-coupling them.
+Microservices are partly a reaction to SOA: "smart endpoints, dumb pipes,"
+decentralized data, lighter protocols.
+
+**Microservices.** Many small, independently deployable services, each owning its
+data store (**database-per-service**), each ideally aligned to a business
+capability / bounded context, communicating over the network (REST, gRPC, or
+async events). *Strengths:* independent deployment, independent scaling per
+service, fault isolation, technology heterogeneity, and — crucially — *team
+autonomy* at scale. *Weaknesses:* distributed-systems complexity (partial
+failure, network latency, eventual consistency, no distributed transactions),
+heavy operational and observability requirements, and a steep platform cost.
+Pays off mainly at organizational scale.
+
+**The spectrum (and the trap).** Between these sit coarse-grained services,
+"macroservices," and self-contained systems. The anti-pattern that lurks across
+the whole right half is the **distributed monolith**: services that must be
+deployed together, share a database, or call each other synchronously in long
+chains — you pay every microservices cost and earn none of the independence.
+
+## When to use / When NOT
+
+- **Monolith / modular monolith — use when:** the team is small-to-medium (up to
+  ~a few teams), the domain boundaries are still being discovered, you want speed
+  of development and simple operations, and you have no concrete need to scale or
+  deploy parts independently. **This is the correct default.** **Avoid when:**
+  you have genuinely independent scaling needs you cannot meet by scaling the
+  whole unit, or many teams are blocked on a shared deploy pipeline.
+- **Microservices — use when:** multiple teams need to deploy independently
+  without coordinating (the dominant real driver), specific components have
+  *very* different scaling or availability profiles, you need fault isolation
+  between subsystems, AND you already have the operational platform (CI/CD,
+  observability, infra automation, on-call maturity) to run a distributed system.
+  **Avoid when:** you are a small team, the domain boundaries are unclear,
+  you lack the operational platform, or you are adopting them for résumé/fashion
+  reasons. Microservices solve an *organizational-scaling* problem first and a
+  technical-scaling problem second.
+- **SOA / ESB — use when:** rarely, in legacy enterprise-integration contexts.
+  For new systems prefer microservices-style decentralization or a modular
+  monolith. **Avoid:** building a new smart-pipe ESB as a coupling point.
+
+## Tradeoffs
+
+| Concern | Monolith | Modular monolith | Microservices |
+| ------- | -------- | ---------------- | ------------- |
+| Deployment | One unit, all-at-once | One unit, clean seams | Independent per service |
+| Scaling | Whole app together | Whole app together | Per service, granular |
+| Dev speed (small team) | Fast | Fast | Slowed by infra overhead |
+| Dev speed (many teams) | Coordination bottleneck | Better, still one pipeline | Independent, high |
+| Operational complexity | Low | Low | High (platform required) |
+| Failure mode | Process-wide | Process-wide | Isolated (if done right) |
+| Consistency | Strong, transactional | Strong, transactional | Eventual, sagas |
+| Refactoring boundaries | Cheap (in-process) | Cheap (in-process) | Expensive (network contract) |
+| Worst case | Big ball of mud | Coupled modules | Distributed monolith |
+
+Cohesion-and-coupling cuts across all of it: the decision is less "mono vs micro"
+and more "are my boundaries drawn where the system actually changes." A modular
+monolith with good boundaries beats microservices with bad ones every time.
+
+## Diagram
+
+The same domain, drawn at three granularities. Note how microservices add a
+network and a store per service — independence bought with operational surface.
+
+<Mermaid code={`graph TD
+  subgraph Monolith
+    M[Single process: Orders + Payments + Inventory] --> MDB[(Shared DB)]
+  end
+  subgraph Microservices
+    O[Order service] --> ODB[(Orders DB)]
+    P[Payment service] --> PDB[(Payments DB)]
+    I[Inventory service] --> IDB[(Inventory DB)]
+    O -.async event.-> P
+    P -.async event.-> I
+  end`} />
+
+## Try it
+
+Walk the decision tree to find your point on the spectrum, then compare the three
+models on the criteria that decide it.
+
+<DecisionTree
+  client:visible
+  caption="Monolith, modular monolith, or microservices?"
+  root={{
+    question: 'Do multiple teams need to deploy independently without coordinating releases — and do you already have the operational platform (CI/CD, observability, on-call) to run distributed systems?',
+    branches: [
+      {
+        label: 'Yes to both — many teams, mature platform',
+        next: {
+          question: 'Are your domain (bounded-context) boundaries clear and stable, so each service owns its data?',
+          branches: [
+            {
+              label: 'Yes — boundaries are clear',
+              next: { leaf: { recommendation: 'Microservices', detail: 'Extract services along bounded contexts, database-per-service, async where possible. You have the org driver and the platform. Guard against the distributed-monolith trap: no shared DB, no lockstep deploys.' } },
+            },
+            {
+              label: 'No — boundaries still unclear',
+              next: { leaf: { recommendation: 'Modular monolith first, extract later', detail: 'Splitting on wrong boundaries is the most expensive mistake. Solidify modules in-process where boundaries are cheap to move, then extract the proven seams.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — small team, or no distributed-ops platform yet',
+        next: {
+          question: 'Does a specific component have a genuinely different scaling or availability profile you cannot meet by scaling the whole app?',
+          branches: [
+            {
+              label: 'Yes — one clear hotspot',
+              next: { leaf: { recommendation: 'Modular monolith + extract the one hotspot', detail: 'Keep the core as a modular monolith; peel off only the component with the distinct scaling/availability need. Avoid wholesale microservices — pay complexity only where a driver justifies it.' } },
+            },
+            {
+              label: 'No — uniform needs',
+              next: { leaf: { recommendation: 'Modular monolith', detail: 'The right default. One deployable, strict internal module boundaries, data ownership per module. Fast to build and operate, and cheap to split from later if a real driver appears.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Three points on the spectrum"
+  columns={['Monolith', 'Modular monolith', 'Microservices']}
+  rows={[
+    { criterion: 'Deployable units', cells: ['One', 'One', 'Many'] },
+    { criterion: 'Internal boundaries', cells: ['Often weak', 'Strict, enforced', 'Network contracts'] },
+    { criterion: 'Independent scaling', cells: ['No', 'No', 'Yes, per service'] },
+    { criterion: 'Independent deploy', cells: ['No', 'No', 'Yes, per team'] },
+    { criterion: 'Transactions', cells: ['Local ACID', 'Local ACID', 'Sagas, eventual'] },
+    { criterion: 'Operational cost', cells: ['Low', 'Low', 'High'] },
+    { criterion: 'Best for', cells: ['Small apps/teams', 'Most systems', 'Many teams at scale'] },
+    { criterion: 'Failure mode to avoid', cells: ['Big ball of mud', 'Coupled modules', 'Distributed monolith'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Shopify** runs one of the largest **modular monoliths** in the world (Ruby on
+  Rails), with enforced internal component boundaries — a deliberate choice to
+  keep development velocity high without paying the microservices tax.
+- **Amazon and Netflix** are the canonical microservices adopters, driven first
+  by *organizational* scale (thousands of engineers deploying independently) and
+  backed by enormous investment in deployment and observability platforms.
+- **Segment** famously *reverted* from microservices back toward a monolith after
+  the operational and dependency-management overhead of ~140 services exceeded
+  the benefit — a widely-cited cautionary tale about premature decomposition.
+- **Uber** moved from monolith to thousands of microservices, then introduced
+  "domain-oriented microservice architecture" (coarser, capability-aligned
+  groupings) to tame the fragmentation — a real example of the spectrum being a
+  spectrum, not a binary.
+
+## Further reading
+
+- [Microservices — Martin Fowler & James Lewis](https://martinfowler.com/articles/microservices.html) — the foundational definition, including "smart endpoints, dumb pipes" and decentralized data.
+- [MonolithFirst — Martin Fowler](https://martinfowler.com/bliki/MonolithFirst.html) — why starting with a monolith and extracting services beats greenfield microservices.
+- [Microservice Trade-Offs — Martin Fowler](https://martinfowler.com/articles/microservice-trade-offs.html) — an even-handed accounting of what microservices cost.
+- [Goodbye Microservices — Segment Engineering](https://segment.com/blog/goodbye-microservices/) — a real-world reversal and its reasoning.
