@@ -1,0 +1,245 @@
+---
+title: Trees & Graphs
+description: BSTs, balanced trees, tries, segment and Fenwick trees, heaps; graph representations, BFS/DFS, shortest paths, topological sort, and union-find — when each one is the right model.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Trees and graphs model **relationships**, not just collections. A tree captures
+hierarchy and ordering; a graph captures arbitrary connections. The moment your
+data has parents/children, prerequisites, paths, networks, or "things linked to
+other things," you are in this territory, and the right tree or graph algorithm
+turns an intractable scan into an efficient traversal. This page is about
+recognizing which model fits and which traversal answers your question.
+
+The practical payoff: balanced trees give you `O(log n)` ordered operations
+(every database index leans on this), and graph algorithms answer reachability,
+shortest-path, and ordering questions that no flat structure can.
+
+## Mental model
+
+- A **tree** is a graph with no cycles and one path between any two nodes — a
+  hierarchy. You navigate it by *comparing and descending* (search trees) or
+  *visiting in an order* (traversals).
+- A **graph** is nodes plus edges with no such restriction — cycles, multiple
+  paths, disconnected pieces. You answer questions about it by *exploring outward*
+  from a start node (BFS/DFS) and tracking what you have seen.
+
+Two questions pick almost everything:
+
+1. **Is there inherent order/hierarchy, or arbitrary connection?** Order ->
+   search tree. Hierarchy -> tree. Arbitrary links -> graph.
+2. **What am I asking?** "Is it present / what is the range?" -> BST/balanced tree.
+   "Shortest path / reachable?" -> graph traversal. "Valid order of dependencies?"
+   -> topological sort. "Are these two in the same group?" -> union-find.
+
+## Types / Variants
+
+### Trees
+
+**Binary Search Tree (BST).** Left subtree less than node, right subtree greater.
+Gives `O(log n)` search/insert/delete *when balanced* — but degrades to `O(n)` (a
+linked list) if you insert sorted data into a naive BST. That failure mode is why
+**self-balancing** trees exist.
+
+**Balanced trees.** Maintain `O(log n)` height under all insertions:
+
+- **AVL trees** — strictly balanced (heights differ by at most 1). Faster lookups,
+  more rotations on write. Good for read-heavy ordered data.
+- **Red-black trees** — looser balance, fewer rotations on write. The default
+  ordered map/set in many standard libraries (C++ `std::map`, Java `TreeMap`).
+- **B-trees / B+ trees** — high-fanout (many keys per node) to minimize disk/page
+  reads. The structure behind almost every relational and document **database
+  index**; see *Databases & CAP* for how indexes use them.
+
+**Tries (prefix trees).** Keys are paths of characters; shared prefixes share
+nodes. Lookup is `O(L)` in the key length `L`, independent of how many keys are
+stored. The structure for autocomplete, dictionaries, and **longest-prefix IP
+routing** (radix tries).
+
+**Heaps.** A heap is a tree too (covered in *Core Data Structures*) — complete
+binary tree with the heap-order property, giving `O(1)` peek and `O(log n)`
+push/pop. Listed here for completeness as the priority-queue backbone of Dijkstra
+and friends.
+
+**Segment trees & Fenwick (Binary Indexed) trees.** Answer **range queries**
+(sum/min/max over a sub-range) with point or range updates in `O(log n)`, versus
+`O(n)` for a naive recompute. A Fenwick tree is the lighter, lower-constant choice
+for prefix sums; a segment tree is more general (any associative range query,
+lazy range updates). Reach for these when you repeatedly query and update ranges.
+
+### Graphs
+
+**Representations:**
+
+- **Adjacency list** — each node stores its neighbors. Space `O(V + E)`. Iterating
+  a node's neighbors is fast. The default for **sparse** graphs (most real graphs:
+  social, road, dependency).
+- **Adjacency matrix** — a `V x V` grid; `matrix[i][j]` marks an edge. Space
+  `O(V^2)`. Edge-existence check is `O(1)`. Use only for **dense** graphs or when
+  you constantly test "is there an edge between `i` and `j`?".
+
+**Traversals:**
+
+- **BFS (breadth-first)** — explore level by level using a queue. Finds the
+  **shortest path in an unweighted graph** and the minimum number of hops. `O(V + E)`.
+- **DFS (depth-first)** — go as deep as possible using a stack/recursion. Used for
+  cycle detection, topological sort, connectivity, and exhaustive search. `O(V + E)`.
+
+**Shortest paths (weighted):**
+
+- **Dijkstra** — non-negative edge weights. Greedily expands the closest unsettled
+  node using a min-heap; `O((V + E) log V)`. The workhorse for routing and network
+  cost.
+- **A\*** — Dijkstra plus a heuristic that steers toward the goal. Far fewer
+  expansions when you have a good admissible heuristic (e.g. straight-line distance
+  in maps/games). Dijkstra is A\* with a zero heuristic.
+- **Bellman-Ford** — handles **negative edge weights** and detects negative cycles;
+  slower at `O(V * E)`. Use only when negative weights are real (e.g. currency
+  arbitrage).
+
+**Topological sort.** Linearizes a **directed acyclic graph (DAG)** so every edge
+points forward — the valid order to do tasks given dependencies. `O(V + E)` via
+DFS or Kahn's algorithm. Build systems, task schedulers, and course prerequisites
+are exactly this.
+
+**Union-Find (Disjoint Set Union).** Tracks which connected component an element
+belongs to with near-`O(1)` (inverse-Ackermann) `union` and `find` after path
+compression. The tool for "are these two in the same group?", dynamic connectivity,
+and Kruskal's minimum spanning tree.
+
+## When to use / When NOT
+
+- **BST / balanced tree — use when:** you need ordered data with `O(log n)` lookup,
+  range queries, or in-order iteration. **Avoid when:** you only need equality
+  lookup and no order — a hash table is `O(1)`. **Never** use an unbalanced BST on
+  sorted input.
+- **Trie — use when:** keys share prefixes and you do prefix/autocomplete queries
+  or longest-prefix match. **Avoid when:** keys are short, random, or you only need
+  exact match — a hash table is simpler and lighter.
+- **Segment / Fenwick tree — use when:** you repeatedly query *and* update ranges.
+  **Avoid when:** the array is static (precompute a prefix-sum array, `O(1)`
+  queries) or updates never happen.
+- **Adjacency list — use when:** the graph is sparse (almost always). **Adjacency
+  matrix — use when:** dense, or you hammer `O(1)` edge-existence checks.
+- **BFS — use when:** shortest path / fewest hops in an *unweighted* graph. **DFS —
+  use when:** cycle detection, topological order, connectivity, exhaustive search.
+- **Dijkstra — use when:** non-negative weights. **Bellman-Ford — use when:**
+  negative weights exist. **A\* — use when:** you have a good heuristic toward a
+  known goal.
+- **Topological sort — use when:** ordering tasks with dependencies (must be a
+  DAG; a cycle means no valid order — detect it).
+- **Union-Find — use when:** you incrementally merge groups and ask "same group?"
+  (connectivity, Kruskal's MST). **Avoid when:** you need to *split* groups —
+  union-find does not undo unions cheaply.
+
+## Tradeoffs
+
+| Concern | Tree-based | Graph traversal |
+| ------ | ---- | ---- |
+| Ordered ops (`O(log n)`) | Yes (balanced trees) | n/a |
+| Equality lookup speed | `O(log n)` (slower than hash) | n/a |
+| Relationship modeling | Hierarchy only | Arbitrary connections |
+| Cost driver | Tree height / balance | `O(V + E)` plus heap for weighted |
+| Main pitfall | Unbalanced -> `O(n)` | Wrong representation blows up space/time |
+
+Graph-algorithm choice is dominated by **edge weights**: unweighted -> BFS;
+non-negative weighted -> Dijkstra; negative weighted -> Bellman-Ford; goal-directed
+with a heuristic -> A\*. Picking the wrong one is either incorrect (Dijkstra on
+negative weights gives wrong answers) or needlessly slow.
+
+## Diagram
+
+A small weighted directed graph: BFS counts hops, Dijkstra sums edge weights to
+find the cheapest path.
+
+<Mermaid code={`graph LR
+  A((A)) -->|2| B((B))
+  A -->|5| C((C))
+  B -->|1| C
+  B -->|7| D((D))
+  C -->|3| D
+  D -->|1| E((E))`} />
+
+For A to D: fewest hops is `A -> C -> D` (2 hops), but cheapest weight is
+`A -> B -> C -> D` (cost `2 + 1 + 3 = 6` versus `5 + 3 = 8`). BFS and Dijkstra
+answer different questions.
+
+## Try it
+
+Compare the graph algorithms by what they require and what they answer, then walk
+the decision tree from "what am I modeling?".
+
+<CompareMatrix
+  client:visible
+  caption="Graph algorithm selection"
+  columns={['Handles weights?', 'Negative weights?', 'Complexity', 'Answers']}
+  rows={[
+    { criterion: 'BFS', cells: ['No (unweighted)', 'n/a', 'O(V + E)', 'Shortest path by hop count'] },
+    { criterion: 'DFS', cells: ['No', 'n/a', 'O(V + E)', 'Reachability, cycles, topo order'] },
+    { criterion: 'Dijkstra', cells: ['Yes', 'No', 'O((V + E) log V)', 'Cheapest weighted path'] },
+    { criterion: 'A*', cells: ['Yes', 'No', '<= Dijkstra with good heuristic', 'Cheapest path to a known goal'] },
+    { criterion: 'Bellman-Ford', cells: ['Yes', 'Yes', 'O(V * E)', 'Cheapest path; detects negative cycles'] },
+    { criterion: 'Topological sort', cells: ['n/a (DAG)', 'n/a', 'O(V + E)', 'Valid dependency order'] },
+    { criterion: 'Union-Find', cells: ['n/a', 'n/a', 'near O(1) per op', 'Same connected component?'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which tree or graph approach?"
+  root={{
+    question: 'Are you modeling a hierarchy / ordered keys, or arbitrary connections between things?',
+    branches: [
+      {
+        label: 'Ordered keys / hierarchy (tree-like)',
+        next: {
+          question: 'What do you need from it?',
+          branches: [
+            { label: 'Ordered lookup, ranges, in-order iteration', next: { leaf: { recommendation: 'Balanced tree (red-black / AVL); B-tree on disk', detail: 'O(log n) ordered operations. B-trees for database indexes and any on-disk/page-based store.' } } },
+            { label: 'Prefix / autocomplete / longest-prefix match', next: { leaf: { recommendation: 'Trie (prefix tree / radix tree)', detail: 'O(L) in key length, independent of key count. Autocomplete, dictionaries, IP routing.' } } },
+            { label: 'Repeated range sum/min/max with updates', next: { leaf: { recommendation: 'Segment tree (or Fenwick for prefix sums)', detail: 'O(log n) range query and update. Use a prefix-sum array instead if the data is static.' } } },
+          ],
+        },
+      },
+      {
+        label: 'Arbitrary connections (graph)',
+        next: {
+          question: 'What question are you answering?',
+          branches: [
+            { label: 'Shortest path / fewest hops, no weights', next: { leaf: { recommendation: 'BFS', detail: 'O(V + E). Level-by-level; finds minimum-hop paths in unweighted graphs.' } } },
+            { label: 'Cheapest path, non-negative weights', next: { leaf: { recommendation: 'Dijkstra (A* if you have a goal heuristic)', detail: 'Min-heap-driven greedy expansion. A* prunes with an admissible heuristic toward a known target.' } } },
+            { label: 'Cheapest path, some negative weights', next: { leaf: { recommendation: 'Bellman-Ford', detail: 'O(V * E). Handles negatives and detects negative cycles; use only when negatives are real.' } } },
+            { label: 'Order tasks with dependencies', next: { leaf: { recommendation: 'Topological sort (DAG required)', detail: 'O(V + E) via DFS or Kahn. A cycle means no valid order — detect it.' } } },
+            { label: 'Are these two in the same group?', next: { leaf: { recommendation: 'Union-Find (Disjoint Set Union)', detail: 'Near-O(1) union/find with path compression. Connectivity and Kruskal MST.' } } },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Database indexes** (PostgreSQL, MySQL/InnoDB, SQLite) are B+ trees; the
+  high fanout minimizes page reads. See *Databases & CAP*.
+- **Internet routing** uses radix tries for longest-prefix match on IP addresses;
+  Linux's routing table and many routers implement exactly this.
+- **Google Maps and game pathfinding** use Dijkstra/A\* over road and grid graphs,
+  with A\*'s heuristic (straight-line distance) cutting search dramatically.
+- **Build systems** (Make, Bazel, npm) topologically sort the dependency DAG to
+  decide build order and detect circular dependencies.
+- **Version control and clustering** use union-find for connectivity; Kruskal's
+  MST (network design, clustering) is built on it.
+
+## Further reading
+
+- [CLRS — Graph Algorithms (BFS, DFS, Dijkstra, Bellman-Ford)](https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/) — the rigorous reference for every algorithm here.
+- [Red-Black Trees vs B-Trees in databases](https://use-the-index-luke.com/sql/anatomy/the-tree) — how real database indexes use balanced trees.
+- [Amit Patel — Introduction to A* (Red Blob Games)](https://www.redblobgames.com/pathfinding/a-star/introduction.html) — the clearest visual explanation of BFS, Dijkstra, and A*.

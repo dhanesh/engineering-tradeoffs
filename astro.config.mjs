@@ -164,6 +164,17 @@ export default defineConfig({
             { label: 'Architecture decisions', slug: 'architecture/architecture-decisions' },
           ],
         },
+        {
+          label: 'Data Structures & Algorithms',
+          items: [
+            { label: 'Overview', slug: 'algorithms' },
+            { label: 'Complexity analysis', slug: 'algorithms/complexity' },
+            { label: 'Core data structures', slug: 'algorithms/core-data-structures' },
+            { label: 'Trees & graphs', slug: 'algorithms/trees-and-graphs' },
+            { label: 'Algorithmic paradigms', slug: 'algorithms/algorithmic-paradigms' },
+            { label: 'Sorting & searching', slug: 'algorithms/sorting-searching' },
+          ],
+        },
       ],
     }),
   ],

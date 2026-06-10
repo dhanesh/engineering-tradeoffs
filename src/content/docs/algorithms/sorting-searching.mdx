@@ -1,0 +1,242 @@
+---
+title: Sorting & Searching
+description: Comparison sorts (quick/merge/heap/insertion), stability, non-comparison sorts (counting/radix/bucket), linear/binary/hash search, external sorting, and why the standard library sort is almost always right.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Sorting and searching are the two most-used algorithmic operations in all of
+software, and the single most important practical lesson is short: **use your
+standard library's sort and search; you will almost never beat them.** The value
+in studying the underlying algorithms is not to reimplement them — it is to know
+*why* the built-in is good, when its assumptions break (huge data that does not fit
+in memory, integer keys in a known range, the need for stability), and to read a
+profiler intelligently when sort shows up as a hot path.
+
+This page covers the comparison sorts and their tradeoffs, the non-comparison sorts
+that beat the `O(n log n)` barrier under special conditions, the search strategies,
+and external sorting for data larger than RAM.
+
+## Mental model
+
+Two hard limits anchor everything:
+
+1. **Any comparison-based sort needs `Omega(n log n)` comparisons** in the worst
+   case — you cannot do better while only *comparing* elements. Quick, merge, and
+   heap sort all hit this bound; they differ in constants, stability, and memory.
+2. **You can beat `n log n` only by *not comparing*** — by exploiting structure in
+   the keys (small integer range, fixed-width digits). Counting/radix/bucket sorts
+   do this, trading generality for speed.
+
+For searching: **searching is cheap if the data is organized.** Unorganized data
+costs `O(n)` (linear scan). Sorted data costs `O(log n)` (binary search). Hashed
+data costs `O(1)` (hash lookup). The cost of a search is really the cost you paid
+earlier to organize the data — pick where you pay.
+
+## Types / Variants
+
+### Comparison sorts
+
+**Quicksort.** Partition around a pivot, recurse on each side. Average `O(n log n)`
+with **small constants and great cache locality** — usually the fastest in-memory
+comparison sort in practice. Worst case `O(n^2)` on bad pivots (mitigated by
+randomized/median-of-three pivots, or a heapsort fallback as in introsort).
+**In-place** (`O(log n)` stack), **not stable**.
+
+**Merge sort.** Recursively split, sort halves, merge. **Guaranteed** `O(n log n)`
+worst case and **stable**, but needs `O(n)` extra memory. The basis of most
+**external sorts** (merging sorted runs from disk) and the default for **linked
+lists** (no random access needed). Java uses a merge-sort variant (Timsort) for
+objects precisely because stability is required.
+
+**Heapsort.** Build a heap, repeatedly extract the max. **Guaranteed** `O(n log n)`,
+**in-place**, **not stable**, but poor cache locality (jumps around the heap), so
+it is usually slower than quicksort in practice. Its value is the worst-case
+guarantee with no extra memory — which is why it serves as quicksort's fallback in
+introsort.
+
+**Insertion sort.** Build the sorted prefix one element at a time. `O(n^2)` in
+general but **`O(n)` on nearly-sorted data** and unbeatable for **small `n`** (tiny
+constants, no recursion). This is why real sorts switch to insertion sort for small
+partitions. **Stable**, in-place.
+
+**Timsort / introsort (hybrids).** Production reality. **Timsort** (Python, Java
+objects) is merge sort + insertion sort that detects existing sorted runs — superb
+on real-world partially-ordered data, stable. **Introsort** (C++ `std::sort`) is
+quicksort that falls back to heapsort on bad pivots and insertion sort on small
+partitions — fast and worst-case-safe. The standard library sort *is* one of these;
+that is why it wins.
+
+### Stability
+
+A **stable** sort preserves the relative order of equal keys. It matters when you
+sort by one key after another (sort by name, then stably by department) or when
+ties carry meaning. Merge sort and Timsort are stable; quicksort and heapsort are
+not. **If you need stability, that alone dictates the algorithm.**
+
+### Non-comparison sorts
+
+These break the `n log n` barrier by exploiting key structure:
+
+- **Counting sort.** Count occurrences of each key value, then emit in order.
+  `O(n + k)` for keys in a small integer range `k`. Stable. Useless if `k` is huge.
+- **Radix sort.** Stably sort by each digit/byte from least to most significant.
+  `O(d * (n + b))` for `d` digits, base `b`. Excellent for fixed-width integers and
+  strings. Used in some database and big-data sorts.
+- **Bucket sort.** Distribute into buckets by value range, sort each bucket,
+  concatenate. `O(n)` average when input is uniformly distributed; degrades
+  otherwise.
+
+**Trigger for all three:** keys are integers (or convertible) in a bounded range,
+and you need to beat `O(n log n)`. Otherwise, comparison sort.
+
+### Searching
+
+- **Linear search.** `O(n)`, no precondition. The right answer for small or
+  unsorted data, or a one-shot lookup where building an index is not worth it.
+- **Binary search.** `O(log n)`, requires **sorted** data. Worth it if you search
+  the same sorted data repeatedly; the sort cost amortizes over many queries.
+- **Hash lookup.** `O(1)` average, requires a **hash table** built up front. The
+  fastest repeated equality lookup, at the cost of memory and no ordering/range
+  queries.
+
+The choice is "how often do I search, and did I already pay to organize the data?"
+One lookup on unsorted data: linear. Many lookups: sort once for binary search, or
+hash for `O(1)` — hash if equality-only, sorted/tree if you also need ranges.
+
+### External sorting
+
+When data exceeds RAM, you cannot sort in memory. **External merge sort**: read
+chunks that *do* fit, sort each in memory (a "run"), write runs to disk, then
+**k-way merge** the sorted runs with a heap. `O(n log n)` comparisons but optimized
+for **minimizing disk I/O** (sequential reads/writes), which is the real cost at
+this scale. This is how databases sort large result sets and how big-data frameworks
+(MapReduce/Spark) sort terabytes.
+
+## When to use / When NOT
+
+- **Standard library sort — use when:** ~always for in-memory data. **Avoid only
+  when:** profiling proves it is the bottleneck *and* you have a special structure
+  (bounded integer keys, external data) the library does not exploit.
+- **Quicksort — use when:** general in-memory sort, no stability needed, average-case
+  speed matters. **Avoid when:** you need stability or a hard worst-case guarantee
+  (use merge/heap, or introsort which guards quicksort).
+- **Merge sort — use when:** you need stability, are sorting a linked list, or are
+  doing an external sort. **Avoid when:** memory is tight and stability is not
+  required (the `O(n)` extra buffer hurts).
+- **Heapsort — use when:** you need `O(n log n)` worst case in `O(1)` extra space.
+  **Avoid when:** cache performance matters (it usually loses to quicksort).
+- **Insertion sort — use when:** `n` is small or data is nearly sorted. **Avoid
+  when:** `n` is large and unordered.
+- **Counting / radix / bucket — use when:** keys are bounded integers and you must
+  beat `O(n log n)`. **Avoid when:** keys are arbitrary/comparable-only or the range
+  is huge.
+- **Binary search — use when:** data is sorted and searched repeatedly. **Hash
+  lookup — use when:** repeated equality lookups dominate and you do not need order.
+  **Linear search — use when:** data is small/unsorted or searched once.
+
+## Tradeoffs
+
+The sort tradeoff is **worst-case guarantee versus speed versus stability versus
+memory** — no comparison sort wins all four, which is why hybrids exist.
+
+| Sort | Worst case | Stable? | Memory | In practice |
+| ------ | ---- | ---- | ---- | ---- |
+| Quicksort | `O(n^2)` | No | `O(log n)` | Fastest in-memory; best cache locality |
+| Merge sort | `O(n log n)` | Yes | `O(n)` | Stable; external sorts; linked lists |
+| Heapsort | `O(n log n)` | No | `O(1)` | Guaranteed bound, poor locality |
+| Insertion sort | `O(n^2)` | Yes | `O(1)` | Wins for small / nearly-sorted |
+| Counting sort | `O(n + k)` | Yes | `O(n + k)` | Beats `n log n` for small key range |
+| Radix sort | `O(d (n + b))` | Yes | `O(n + b)` | Fixed-width integer/string keys |
+
+## Diagram
+
+```mermaid
+graph TD
+  D{Keys bounded integers, must beat n log n?} -->|Yes| NC[Counting / radix / bucket sort]
+  D -->|No, general comparison sort| S{Need stability?}
+  S -->|Yes| ST{Data fits in memory?}
+  S -->|No| NS{Need hard worst-case guarantee?}
+  ST -->|Yes| MS[Merge sort / Timsort]
+  ST -->|No, larger than RAM| EXT[External merge sort]
+  NS -->|Yes, in O 1 space| HS[Heapsort]
+  NS -->|No, want speed| QS[Quicksort / introsort]
+  ST -.->|just use it| LIB[Standard library sort]
+  QS -.->|just use it| LIB
+```
+
+## Try it
+
+Compare the sorts across the properties that actually decide the choice, then walk
+the decision tree.
+
+<CompareMatrix
+  client:visible
+  caption="Sorting algorithm selection"
+  columns={['Avg time', 'Worst time', 'Stable?', 'Extra space', 'Best for']}
+  rows={[
+    { criterion: 'Quicksort', cells: ['O(n log n)', 'O(n^2)', 'No', 'O(log n)', 'General in-memory, speed'] },
+    { criterion: 'Merge sort', cells: ['O(n log n)', 'O(n log n)', 'Yes', 'O(n)', 'Stability, linked lists, external'] },
+    { criterion: 'Heapsort', cells: ['O(n log n)', 'O(n log n)', 'No', 'O(1)', 'Guaranteed bound, no extra memory'] },
+    { criterion: 'Insertion sort', cells: ['O(n^2)', 'O(n^2)', 'Yes', 'O(1)', 'Small or nearly-sorted data'] },
+    { criterion: 'Timsort (hybrid)', cells: ['O(n log n)', 'O(n log n)', 'Yes', 'O(n)', 'Real-world partially-ordered data'] },
+    { criterion: 'Counting sort', cells: ['O(n + k)', 'O(n + k)', 'Yes', 'O(n + k)', 'Small integer key range'] },
+    { criterion: 'Radix sort', cells: ['O(d (n + b))', 'O(d (n + b))', 'Yes', 'O(n + b)', 'Fixed-width integer/string keys'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="How should I sort or search?"
+  root={{
+    question: 'Are you sorting, or searching?',
+    branches: [
+      { label: 'Sorting', next: {
+        question: 'Are the keys bounded integers (or convertible) and is sort a proven bottleneck?',
+        branches: [
+          { label: 'Yes — bounded integer keys, need to beat n log n', next: { leaf: { recommendation: 'Counting / radix / bucket sort', detail: 'Non-comparison sorts run in O(n + k) or O(d(n+b)) by exploiting key structure. Only worth it when the key range is small and profiling justifies it.' } } },
+          { label: 'No — general data', next: {
+            question: 'Do you need stability or are you sorting data larger than RAM?',
+            branches: [
+              { label: 'Need stability (or sorting a linked list)', next: { leaf: { recommendation: 'Merge sort / Timsort (your library sort for objects)', detail: 'Stable, guaranteed O(n log n). Your standard library already uses Timsort for objects — just call it.' } } },
+              { label: 'Data larger than RAM', next: { leaf: { recommendation: 'External merge sort', detail: 'Sort in-memory runs, write to disk, k-way merge with a heap. Optimized to minimize sequential disk I/O.' } } },
+              { label: 'In-memory, stability not needed', next: { leaf: { recommendation: 'Standard library sort (introsort / quicksort)', detail: 'Quicksort speed with a heapsort worst-case guard and insertion sort for small partitions. You will not beat it; just use it.' } } },
+            ],
+          } },
+        ],
+      } },
+      { label: 'Searching', next: {
+        question: 'How often will you search this data?',
+        branches: [
+          { label: 'Once, or data is small/unsorted', next: { leaf: { recommendation: 'Linear search', detail: 'O(n), no precondition. Not worth building an index for a one-shot lookup on small data.' } } },
+          { label: 'Repeatedly, equality lookups only', next: { leaf: { recommendation: 'Hash lookup', detail: 'O(1) average. Build a hash table once; fastest for repeated equality queries. No ordering or ranges.' } } },
+          { label: 'Repeatedly, need ranges / ordered access', next: { leaf: { recommendation: 'Sort once, then binary search (or use a tree)', detail: 'O(log n) per query plus range scans. The sort cost amortizes across many queries.' } } },
+        ],
+      } },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Python's `sorted()` and Java's `Collections.sort`** use **Timsort** — stable
+  and tuned for the partially-ordered data real programs actually sort.
+- **C++ `std::sort`** uses **introsort** (quicksort + heapsort fallback + insertion
+  sort), guaranteeing `O(n log n)` while staying fast.
+- **Databases** use external merge sort for large `ORDER BY` / `GROUP BY` result
+  sets and choose between index (binary-search-like) and hash joins based on
+  cardinality.
+- **Big-data frameworks** (Hadoop MapReduce, Spark) sort terabytes with external
+  merge sort and radix-style partitioning, optimizing for sequential disk and
+  network I/O.
+
+## Further reading
+
+- [Timsort — the algorithm behind Python and Java sorts](https://github.com/python/cpython/blob/main/Objects/listsort.txt) — Tim Peters' own description of why it wins on real data.
+- [Sorting Algorithms Compared (visual + complexity)](https://www.toptal.com/developers/sorting-algorithms) — side-by-side animations and complexity table.
+- [CLRS — Sorting and Order Statistics (incl. the `n log n` lower bound)](https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/) — the rigorous proof of why comparison sorts cannot beat `n log n`.

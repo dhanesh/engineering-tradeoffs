@@ -1,0 +1,176 @@
+---
+title: Data Structures & Algorithms
+description: Why DSA is really about picking the right structure for your data and access pattern — a problem-solving framework for practitioners, not a leetcode dump.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+In production code, "algorithms" rarely means inventing a clever new method. It
+means **choosing the right data structure for your data and access pattern**, and
+then letting the obvious algorithm fall out of that choice. A hash map turns an
+`O(n)` scan into an `O(1)` lookup; a heap turns "re-sort on every insert" into
+`O(log n)` per operation; the wrong container quietly makes a feature that worked
+on 1,000 rows fall over at 10 million. This cluster is about that judgement —
+*when to reach for which structure and why* — because that is where data
+structures actually earn their keep in real systems.
+
+The payoff is not academic. A request handler that does a linear search inside a
+loop is `O(n^2)`; swap the inner search for a set membership test and it becomes
+`O(n)`. That single decision is the difference between a p99 of 5 ms and a
+timeout. You do not need to memorize the proofs. You need to recognize the shape
+of the problem and know which structure makes it cheap.
+
+## Mental model
+
+The durable mental model is **"know your data, then know your access pattern."**
+Every structure is a deal: it makes some operations cheap by making others
+expensive. Pick the structure whose cheap operations match the operations you do
+*most often and on the hot path*, and tolerate the expensive ones you rarely do.
+
+Ask three questions before writing any code that touches a collection:
+
+1. **What do I store?** Size, key type, whether order matters, whether duplicates
+   are allowed.
+2. **How do I access it?** Lookup by key, scan in order, find the min/max, find a
+   range, insert/delete in the middle, take the top-`k`.
+3. **What is the hot path?** The operation that runs per-request or per-item in a
+   tight loop is the one whose cost dominates; optimize that, not the one that
+   runs once at startup.
+
+If lookup by key dominates, you want a hash table. If "always give me the
+smallest" dominates, you want a heap. If "keep things sorted and answer range
+queries" dominates, you want a balanced tree. The algorithm is downstream of this
+choice — get the structure right and the code writes itself.
+
+## Types / Variants
+
+The problem-solving framework most working engineers actually use, in order:
+
+- **Restate the problem in terms of operations.** Translate the feature ("show
+  the 10 most recent unread alerts per user") into primitive operations (group by
+  key, keep top-`k` by timestamp, test membership). The operations name the
+  structure.
+- **Estimate `n` and the operation frequency.** A 50-element list searched once is
+  fine as an array. The same search inside a per-request loop over millions of
+  items is a hash set. Magnitude decides whether complexity even matters.
+- **Pick the structure, then the algorithm.** The structure constrains the
+  algorithm space to a handful of obvious choices. This is the opposite of the
+  leetcode framing ("which trick?") and far more reliable in production.
+- **Reach for the standard library first.** Your language's built-in sort, hash
+  map, and ordered map are battle-tested, cache-tuned, and almost always faster
+  than what you would hand-roll. Custom structures are a last resort, justified by
+  profiling, not a hunch.
+- **Measure, do not guess.** Big-O tells you how cost *scales*; it does not tell
+  you the constant factors, cache behavior, or allocation cost that dominate at
+  realistic sizes. Profile the real workload before optimizing.
+
+These map to the rest of the cluster: *complexity* gives you the cost language,
+*core data structures* and *trees & graphs* give you the containers, *algorithmic
+paradigms* and *sorting & searching* give you the techniques.
+
+## When to use / When NOT
+
+- **Reach for a deliberate structure choice when:** the collection is large, it is
+  on a hot path, or the access pattern is anything beyond "iterate once." This is
+  where the right container converts a quadratic blowup into a linear one.
+- **Reach for a different algorithm when:** profiling shows the current one is the
+  bottleneck *and* the input scales. A better Big-O class only wins past some
+  crossover `n`; below it, the simpler code with smaller constants is faster.
+- **Avoid premature optimization when:** `n` is small and bounded, the code runs
+  once, or you have not measured. A clear `O(n^2)` loop over 20 items beats a
+  clever `O(n log n)` one nobody can read. Correctness and clarity first;
+  optimize the proven hot path second.
+- **Avoid hand-rolling a structure when:** the standard library already has it.
+  Reimplementing a hash map or a sort is a reliable way to ship subtle bugs and
+  lose to the optimized built-in.
+
+## Tradeoffs
+
+The master tradeoff in this whole cluster is **time versus space versus
+simplicity**, mediated by **how big `n` is and how often the operation runs**.
+
+| Lever | You gain | You pay |
+| ------ | ---- | ---- |
+| Add an index / hash structure | Fast lookup (`O(1)` or `O(log n)`) | Extra memory; write/insert overhead |
+| Pick a better algorithm class | Better scaling at large `n` | Larger constants; more code complexity |
+| Precompute / cache results | Faster reads | Memory; staleness; invalidation logic |
+| Keep it simple (array + scan) | Readable, cache-friendly, zero deps | Poor scaling once `n` grows |
+
+The trap is optimizing the wrong axis: spending a week shaving an `O(n log n)`
+into `O(n)` on a path that processes 100 items, while the real cost is an
+unindexed `O(n^2)` join elsewhere. Estimate first, profile second, optimize the
+thing that actually scales with production load.
+
+## Diagram
+
+```mermaid
+graph TD
+  Start[Feature / requirement] --> Ops[Restate as primitive operations]
+  Ops --> N{How big is n? How hot is the path?}
+  N -->|Small, bounded, cold| Simple[Array + simple loop: ship it]
+  N -->|Large or hot path| Access{Dominant access pattern?}
+  Access -->|Lookup by key| Hash[Hash table / set]
+  Access -->|Min / max / top-k| Heap[Heap / priority queue]
+  Access -->|Sorted + range queries| Tree[Balanced tree / ordered map]
+  Access -->|Sequential / FIFO / LIFO| Linear[Array / queue / stack]
+  Hash --> Measure[Profile the real workload]
+  Heap --> Measure
+  Tree --> Measure
+  Linear --> Measure
+  Simple --> Measure
+```
+
+## Try it
+
+The same problem reframed three ways — feature, operations, structure — shows how
+the structure falls out of the access pattern.
+
+<WhenWhyTabs
+  client:visible
+  caption="From requirement to structure"
+  tabs={[
+    {
+      label: 'The requirement',
+      content:
+        '"For each user, show the 10 most recently active sessions, and tell me instantly whether a given session ID is still live." A direct read of this sentence does not name a data structure — that is the point. First translate it into the operations it actually demands.',
+    },
+    {
+      label: 'The operations',
+      content:
+        'Three primitives hide inside the sentence: (1) group sessions by user (lookup by key), (2) keep the top 10 by recency per user (a bounded top-k by timestamp), and (3) test "is this session ID live?" (membership test). Each primitive names a structure: a hash map keyed by user, a small heap or capped sorted list per user, and a hash set of live IDs.',
+    },
+    {
+      label: 'The structure',
+      content:
+        'Hash map (user -> per-user state) for O(1) grouping; a size-10 min-heap per user for O(log 10) top-k maintenance; a hash set of live session IDs for O(1) liveness checks. No clever algorithm required — the access pattern picked the containers, and the code is now obvious and fast at any n.',
+    },
+    {
+      label: 'Why not just a list',
+      content:
+        'A single list of all sessions makes every liveness check an O(n) scan and every "top 10 for this user" a full filter-and-sort. Fine for a demo with 50 sessions; a per-request O(n) scan over millions is a production incident. The structures above keep every hot-path operation O(1) or O(log k) regardless of total size.',
+    },
+  ]}
+/>
+
+## Real-world examples
+
+- **Databases** are data-structure engines: B-trees power most SQL indexes,
+  hash indexes power equality lookups, LSM-trees power write-heavy stores like
+  Cassandra and RocksDB. Choosing an index *is* choosing a data structure.
+- **Routers and load balancers** use tries (radix trees) for longest-prefix IP
+  matching — the access pattern (prefix match) names the structure.
+- **Schedulers and event loops** use heaps/priority queues to always pull the
+  next-due task in `O(log n)`; this is the top-`k` pattern at the core of OS
+  schedulers, timer wheels, and Dijkstra's algorithm alike.
+- **Deduplication and rate limiting** lean on hash sets and bloom filters because
+  the dominant operation is a membership test, which hashing makes `O(1)`.
+
+## Further reading
+
+- [Steve Yegge — Get That Job at Google (algorithm interview reality)](https://steve-yegge.blogspot.com/2008/03/get-that-job-at-google.html) — why the *vocabulary* of structures matters more than memorized tricks.
+- [Open Data Structures (Pat Morin)](https://opendatastructures.org/) — free, rigorous, implementation-focused coverage of every structure in this cluster.
+- [Programming Pearls (Jon Bentley)](https://www.cs.cmu.edu/~bryant/pdc/bentley.html) — the canonical text on choosing the right representation for a real problem.

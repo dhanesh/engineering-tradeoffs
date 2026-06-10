@@ -1,0 +1,219 @@
+---
+title: Algorithmic Paradigms
+description: Brute force, divide & conquer, greedy, dynamic programming, backtracking, two-pointer/sliding window, and binary search — the recurring problem shapes and how to recognize which applies.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import DecisionTree from '../../../components/DecisionTree';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+An algorithmic paradigm is a **reusable problem-solving shape** — a strategy that
+recurs across thousands of specific problems. You rarely invent an algorithm from
+scratch; you recognize that the problem in front of you has the shape of a known
+paradigm and apply it. The skill that matters in practice is **pattern
+recognition**: spotting "this is a divide-and-conquer problem" or "this is the
+sliding-window shape" from the problem's structure, because that recognition
+collapses the solution space to a known technique.
+
+This page is a paradigm-recognition guide: the signal that triggers each one, what
+it costs, and when it does *not* apply.
+
+## Mental model
+
+Most paradigms are answers to one question: **how do I avoid redoing work?**
+
+- **Brute force** does all the work — every possibility. The baseline.
+- **Divide & conquer** splits the work into independent halves, solves each, and
+  combines.
+- **Greedy** commits to the locally-best choice and never reconsiders — *only* safe
+  when local optimum implies global optimum.
+- **Dynamic programming** is brute force minus the *repeated* work: it remembers
+  answers to overlapping subproblems.
+- **Backtracking** is brute force *with pruning*: it abandons a partial solution the
+  moment it cannot possibly succeed.
+- **Two-pointer / sliding window** exploits *order* to turn a nested-loop scan into
+  a single pass.
+- **Binary search** exploits *monotonicity* to halve the search space each step.
+
+The recognition trigger for each is a structural property of the problem (sorted
+input, overlapping subproblems, a monotonic predicate). Learn the triggers, not the
+problems.
+
+## Types / Variants
+
+**Brute force.** Try every possibility. Always correct, often `O(2^n)`, `O(n!)`, or
+`O(n^2)`. **Trigger:** small input, or you need a baseline to verify a clever
+solution against. Never dismiss it — for bounded `n` it is the right, readable
+answer.
+
+**Divide & conquer.** Recursively split into independent subproblems, solve, and
+merge. **Trigger:** the problem splits cleanly and subresults combine. Examples:
+merge sort, quicksort, binary search, FFT, and most "split the array in half"
+solutions. Cost is usually `O(n log n)` via the recursion `T(n) = 2 T(n/2) + O(n)`.
+
+**Greedy.** Repeatedly take the locally optimal choice. **Trigger:** the problem
+has the *greedy-choice property* (a local optimum is part of a global optimum) and
+*optimal substructure*. Fast (`O(n log n)` or better) and simple — but **only
+correct when the greedy property provably holds**. Examples: Dijkstra, Huffman
+coding, interval scheduling, Kruskal/Prim MST. The danger: greedy that "looks
+right" but is wrong (coin change with arbitrary denominations is the classic trap —
+greedy fails, DP is needed).
+
+**Dynamic programming (DP).** Solve overlapping subproblems once and reuse the
+results. **Trigger:** *optimal substructure* (the answer is built from answers to
+subproblems) *and* *overlapping subproblems* (the same subproblem recurs). Two
+implementation styles:
+
+- **Memoization (top-down).** Write the natural recursion, cache each result. Easy
+  to derive from a brute-force recursion; only computes the subproblems you
+  actually reach; recursion-stack overhead.
+- **Tabulation (bottom-up).** Fill a table from base cases upward in dependency
+  order. No recursion overhead, often more cache-friendly, and enables space
+  optimization (keep only the last row); but you must compute the whole table and
+  reason about fill order.
+
+Same complexity; pick top-down for clarity and sparse subproblem spaces, bottom-up
+for performance and when you will compute most of the table anyway. Examples:
+knapsack, edit distance, longest common subsequence, sequence alignment.
+
+**Backtracking.** Build a solution incrementally and abandon a branch as soon as it
+violates a constraint. **Trigger:** you are constructing combinations/permutations
+under constraints and can *prune* early. Worst case is still exponential, but
+pruning makes many instances tractable. Examples: N-queens, Sudoku, constraint
+satisfaction, generating valid permutations.
+
+**Two-pointer and sliding window.** Maintain one or two indices that move through
+*ordered* or *sequential* data, turning an `O(n^2)` nested scan into `O(n)`.
+**Trigger (two-pointer):** sorted array, "find a pair/triplet meeting a condition,"
+or converging from both ends. **Trigger (sliding window):** "longest/shortest
+contiguous subarray/substring satisfying a condition" — grow and shrink a window in
+one pass. Examples: two-sum on a sorted array, longest substring without repeats,
+max-sum window of size `k`.
+
+**Binary search.** Halve the search space each step by exploiting **monotonicity**.
+`O(log n)`. **Trigger:** sorted data, *or* — the underrated version — "binary search
+on the answer," where a yes/no predicate is monotonic in some parameter (smallest
+capacity that finishes in time, minimum feasible threshold). If you can phrase the
+problem as "find the boundary where a monotonic condition flips," binary search
+applies even without an explicit sorted array.
+
+## When to use / When NOT
+
+- **Brute force — use when:** `n` is small/bounded, or you need a correctness
+  oracle. **Avoid when:** `n` grows and the cost is exponential — but only after you
+  have a working baseline.
+- **Divide & conquer — use when:** the problem splits into independent subproblems
+  that combine cheaply. **Avoid when:** subproblems overlap heavily (that is DP's
+  job — splitting redoes work).
+- **Greedy — use when:** you can *prove* the greedy-choice property holds. **Avoid
+  when:** you cannot prove it — a greedy that is merely plausible is a bug. Verify
+  against brute force on small inputs.
+- **Dynamic programming — use when:** you see optimal substructure *and* overlapping
+  subproblems (the same recursion called with the same arguments). **Avoid when:**
+  subproblems do not overlap (use divide & conquer) or the state space is too large
+  to table.
+- **Backtracking — use when:** you enumerate constrained combinations and can prune
+  early. **Avoid when:** there is a polynomial-time structure (DP/greedy) you are
+  missing, or the space is too large even with pruning.
+- **Two-pointer / sliding window — use when:** data is ordered/contiguous and the
+  brute-force solution is a nested loop over pairs or subarrays. **Avoid when:** the
+  data is unordered and cannot be (sort first, or use a hash map instead).
+- **Binary search — use when:** the data is sorted or a monotonic predicate exists.
+  **Avoid when:** there is no ordering/monotonicity to exploit.
+
+## Tradeoffs
+
+| Paradigm | Typical cost | Buys you | Costs you |
+| ------ | ---- | ---- | ---- |
+| Brute force | `O(2^n)` / `O(n^2)` | Correct, trivial | Does not scale |
+| Divide & conquer | `O(n log n)` | Clean recursion, parallelizable | Needs cheap combine |
+| Greedy | `O(n log n)` or less | Fast, simple | Correct only if provable |
+| Dynamic programming | `O(states * transition)` | Polynomial from exponential | Memory; harder to derive |
+| Backtracking | exponential (pruned) | Handles hard constraints | Still exponential worst case |
+| Two-pointer / window | `O(n)` | Kills a nested loop | Needs ordered/sequential data |
+| Binary search | `O(log n)` | Logarithmic search | Needs monotonicity |
+
+The meta-tradeoff: **simplicity versus the work you save.** Brute force is simplest
+and slowest; the others trade derivation effort and memory for asymptotic wins. Do
+not reach for DP or backtracking until a paradigm-recognition trigger actually
+fires — premature cleverness on a small `n` is wasted effort and a readability cost.
+
+## Diagram
+
+```mermaid
+graph TD
+  P{What does the problem look like?} -->|Sorted data or monotonic predicate| BS[Binary search]
+  P -->|Ordered/contiguous, nested-pair loop| TP[Two-pointer / sliding window]
+  P -->|Splits into independent subproblems| DC[Divide & conquer]
+  P -->|Optimal substructure + overlapping subproblems| DP[Dynamic programming]
+  P -->|Local optimum implies global optimum| G[Greedy]
+  P -->|Constrained combinations, prune early| BT[Backtracking]
+  P -->|Small n / need a baseline| BF[Brute force]
+```
+
+## Try it
+
+Each tab gives the recognition trigger and the "why" for a paradigm; then walk the
+decision tree from the problem's structure to the technique.
+
+<WhenWhyTabs
+  client:visible
+  caption="Paradigm recognition triggers"
+  tabs={[
+    { label: 'Binary search', content: 'Trigger: the data is sorted, OR a yes/no condition is monotonic in some parameter (it flips from no to yes exactly once). Why: each comparison eliminates half the remaining space, so you reach the answer in O(log n). Watch for the underrated "binary search on the answer" form — find the smallest/largest value where a monotonic predicate holds.' },
+    { label: 'Two-pointer / window', content: 'Trigger: ordered or contiguous data, and the brute-force solution is a nested loop over pairs (two-pointer) or over subarrays/substrings (sliding window). Why: moving indices in one coordinated pass exploits the ordering to avoid re-examining elements, turning O(n^2) into O(n).' },
+    { label: 'Divide & conquer', content: 'Trigger: the problem splits into independent subproblems whose results combine cheaply. Why: solving halves and merging follows T(n) = 2 T(n/2) + O(n) = O(n log n), and the independent halves often parallelize. If the subproblems overlap instead of being independent, you want DP, not plain divide & conquer.' },
+    { label: 'Dynamic programming', content: 'Trigger: optimal substructure (the answer is composed of answers to smaller subproblems) AND overlapping subproblems (the same subproblem is solved many times). Why: caching each subproblem result once collapses an exponential recursion to polynomial. Memoize top-down for clarity; tabulate bottom-up for speed and space optimization.' },
+    { label: 'Greedy', content: 'Trigger: you can prove that taking the locally optimal choice at each step yields a globally optimal result (the greedy-choice property). Why: it is the fastest and simplest paradigm when it applies — but a greedy that is merely plausible is a correctness bug. Always verify against brute force on small inputs before trusting it.' },
+    { label: 'Backtracking', content: 'Trigger: you are constructing combinations/permutations under constraints and can detect that a partial solution is doomed before completing it. Why: pruning dead branches early makes many exponential search spaces tractable, even though the worst case stays exponential.' },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which paradigm applies?"
+  root={{
+    question: 'Is the input sorted, or is there a monotonic yes/no condition you can exploit?',
+    branches: [
+      { label: 'Yes — sorted / monotonic', next: {
+        question: 'Are you searching for a boundary value, or scanning for a pair/subarray?',
+        branches: [
+          { label: 'Find a boundary / target value', next: { leaf: { recommendation: 'Binary search', detail: 'O(log n). Works on sorted data or on a monotonic predicate ("binary search on the answer").' } } },
+          { label: 'Find a pair or contiguous window meeting a condition', next: { leaf: { recommendation: 'Two-pointer / sliding window', detail: 'O(n). Exploits ordering/contiguity to replace a nested O(n^2) loop with one pass.' } } },
+        ],
+      } },
+      { label: 'No obvious ordering', next: {
+        question: 'Does the problem optimize something (max/min/count) with subproblem structure?',
+        branches: [
+          { label: 'Subproblems overlap (same recursion repeats)', next: { leaf: { recommendation: 'Dynamic programming', detail: 'Optimal substructure + overlapping subproblems. Memoize top-down or tabulate bottom-up; both turn exponential into polynomial.' } } },
+          { label: 'Subproblems are independent and combine cheaply', next: { leaf: { recommendation: 'Divide & conquer', detail: 'Split, solve halves, merge. Typically O(n log n) and parallelizable.' } } },
+          { label: 'A provably-correct local choice exists', next: { leaf: { recommendation: 'Greedy', detail: 'Fast and simple — but only if you can prove the greedy-choice property. Verify against brute force.' } } },
+          { label: 'Build constrained combinations, can prune early', next: { leaf: { recommendation: 'Backtracking', detail: 'Incremental construction with early abandonment of doomed branches. Exponential worst case, often tractable in practice.' } } },
+          { label: 'Small/bounded input, or need a baseline', next: { leaf: { recommendation: 'Brute force', detail: 'Always correct and readable. The right answer for small n and the oracle to verify clever solutions against.' } } },
+        ],
+      } },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Diff and merge tools** (Git, `diff`) use the dynamic-programming longest-common-subsequence
+  / edit-distance algorithms to align file versions.
+- **Spell checkers and DNA sequence alignment** (BLAST) use DP edit distance and
+  its variants at scale.
+- **Network routing and compression** rely on greedy algorithms: Dijkstra (routing),
+  Huffman coding (compression), Kruskal/Prim (spanning trees).
+- **Constraint solvers, SAT solvers, and Sudoku/puzzle engines** are backtracking
+  with aggressive pruning at their core.
+- **Capacity-planning and rate-limit tuning** problems are frequently "binary search
+  on the answer" — find the smallest threshold that satisfies a monotonic SLO.
+
+## Further reading
+
+- [CLRS — Dynamic Programming and Greedy Algorithms](https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/) — the canonical treatment of optimal substructure and the greedy-choice property.
+- [Topcoder — Dynamic Programming: From Novice to Advanced](https://www.topcoder.com/thrive/articles/Dynamic%20Programming:%20From%20Novice%20to%20Advanced) — practical paradigm-recognition for DP.
+- [Errichto — Binary Search on the Answer](https://www.youtube.com/watch?v=GU7DpgHINWQ) — the monotonic-predicate framing that unlocks binary search beyond sorted arrays.
