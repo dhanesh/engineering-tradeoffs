@@ -12,8 +12,10 @@ const BASE = '/engineering-tradeoffs';
 // so under a project-page base they 404. This rewrites them at build time, so
 // authors keep writing clean `/cluster/page/` links and they resolve everywhere.
 // Dependency-free walk over the HTML AST (no unist-util-visit needed).
-function rehypeBaseLinks({ base } = {}) {
-  const prefix = (base || '').replace(/\/$/, '');
+/** @param {{ base?: string }} [opts] */
+function rehypeBaseLinks(opts = {}) {
+  const prefix = (opts.base || '').replace(/\/$/, '');
+  /** @param {any} node */
   const fix = (node) => {
     if (
       node.type === 'element' &&
@@ -29,6 +31,7 @@ function rehypeBaseLinks({ base } = {}) {
     }
     if (node.children) for (const child of node.children) fix(child);
   };
+  /** @param {any} tree */
   return (tree) => fix(tree);
 }
 
