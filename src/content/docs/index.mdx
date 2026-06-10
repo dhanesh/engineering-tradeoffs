@@ -6,68 +6,72 @@ hero:
   tagline: An interactive software engineering handbook — every topic, when to use it and why. 24 clusters, ~140 pages, end to end.
   actions:
     - text: Start with Design Patterns
-      link: /design-patterns/
+      link: /engineering-tradeoffs/design-patterns/
       icon: right-arrow
       variant: primary
     - text: Jump to System Design
-      link: /scalability/
+      link: /engineering-tradeoffs/scalability/
       icon: open-book
 ---
 
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+export const base = import.meta.env.BASE_URL.endsWith('/')
+  ? import.meta.env.BASE_URL
+  : import.meta.env.BASE_URL + '/';
 
 Every topic follows the same shape — **Overview → Mental model → Types → When to use / When NOT → Tradeoffs → Diagram → Try it → Real-world examples → Further reading** — so you can scan for the decision, not just the definition.
 
 ## Foundations & Languages
 
 <CardGrid>
-  <LinkCard title="Data Structures & Algorithms" href="/algorithms/" description="Complexity, core structures, trees & graphs, paradigms, sorting." />
-  <LinkCard title="OS & Computer Architecture" href="/systems-fundamentals/" description="Processes, memory, I/O, the CPU, runtime & GC — mechanical sympathy." />
-  <LinkCard title="Programming Language Concepts" href="/languages/" description="Type systems, paradigms, memory models, choosing a language." />
-  <LinkCard title="Concurrency & Parallelism" href="/concurrency/" description="Threads vs async, synchronization, memory models, parallel patterns." />
+  <LinkCard title="Data Structures & Algorithms" href={`${base}algorithms/`} description="Complexity, core structures, trees & graphs, paradigms, sorting." />
+  <LinkCard title="OS & Computer Architecture" href={`${base}systems-fundamentals/`} description="Processes, memory, I/O, the CPU, runtime & GC — mechanical sympathy." />
+  <LinkCard title="Programming Language Concepts" href={`${base}languages/`} description="Type systems, paradigms, memory models, choosing a language." />
+  <LinkCard title="Concurrency & Parallelism" href={`${base}concurrency/`} description="Threads vs async, synchronization, memory models, parallel patterns." />
 </CardGrid>
 
 ## Data & Storage
 
 <CardGrid>
-  <LinkCard title="Databases & CAP" href="/databases-cap/" description="CAP/PACELC, consistency models, database types, replication, transactions." />
-  <LinkCard title="Caching & Performance" href="/caching/" description="Cache strategies, eviction, invalidation, distributed & CDN caching." />
-  <LinkCard title="Search Indexes" href="/search/" description="Inverted indexes, BM25 vs vector vs hybrid, engine selection." />
-  <LinkCard title="Data Engineering & Pipelines" href="/data-engineering/" description="Batch vs streaming, ETL/ELT, warehouses & lakehouses, modeling." />
+  <LinkCard title="Databases & CAP" href={`${base}databases-cap/`} description="CAP/PACELC, consistency models, database types, replication, transactions." />
+  <LinkCard title="Caching & Performance" href={`${base}caching/`} description="Cache strategies, eviction, invalidation, distributed & CDN caching." />
+  <LinkCard title="Search Indexes" href={`${base}search/`} description="Inverted indexes, BM25 vs vector vs hybrid, engine selection." />
+  <LinkCard title="Data Engineering & Pipelines" href={`${base}data-engineering/`} description="Batch vs streaming, ETL/ELT, warehouses & lakehouses, modeling." />
 </CardGrid>
 
 ## Distributed Systems & Scale
 
 <CardGrid>
-  <LinkCard title="Distributed Systems" href="/distributed-systems/" description="Consensus, time & ordering, coordination, distributed failure." />
-  <LinkCard title="Scalability & System Design" href="/scalability/" description="Back-of-envelope, sharding, statelessness, rate limiting." />
-  <LinkCard title="Reliability & Resilience" href="/reliability/" description="Resilience patterns, redundancy, SLOs & error budgets, incidents." />
-  <LinkCard title="Event-Driven Architecture" href="/event-driven/" description="Message brokers, delivery semantics, event-driven patterns." />
+  <LinkCard title="Distributed Systems" href={`${base}distributed-systems/`} description="Consensus, time & ordering, coordination, distributed failure." />
+  <LinkCard title="Scalability & System Design" href={`${base}scalability/`} description="Back-of-envelope, sharding, statelessness, rate limiting." />
+  <LinkCard title="Reliability & Resilience" href={`${base}reliability/`} description="Resilience patterns, redundancy, SLOs & error budgets, incidents." />
+  <LinkCard title="Event-Driven Architecture" href={`${base}event-driven/`} description="Message brokers, delivery semantics, event-driven patterns." />
 </CardGrid>
 
 ## Interfaces & Clients
 
 <CardGrid>
-  <LinkCard title="APIs & Service Communication" href="/apis/" description="REST, GraphQL, gRPC, API design, gateways & BFF." />
-  <LinkCard title="Networking & Protocols" href="/networking/" description="TCP/UDP, HTTP/1-2-3, TLS, DNS, load balancing & proxies." />
-  <LinkCard title="Frontend Fundamentals" href="/frontend/" description="Rendering strategies, state, performance, accessibility, architecture." />
-  <LinkCard title="Mobile Development" href="/mobile/" description="Native vs cross-platform, offline sync, mobile networking & platform." />
+  <LinkCard title="APIs & Service Communication" href={`${base}apis/`} description="REST, GraphQL, gRPC, API design, gateways & BFF." />
+  <LinkCard title="Networking & Protocols" href={`${base}networking/`} description="TCP/UDP, HTTP/1-2-3, TLS, DNS, load balancing & proxies." />
+  <LinkCard title="Frontend Fundamentals" href={`${base}frontend/`} description="Rendering strategies, state, performance, accessibility, architecture." />
+  <LinkCard title="Mobile Development" href={`${base}mobile/`} description="Native vs cross-platform, offline sync, mobile networking & platform." />
 </CardGrid>
 
 ## Cross-Cutting Quality
 
 <CardGrid>
-  <LinkCard title="Security & Auth" href="/security/" description="AuthN/AuthZ, OAuth/OIDC/JWT, OWASP, crypto & secrets." />
-  <LinkCard title="Observability" href="/observability/" description="Metrics, logging, tracing, alerting, dashboards & debugging." />
-  <LinkCard title="Testing & Quality" href="/testing/" description="Test types & design, TDD/BDD, testing distributed systems." />
-  <LinkCard title="Software Architecture" href="/architecture/" description="Monolith vs microservices, DDD, styles, decisions (ADRs)." />
-  <LinkCard title="Design Patterns" href="/design-patterns/" description="Creational, structural, behavioral & architectural patterns." />
+  <LinkCard title="Security & Auth" href={`${base}security/`} description="AuthN/AuthZ, OAuth/OIDC/JWT, OWASP, crypto & secrets." />
+  <LinkCard title="Observability" href={`${base}observability/`} description="Metrics, logging, tracing, alerting, dashboards & debugging." />
+  <LinkCard title="Testing & Quality" href={`${base}testing/`} description="Test types & design, TDD/BDD, testing distributed systems." />
+  <LinkCard title="Software Architecture" href={`${base}architecture/`} description="Monolith vs microservices, DDD, styles, decisions (ADRs)." />
+  <LinkCard title="Design Patterns" href={`${base}design-patterns/`} description="Creational, structural, behavioral & architectural patterns." />
 </CardGrid>
 
 ## Practice & Delivery
 
 <CardGrid>
-  <LinkCard title="Delivery & Operations" href="/delivery/" description="CI/CD, deployment strategies, containers, Kubernetes, IaC & cloud." />
-  <LinkCard title="Code Quality & Craft" href="/craft/" description="Clean code, SOLID, refactoring, code review, Git." />
-  <LinkCard title="ML / AI Systems" href="/ml-systems/" description="ML lifecycle, serving, MLOps, LLM applications & production." />
+  <LinkCard title="Delivery & Operations" href={`${base}delivery/`} description="CI/CD, deployment strategies, containers, Kubernetes, IaC & cloud." />
+  <LinkCard title="Code Quality & Craft" href={`${base}craft/`} description="Clean code, SOLID, refactoring, code review, Git." />
+  <LinkCard title="ML / AI Systems" href={`${base}ml-systems/`} description="ML lifecycle, serving, MLOps, LLM applications & production." />
 </CardGrid>

@@ -6,8 +6,11 @@ import react from '@astrojs/react';
 // Engineering Tradeoffs — Astro + Starlight static docs site (T1, T4).
 // React integration enables interactive islands later (U3 / RT-3).
 export default defineConfig({
-  // Dedicated GitHub Pages user/org site: serves at the domain root (base '/').
-  site: 'https://engineering-tradeoffs.github.io',
+  // GitHub Pages PROJECT page: served under a sub-path. The repo
+  // `dhanesh/engineering-tradeoffs` publishes to dhanesh.github.io/engineering-tradeoffs/.
+  // `base` must match the repo name so internal links/assets resolve.
+  site: 'https://dhanesh.github.io',
+  base: '/engineering-tradeoffs',
   integrations: [
     react(),
     starlight({
