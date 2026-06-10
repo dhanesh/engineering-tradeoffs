@@ -3,35 +3,71 @@ title: System Design Primer
 description: Interactive, decision-oriented system design documentation.
 template: splash
 hero:
-  tagline: Decision-oriented system design — patterns, tradeoffs, and interactive tools.
+  tagline: Decision-oriented system design — patterns, tradeoffs, and interactive tools. 24 clusters, ~140 pages, end to end.
   actions:
-    - text: Browse Design Patterns
+    - text: Start with Design Patterns
       link: /design-patterns/
       icon: right-arrow
       variant: primary
-    - text: Databases & CAP
-      link: /databases-cap/
+    - text: Jump to System Design
+      link: /scalability/
       icon: open-book
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-## Explore the clusters
+Every topic follows the same shape — **Overview → Mental model → Types → When to use / When NOT → Tradeoffs → Diagram → Try it → Real-world examples → Further reading** — so you can scan for the decision, not just the definition.
 
-<CardGrid stagger>
-  <Card title="Design Patterns" icon="puzzle">
-    Reusable structural and behavioral patterns for distributed systems.
-  </Card>
-  <Card title="Event-Driven Architecture" icon="random">
-    Messaging, streaming, and asynchronous decoupling.
-  </Card>
-  <Card title="Databases & CAP" icon="seti:db">
-    Consistency, availability, partition tolerance, and storage tradeoffs.
-  </Card>
-  <Card title="Caching & Performance" icon="rocket">
-    Cache strategies, invalidation, and latency budgets.
-  </Card>
-  <Card title="Search Indexes" icon="magnifier">
-    Inverted indexes, ranking, and search infrastructure.
-  </Card>
+## Foundations & Languages
+
+<CardGrid>
+  <LinkCard title="Data Structures & Algorithms" href="/algorithms/" description="Complexity, core structures, trees & graphs, paradigms, sorting." />
+  <LinkCard title="OS & Computer Architecture" href="/systems-fundamentals/" description="Processes, memory, I/O, the CPU, runtime & GC — mechanical sympathy." />
+  <LinkCard title="Programming Language Concepts" href="/languages/" description="Type systems, paradigms, memory models, choosing a language." />
+  <LinkCard title="Concurrency & Parallelism" href="/concurrency/" description="Threads vs async, synchronization, memory models, parallel patterns." />
+</CardGrid>
+
+## Data & Storage
+
+<CardGrid>
+  <LinkCard title="Databases & CAP" href="/databases-cap/" description="CAP/PACELC, consistency models, database types, replication, transactions." />
+  <LinkCard title="Caching & Performance" href="/caching/" description="Cache strategies, eviction, invalidation, distributed & CDN caching." />
+  <LinkCard title="Search Indexes" href="/search/" description="Inverted indexes, BM25 vs vector vs hybrid, engine selection." />
+  <LinkCard title="Data Engineering & Pipelines" href="/data-engineering/" description="Batch vs streaming, ETL/ELT, warehouses & lakehouses, modeling." />
+</CardGrid>
+
+## Distributed Systems & Scale
+
+<CardGrid>
+  <LinkCard title="Distributed Systems" href="/distributed-systems/" description="Consensus, time & ordering, coordination, distributed failure." />
+  <LinkCard title="Scalability & System Design" href="/scalability/" description="Back-of-envelope, sharding, statelessness, rate limiting." />
+  <LinkCard title="Reliability & Resilience" href="/reliability/" description="Resilience patterns, redundancy, SLOs & error budgets, incidents." />
+  <LinkCard title="Event-Driven Architecture" href="/event-driven/" description="Message brokers, delivery semantics, event-driven patterns." />
+</CardGrid>
+
+## Interfaces & Clients
+
+<CardGrid>
+  <LinkCard title="APIs & Service Communication" href="/apis/" description="REST, GraphQL, gRPC, API design, gateways & BFF." />
+  <LinkCard title="Networking & Protocols" href="/networking/" description="TCP/UDP, HTTP/1-2-3, TLS, DNS, load balancing & proxies." />
+  <LinkCard title="Frontend Fundamentals" href="/frontend/" description="Rendering strategies, state, performance, accessibility, architecture." />
+  <LinkCard title="Mobile Development" href="/mobile/" description="Native vs cross-platform, offline sync, mobile networking & platform." />
+</CardGrid>
+
+## Cross-Cutting Quality
+
+<CardGrid>
+  <LinkCard title="Security & Auth" href="/security/" description="AuthN/AuthZ, OAuth/OIDC/JWT, OWASP, crypto & secrets." />
+  <LinkCard title="Observability" href="/observability/" description="Metrics, logging, tracing, alerting, dashboards & debugging." />
+  <LinkCard title="Testing & Quality" href="/testing/" description="Test types & design, TDD/BDD, testing distributed systems." />
+  <LinkCard title="Software Architecture" href="/architecture/" description="Monolith vs microservices, DDD, styles, decisions (ADRs)." />
+  <LinkCard title="Design Patterns" href="/design-patterns/" description="Creational, structural, behavioral & architectural patterns." />
+</CardGrid>
+
+## Practice & Delivery
+
+<CardGrid>
+  <LinkCard title="Delivery & Operations" href="/delivery/" description="CI/CD, deployment strategies, containers, Kubernetes, IaC & cloud." />
+  <LinkCard title="Code Quality & Craft" href="/craft/" description="Clean code, SOLID, refactoring, code review, Git." />
+  <LinkCard title="ML / AI Systems" href="/ml-systems/" description="ML lifecycle, serving, MLOps, LLM applications & production." />
 </CardGrid>
