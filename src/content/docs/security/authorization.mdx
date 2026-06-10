@@ -1,0 +1,243 @@
+---
+title: Authorization
+description: Deciding what an identity may do — RBAC, ABAC, ReBAC (Zanzibar), ACLs, policy engines like OPA, least privilege and scopes, multi-tenant isolation, and the confused-deputy problem.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+**Authorization (authz)** runs after authentication and answers a different
+question: *given that we know who you are, what are you allowed to do?* It is the
+control that decides whether Alice can read this invoice, edit that document, or
+delete a tenant. Broken authorization is the **number-one** category in the OWASP
+Top 10 because it fails quietly — the code works, the demo passes, and nobody
+notices that user A can read user B's records by changing an ID in the URL. This
+page covers the major authorization models — **RBAC, ABAC, ReBAC (Zanzibar),
+ACLs** — where each fits, externalized **policy engines** like OPA, the
+**least-privilege** and **scopes** disciplines, the hard problem of
+**multi-tenant isolation**, and the **confused-deputy** trap where a privileged
+service is tricked into acting on an attacker's behalf.
+
+## Mental model
+
+**Authorization is a function: `allow(subject, action, resource, context) -> bool`.**
+Every model is just a different way of *organizing the data* that function reads
+to reach a decision. The question that distinguishes them is **"where does the
+permission live?"**
+
+- In a **role** the subject holds (RBAC) — coarse, simple, role-shaped.
+- In **attributes** of subject/resource/environment (ABAC) — fine-grained,
+  rule-shaped.
+- In **relationships** between subjects and resources (ReBAC) — graph-shaped,
+  "Alice is an editor of Doc X because she is a member of Team Y that owns it."
+- In a **list attached to each resource** (ACL) — resource-shaped.
+
+The second durable idea: **decide deny-by-default and decide on the server.**
+Authorization that the client can influence (a hidden button, a trusted request
+field) is not authorization — it is a suggestion. Every access decision must be
+enforced server-side, on every request, against the *real* identity, defaulting
+to deny when no rule grants access.
+
+## Types / Variants
+
+**ACL (Access Control List).** Each resource carries an explicit list of
+(subject → permission) entries: "file `report.pdf`: Alice=read, Bob=write." Dead
+simple and precise per object, but it does not scale — managing millions of
+resources × thousands of users individually is unmanageable, and "what can Alice
+access?" becomes a full scan. Good for small, object-centric systems (filesystem
+permissions, S3 object ACLs).
+
+**RBAC (Role-Based Access Control).** Permissions are grouped into **roles**
+(`admin`, `editor`, `viewer`); users are assigned roles; the role carries the
+permissions. The dominant model because it matches how orgs think and is easy to
+audit ("who are the admins?"). Weakness: **role explosion** — as you need
+finer distinctions ("editor, but only for the EU region, only on weekdays"), you
+either create a combinatorial blowup of roles or hit RBAC's expressiveness wall.
+
+**ABAC (Attribute-Based Access Control).** Decisions are computed from
+**attributes** of the subject (department, clearance), the resource (owner,
+classification), the action, and the environment (time, IP, device posture),
+evaluated by a policy rule: *"allow if `subject.dept == resource.dept` AND
+`resource.classification <= subject.clearance`."* Extremely fine-grained and
+context-aware, ideal for dynamic and compliance-driven rules — at the cost of
+complexity: policies are harder to write, test, and reason about, and "why was
+this allowed?" can be non-obvious.
+
+**ReBAC (Relationship-Based Access Control) / Zanzibar.** Permissions derive from
+a **graph of relationships** between subjects and resources. Access is computed
+by traversing the graph: "Alice can edit Doc because Alice is a member of Team,
+Team is an editor of Folder, Doc is in Folder." This is how Google models access
+across its products via **Zanzibar**, a globally distributed authorization
+system, and it is the right fit for **shared/nested resources and social-style
+permissions** (Google Docs sharing, GitHub repo/org/team access). Open
+implementations include **SpiceDB**, **Ory Keto**, and **OpenFGA**.
+
+**Policy engines (externalized authz) — OPA.** Rather than scatter `if` checks
+through application code, you **externalize** the decision to a dedicated engine.
+**Open Policy Agent (OPA)**, with its **Rego** language, evaluates policies as a
+separate component the app queries: "can subject X do action Y on resource Z?"
+This decouples *policy* from *code*, lets security teams own and version policies
+centrally, and gives uniform enforcement across services — at the cost of running
+and reasoning about another moving part. (OPA can implement RBAC, ABAC, or
+hybrids; ReBAC stores like SpiceDB are the graph-shaped counterpart.)
+
+**Scopes (OAuth-style).** A coarse authorization grant attached to a **token**
+that bounds what a *client/integration* may do on a user's behalf
+(`read:repo`, `write:invoices`). Scopes constrain delegated access at the API
+boundary; they are not a substitute for resource-level authorization inside the
+app (a `read:invoices` scope still must not let you read *another tenant's*
+invoices).
+
+## When to use / When NOT
+
+- **Use RBAC when:** permissions cluster naturally into a manageable set of job
+  functions (most line-of-business apps). It's the right default. **Avoid /
+  augment when:** you hit role explosion from per-region, per-time, or
+  per-attribute conditions — add ABAC rules rather than minting 200 roles.
+- **Use ABAC when:** decisions genuinely depend on dynamic context (time, device,
+  data classification, regulatory geography). **Avoid when:** simple roles
+  suffice — ABAC's flexibility is also debugging and audit pain you don't need.
+- **Use ReBAC (Zanzibar-style) when:** resources are shared, nested, or
+  hierarchical and permission flows through relationships (docs, folders, orgs,
+  teams, social graphs). **Avoid when:** your model is flat and role-shaped —
+  a relationship graph is overkill.
+- **Use ACLs when:** a small, object-centric system where per-object lists are
+  natural (filesystems, individual buckets). **Avoid at scale:** millions of
+  resources make ACLs unmanageable and un-auditable.
+- **Externalize to a policy engine (OPA) when:** you have many services needing
+  consistent, centrally governed, auditable policy. **Avoid when:** a single app
+  with simple rules — an extra component isn't worth it.
+- **Apply least privilege and deny-by-default everywhere.** Grant the minimum;
+  enforce server-side on every request; never trust client-supplied identity or
+  permission hints.
+
+## Tradeoffs
+
+| Model | Granularity | Scales to | "What can X access?" | Best fit |
+| ----- | ----------- | --------- | -------------------- | -------- |
+| ACL | Per object | Small object sets | Hard (scan all objects) | Filesystems, single buckets |
+| RBAC | Per role | Most orgs | Easy (list roles) | Line-of-business apps |
+| ABAC | Per attribute/rule | Dynamic policies | Hard (evaluate rules) | Compliance, context-aware |
+| ReBAC | Per relationship | Shared/nested resources | Graph traversal | Docs, orgs, social graphs |
+
+The cross-cutting tension is **expressiveness vs auditability**: RBAC is easy to
+audit but coarse; ABAC/ReBAC are precise but answering "who can touch this
+resource, and why?" requires evaluating rules or traversing a graph. Most mature
+systems end up **hybrid** — RBAC for the broad strokes, ABAC conditions or a
+ReBAC graph for the fine ones — and externalize the result to a policy engine.
+
+## Diagram
+
+Externalized authorization: the app is a Policy Enforcement Point that asks a
+central engine (the Policy Decision Point) for every access decision.
+
+<Mermaid code={`flowchart LR
+  U[Authenticated user] -->|request| APP[Service: enforcement point]
+  APP -->|allow subject, action, resource ?| PDP[Policy engine: decision point]
+  PDP -->|reads| POL[(Policies + roles)]
+  PDP -->|reads| REL[(Relationship / attribute data)]
+  PDP -->|allow or deny| APP
+  APP -->|on allow| R[(Protected resource)]
+  APP -->|on deny| D[403 Forbidden]`} />
+
+## Try it
+
+Compare the four models head to head, then walk the decision tree to pick one.
+
+<CompareMatrix
+  client:visible
+  caption="Authorization models compared"
+  columns={['ACL', 'RBAC', 'ABAC', 'ReBAC']}
+  rows={[
+    { criterion: 'Permission lives in', cells: ['List on each resource', 'Roles on the subject', 'Attributes + rules', 'Relationship graph'] },
+    { criterion: 'Granularity', cells: ['Per object', 'Per role (coarse)', 'Per attribute (fine)', 'Per relationship'] },
+    { criterion: 'Handles context (time, geo)', cells: ['No', 'Poorly', 'Excellent', 'Indirectly'] },
+    { criterion: 'Handles nested/shared resources', cells: ['Poorly', 'Poorly', 'Manually', 'Natively (graph)'] },
+    { criterion: 'Auditability', cells: ['Per object', 'High', 'Lower (eval rules)', 'Graph traversal'] },
+    { criterion: 'Scaling weakness', cells: ['Object explosion', 'Role explosion', 'Policy complexity', 'Graph + consistency'] },
+    { criterion: 'Reference system', cells: ['Filesystem, S3 ACL', 'Most SaaS apps', 'XACML, OPA/Rego', 'Google Zanzibar'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which authorization model?"
+  root={{
+    question: 'Do permissions flow through relationships between resources (shared docs, folders, orgs, teams)?',
+    branches: [
+      {
+        label: 'Yes — shared / nested / hierarchical resources',
+        next: { leaf: { recommendation: 'ReBAC (Zanzibar-style: SpiceDB / OpenFGA)', detail: 'Model access as a relationship graph and traverse it. The right fit for Google-Docs-style sharing, GitHub org/team/repo access, and any nested-ownership model.' } },
+      },
+      {
+        label: 'No — access is mostly subject-driven',
+        next: {
+          question: 'Do decisions depend on dynamic context (time, device, data classification, geography)?',
+          branches: [
+            {
+              label: 'Yes — context matters',
+              next: {
+                question: 'Is the context layered on top of otherwise simple job roles?',
+                branches: [
+                  {
+                    label: 'Yes — roles plus a few conditions',
+                    next: { leaf: { recommendation: 'RBAC + ABAC conditions (hybrid)', detail: 'Use roles for the broad strokes and attribute rules for the fine conditions. Externalize to a policy engine (OPA/Rego) so the hybrid logic stays testable and centrally governed.' } },
+                  },
+                  {
+                    label: 'No — fully attribute-driven',
+                    next: { leaf: { recommendation: 'ABAC via a policy engine (OPA)', detail: 'Compute decisions from subject/resource/environment attributes. Externalize to OPA so policy is versioned, auditable, and enforced uniformly across services.' } },
+                  },
+                ],
+              },
+            },
+            {
+              label: 'No — static, role-shaped permissions',
+              next: {
+                question: 'Is it a small, object-centric system (per-file/per-object lists)?',
+                branches: [
+                  {
+                    label: 'Yes — few resources, per-object control',
+                    next: { leaf: { recommendation: 'ACLs', detail: 'Per-resource permission lists are simple and precise at small scale, e.g. filesystem or individual bucket permissions. Do not use at large scale.' } },
+                  },
+                  {
+                    label: 'No — many users and resources',
+                    next: { leaf: { recommendation: 'RBAC', detail: 'Group permissions into job roles, assign roles to users. The simple, auditable default for line-of-business apps. Add ABAC conditions only when role explosion appears.' } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **Google Zanzibar** is the planet-scale ReBAC system behind Docs, Drive,
+  Calendar, and YouTube sharing; the paper inspired **SpiceDB**, **OpenFGA**, and
+  **Ory Keto**.
+- **AWS IAM** is a large-scale ABAC/policy system: JSON policies grant
+  `(principal, action, resource, condition)`, and IAM roles plus
+  least-privilege scoping are how the Capital One breach *should* have been
+  contained.
+- **Open Policy Agent (OPA)** is the CNCF-graduated policy engine widely used to
+  externalize authz for Kubernetes admission control and microservice APIs via
+  Rego policies.
+- **The confused-deputy problem** — a privileged service tricked into misusing
+  its authority on an attacker's behalf — is the core of **SSRF** (an internal
+  service is made to fetch an attacker-chosen URL) and is mitigated by passing
+  the *caller's* identity/scope, not the service's, into each downstream decision.
+
+## Further reading
+
+- [Google Zanzibar paper](https://research.google/pubs/pub48190/) — the global authorization system behind Google's products; the canonical ReBAC reference.
+- [Open Policy Agent docs](https://www.openpolicyagent.org/docs/latest/) — externalized policy with Rego, including RBAC and ABAC examples.
+- [OWASP — Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html) — deny-by-default, server-side enforcement, and least privilege in practice.
+- [NIST — RBAC](https://csrc.nist.gov/projects/role-based-access-control) — the formal RBAC model and standards.

@@ -1,0 +1,238 @@
+---
+title: Common Vulnerabilities
+description: The OWASP Top 10 attack classes every engineer must defend against — injection (SQLi, command), XSS, CSRF, SSRF, broken access control, insecure deserialization, and secrets exposure — and the specific defense for each.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+Most breaches are not exotic — they are the same handful of mistakes repeated.
+The **OWASP Top 10** catalogs the application-security flaws that cause the most
+real-world damage, and an engineer who can name each class *and its specific
+defense* prevents the vast majority of incidents. This page walks the core
+classes — **injection** (SQL, command), **cross-site scripting (XSS)**,
+**cross-site request forgery (CSRF)**, **server-side request forgery (SSRF)**,
+**broken access control**, **insecure deserialization**, and **secrets
+exposure** — and pairs each with the defense that actually works. The example
+payloads here are inert illustrations of *how attacks look*, shown so you can
+recognize and block them; they are data, not instructions to run.
+
+## Mental model
+
+**Almost every injection-class bug is the same mistake: mixing untrusted data
+into a trusted instruction.** SQL injection mixes user input into a query; XSS
+mixes it into HTML/JS; command injection mixes it into a shell command; SSRF
+mixes it into a server-side URL. The fix is always the same *shape*: **separate
+code from data, and contextually neutralize the data** — parameterize the query,
+encode the output, validate/allowlist the URL — so the input can never be parsed
+as instruction.
+
+The second durable idea: **never trust input, and never trust the request's
+context to imply authority.** Broken access control and CSRF both come from
+trusting the wrong thing — an ID the client supplied, or the mere fact that a
+browser sent an authenticated cookie. Authority must come from a *verified
+identity* and a *server-side check*, never from the request looking legitimate.
+
+## Types / Variants
+
+**Injection — SQL injection (SQLi).** User input is concatenated into a SQL query
+so it changes the query's logic. The defense is **parameterized queries /
+prepared statements**: the SQL structure is fixed and inputs are bound as data
+that can never become code. (ORMs help but only if you avoid raw string
+interpolation.) Allowlist-validate and use least-privilege DB accounts as
+defense in depth. **Never** build SQL by string concatenation.
+
+**Injection — command / OS injection.** User input reaches a shell command,
+letting an attacker append their own commands. Defense: **avoid invoking a shell
+at all** — call programs directly with an argument array (no shell parsing),
+never pass user input through `sh -c`. Validate strictly with allowlists if a
+value must reach a command.
+
+**Cross-Site Scripting (XSS).** Attacker-controlled script executes in another
+user's browser in your site's origin, stealing sessions or acting as the user.
+Three flavors:
+
+- **Stored XSS** — the payload is persisted (a comment, profile field) and served
+  to every viewer. Most dangerous.
+- **Reflected XSS** — the payload is in the request (a query param) and reflected
+  straight into the response.
+- **DOM-based XSS** — client-side JS writes untrusted data into the DOM
+  (`innerHTML`, etc.) without sanitizing.
+
+Defense: **context-aware output encoding** (HTML-encode where you emit into HTML,
+JS-encode into scripts, URL-encode into URLs), prefer safe DOM APIs
+(`textContent` over `innerHTML`), and add a **Content Security Policy (CSP)** as a
+strong second layer that blocks injected/inline script even if encoding is
+missed.
+
+**Cross-Site Request Forgery (CSRF).** A malicious site causes the victim's
+browser to send an *authenticated* request to your site (the browser
+auto-attaches the session cookie), performing an action the user did not intend.
+Defense: **`SameSite` cookies** (`Lax`/`Strict`) so cookies are not sent on
+cross-site requests, plus **anti-CSRF tokens** (a per-session/per-request secret
+the attacker's page cannot read), and verifying `Origin`/`Referer` for
+state-changing requests. APIs using `Authorization` headers (not cookies) are
+largely immune.
+
+**Server-Side Request Forgery (SSRF).** The attacker makes *your server* issue a
+request to a URL of the attacker's choosing — typically internal services or
+cloud **metadata endpoints** that hold credentials. This is the confused-deputy
+problem applied to networking and was the core of the Capital One breach.
+Defense: **allowlist** the destinations the server may contact, **block access to
+internal ranges and link-local metadata IPs**, resolve and re-validate the IP
+*after* DNS (to defeat rebinding), and require **IMDSv2** on cloud metadata.
+
+**Broken access control.** The #1 OWASP risk: a user accesses data or actions
+they should not — e.g., **IDOR** (Insecure Direct Object Reference), where
+changing an ID in the URL exposes another user's record, or missing function-level
+checks. Defense: **enforce authorization server-side on every request against the
+authenticated identity**, deny by default, and never rely on hidden UI or
+client-supplied identity. (Authorization models have their own page.)
+
+**Insecure deserialization.** Deserializing attacker-controlled bytes into objects
+can trigger remote code execution via crafted object graphs (Java/Python pickle
+"gadget chains"). Defense: **never deserialize untrusted data with
+language-native binary serializers**; use a **data-only format (JSON) with schema
+validation**, and if native serialization is unavoidable, sign the payload and
+restrict allowed types.
+
+**Secrets exposure.** Credentials, API keys, and tokens leaked into source code,
+config files, logs, error messages, or client bundles. Defense: keep secrets in a
+**secrets manager / vault**, inject via environment or runtime, **never commit
+them** (enforce with pre-commit and CI secret scanning), redact them from logs,
+and **rotate** on any suspected exposure. (Covered further in *Crypto & secrets*.)
+
+## When to use / When NOT
+
+This is a *defenses-are-mandatory* topic — these are not optional choices but the
+baseline. The "when" is about *which control class applies to which sink*:
+
+- **Parameterize when:** any user data reaches a SQL query. Always. There is no
+  acceptable string-concatenation alternative.
+- **Output-encode + CSP when:** any user data is rendered into a page. Encoding is
+  primary; CSP is defense in depth, not a substitute.
+- **Use SameSite + CSRF tokens when:** state-changing actions are authenticated by
+  **cookies**. **Skip CSRF tokens when:** auth is via `Authorization` headers/
+  bearer tokens (not cookie-driven) — those requests can't be forged cross-site.
+- **Allowlist outbound URLs when:** the server fetches a user-supplied URL (SSRF
+  surface) — webhooks, link previews, import-from-URL, image proxies.
+- **Enforce authz server-side when:** *every* request that touches user-scoped
+  data or privileged actions. Never trust the client for identity or permission.
+- **Avoid native deserialization of untrusted input entirely.** Prefer JSON +
+  schema validation. **Avoid** Java `ObjectInputStream` / Python `pickle` on
+  external data — that's an RCE waiting to happen.
+- **Use a secrets manager when:** you have any credential at all. **Never** commit
+  secrets, log them, or ship them in client bundles.
+
+## Tradeoffs
+
+The "tradeoff" here is mostly **defense in depth vs effort** — most defenses are
+cheap and should always be on; the table maps each vulnerability to its primary
+and backup defense.
+
+| Vulnerability | Primary defense | Defense in depth |
+| ------------- | --------------- | ---------------- |
+| SQL injection | Parameterized queries | Allowlist input, least-priv DB user |
+| Command injection | No shell; pass args directly | Strict allowlist validation |
+| XSS (stored/reflected/DOM) | Context-aware output encoding | Content Security Policy, safe DOM APIs |
+| CSRF | SameSite cookies + anti-CSRF token | Verify Origin/Referer |
+| SSRF | Allowlist outbound destinations | Block internal/metadata IPs, IMDSv2 |
+| Broken access control | Server-side authz, deny by default | No client-trusted IDs; audit logs |
+| Insecure deserialization | Don't deserialize untrusted data | JSON + schema; sign payloads |
+| Secrets exposure | Secrets manager / vault | CI secret scanning, log redaction, rotation |
+
+## Diagram
+
+How an injection attack crosses a trust boundary — and where the right control
+neutralizes it before it reaches the interpreter.
+
+<Mermaid code={`flowchart LR
+  A[Attacker input] --> APP[Application]
+  APP -->|UNSAFE: string concatenation| SINK[Interpreter: SQL / shell / HTML / URL]
+  SINK --> X[Injection executes]
+  APP -->|SAFE: parameterize / encode / allowlist| GUARD[Data kept as data]
+  GUARD --> SINK2[Interpreter treats input as inert value]
+  SINK2 --> OK[No injection]`} />
+
+## Try it
+
+Map each vulnerability to its defense, then walk the decision tree for the most
+common ambiguity engineers hit: which defenses a given input sink needs.
+
+<CompareMatrix
+  client:visible
+  caption="Vulnerability → defense quick reference"
+  columns={['Attack', 'What the attacker does', 'Primary defense']}
+  rows={[
+    { criterion: 'SQL injection', cells: ['SQLi', 'Alters query logic via input', 'Parameterized queries'] },
+    { criterion: 'Command injection', cells: ['OS cmd', 'Runs shell commands via input', 'No shell; direct arg arrays'] },
+    { criterion: 'Stored XSS', cells: ['Stored XSS', 'Persists script served to all', 'Output encoding + CSP'] },
+    { criterion: 'Reflected / DOM XSS', cells: ['Reflected XSS', 'Reflects/DOM-injects script', 'Encoding + safe DOM + CSP'] },
+    { criterion: 'CSRF', cells: ['CSRF', 'Forges authed request via cookie', 'SameSite + anti-CSRF token'] },
+    { criterion: 'SSRF', cells: ['SSRF', 'Makes server fetch internal URL', 'Allowlist + block metadata IPs'] },
+    { criterion: 'Broken access control', cells: ['IDOR', 'Changes ID to reach others’ data', 'Server-side authz, deny default'] },
+    { criterion: 'Insecure deserialization', cells: ['Deser. RCE', 'Crafts object graph for RCE', 'No native deser.; JSON + schema'] },
+    { criterion: 'Secrets exposure', cells: ['Leaked key', 'Reads keys from code/logs', 'Vault + scanning + rotation'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Untrusted input reaches a sink — which defense?"
+  root={{
+    question: 'Where does the untrusted input end up (the sink)?',
+    branches: [
+      {
+        label: 'In a database query',
+        next: { leaf: { recommendation: 'Parameterized queries / prepared statements', detail: 'Bind inputs as parameters so the query structure is fixed and input can never be parsed as SQL. Add least-privilege DB users and allowlist validation as defense in depth. Never concatenate.' } },
+      },
+      {
+        label: 'In an OS / shell command',
+        next: { leaf: { recommendation: 'Avoid the shell; pass arguments directly', detail: 'Invoke the program with an argument array so no shell interprets metacharacters. If a value must reach a command, allowlist-validate it strictly.' } },
+      },
+      {
+        label: 'Rendered into a web page (HTML/JS)',
+        next: { leaf: { recommendation: 'Context-aware output encoding + CSP', detail: 'Encode for the exact context (HTML, attribute, JS, URL), prefer textContent over innerHTML, and add a Content Security Policy as a strong second layer that blocks injected script.' } },
+      },
+      {
+        label: 'Used as a URL the server will fetch',
+        next: { leaf: { recommendation: 'Allowlist destinations; block internal/metadata IPs (SSRF)', detail: 'Permit only known hosts, reject private/link-local ranges and cloud metadata IPs, re-validate the resolved IP after DNS, and require IMDSv2.' } },
+      },
+      {
+        label: 'Deserialized into objects',
+        next: { leaf: { recommendation: 'Do not deserialize untrusted data natively', detail: 'Use a data-only format (JSON) with schema validation. Native binary deserializers (pickle, Java ObjectInputStream) on external input enable remote code execution.' } },
+      },
+      {
+        label: 'Used as a record ID / authorization key',
+        next: { leaf: { recommendation: 'Enforce authorization server-side (stop IDOR)', detail: 'Check on every request that the authenticated identity may access that specific resource. Deny by default; never trust a client-supplied ID or hidden UI to imply permission.' } },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **The 2017 Equifax breach** (147M records) exploited an unpatched
+  deserialization/injection flaw in Apache Struts — the textbook case for patching
+  and not trusting external input.
+- **The 2019 Capital One breach** was **SSRF** reaching an over-permissioned
+  instance role that read the cloud **metadata** endpoint — fixed in spirit by
+  IMDSv2 and least privilege.
+- **Magecart attacks** are stored/DOM **XSS** and supply-chain script injection
+  skimming payment-card data from checkout pages — exactly what a strict **CSP**
+  is designed to block.
+- **GitHub, GitLab, and AWS secret scanning** automatically detect committed
+  credentials and, for many providers, trigger **automatic revocation** — the
+  industrial-scale answer to **secrets exposure**.
+
+## Further reading
+
+- [OWASP Top 10](https://owasp.org/www-project-top-ten/) — the canonical list of the most critical web application risks.
+- [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/) — concrete, per-vulnerability defense guidance (SQLi, XSS, CSRF, SSRF, deserialization).
+- [PortSwigger Web Security Academy](https://portswigger.net/web-security) — hands-on labs that teach each attack and its defense by doing.
+- [MDN — Content Security Policy (CSP)](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP) — how to deploy CSP as XSS defense in depth.

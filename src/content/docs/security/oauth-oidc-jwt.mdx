@@ -1,0 +1,226 @@
+---
+title: OAuth 2.0, OIDC & JWT
+description: Delegated authorization and federated identity — OAuth 2.0 roles and grant types (auth code + PKCE, client credentials, and why implicit/password are dead), OIDC and id_tokens, JWT structure and validation, common JWT mistakes, refresh tokens, and token storage.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+
+## Overview
+
+**OAuth 2.0** is a framework for **delegated authorization** — letting an
+application act on a user's behalf against an API **without ever seeing the
+user's password**. "Log in with Google," "allow this app to read your repos," and
+machine-to-machine API access are all OAuth. **OpenID Connect (OIDC)** is a thin
+identity layer *on top of* OAuth that adds **authentication** — proving *who* the
+user is via an **id_token**. **JWT** is the compact, signed token format both
+commonly use to carry claims. These three are constantly conflated, and the
+conflation causes real vulnerabilities. This page separates them: OAuth's roles
+and grant types (and which grants are dead), what OIDC adds, how a JWT is
+structured/signed/validated, the JWT mistakes that recur (`alg=none`, skipped
+`exp`, unverified signature), and how to handle refresh tokens and token storage.
+
+## Mental model
+
+**OAuth is a valet key.** You do not hand the parking valet your house keys and
+wallet (your password); you hand over a restricted key that only starts the car
+and only for now (an **access token**, scoped and time-limited). The user
+authenticates *once* to an authority they trust (the **Authorization Server**),
+which mints a narrow, expiring token the app presents to the API. The app never
+learns the password, and the token's scope and lifetime bound the damage if it
+leaks.
+
+The critical separation: **OAuth proves *permission* (authorization); OIDC proves
+*identity* (authentication).** An OAuth access token is meant to be consumed by an
+**API** (resource server) — it says "the bearer may do X." An OIDC **id_token** is
+meant to be consumed by the **client app** — it says "this is who the user is."
+Using an access token as proof of identity, or an id_token to call an API, is a
+classic and dangerous mix-up.
+
+## Types / Variants
+
+**OAuth 2.0 roles.** Four parties:
+
+- **Resource Owner** — the user who owns the data.
+- **Client** — the app requesting access on the user's behalf.
+- **Authorization Server (AS)** — issues tokens after authenticating the user and
+  getting consent (e.g., Google, Okta, Auth0).
+- **Resource Server (RS)** — the API holding the data, which validates the access
+  token on each request.
+
+**Grant types** — the flows by which a client obtains a token:
+
+- **Authorization Code + PKCE** — *the* flow for user-facing apps (web, SPA,
+  mobile). The user authenticates at the AS, which redirects back with a
+  short-lived **authorization code**; the client exchanges that code (on a back
+  channel) for tokens. **PKCE** (Proof Key for Code Exchange) binds the code to
+  the client that started the flow via a one-time `code_verifier`/`code_challenge`
+  pair, defeating code-interception attacks. **PKCE is now mandatory for all
+  clients**, public and confidential, in OAuth 2.1.
+- **Client Credentials** — **machine-to-machine**: the client authenticates as
+  *itself* (client_id + secret) with no user involved, to call APIs under its own
+  identity. The right flow for backend services, cron jobs, and daemons.
+- **Refresh Token** — not an initial grant but a flow to obtain a *new* access
+  token when the old one expires, without re-prompting the user. Long-lived,
+  high-value, and must be stored and rotated carefully.
+- **Device Authorization** — for input-constrained devices (TVs, CLIs): the
+  device shows a code the user enters on a phone/laptop to authorize.
+- **Implicit grant — DEAD.** Returned tokens directly in the URL fragment (no
+  code exchange), leaking them to browser history, logs, and referrers. With
+  PKCE now usable in browsers, implicit has **no reason to exist** and is removed
+  in OAuth 2.1. Do not use it.
+- **Resource Owner Password Credentials (ROPC) — DEAD.** The client collects the
+  user's *actual username and password* and sends them to the AS — defeating the
+  entire point of OAuth (the app never seeing the password) and incompatible with
+  MFA/SSO. Removed in OAuth 2.1. Do not use it.
+
+**OIDC (OpenID Connect).** Adds an authentication layer: alongside the access
+token, the AS returns an **id_token** — a JWT with standard claims about the user
+(`sub` = stable user ID, `iss` = issuer, `aud` = audience, `exp`, `iat`,
+`nonce`, plus profile claims). The client **validates** the id_token to establish
+*who logged in*. This is what powers "Sign in with Google/Apple/Microsoft." Key
+distinction again: **id_token → client (who you are); access_token → API (what
+you may do).**
+
+**JWT (JSON Web Token).** A compact, URL-safe, self-contained token in three
+base64url parts separated by dots: **`header.payload.signature`**.
+
+- **Header** — algorithm and key id, e.g. `{"alg":"RS256","kid":"..."}`.
+- **Payload** — the **claims** (`sub`, `iss`, `aud`, `exp`, `iat`, scopes, etc.).
+  Base64 is **encoding, not encryption** — the payload is *readable by anyone*. A
+  JWT is signed, not secret; never put secrets in it.
+- **Signature** — proves integrity and authenticity. Signed either with a shared
+  symmetric secret (**HS256**) or, far better for distributed systems, an
+  asymmetric private key the AS holds, verified by anyone with the public key
+  (**RS256/ES256**, distributed via a **JWKS** endpoint).
+
+**Validating a JWT correctly** means checking *all* of: the **signature** against
+a trusted key; the **`alg`** matches what you expect (never let the token pick);
+**`exp`** (not expired) and `nbf`/`iat`; **`iss`** is your trusted issuer; and
+**`aud`** is *you*. Skipping any of these is a vulnerability.
+
+## When to use / When NOT
+
+- **Use Authorization Code + PKCE when:** any user-facing client — server-side
+  web app, SPA, or mobile. This is the default; **PKCE is mandatory**, not
+  optional.
+- **Use Client Credentials when:** machine-to-machine, no user present (backend
+  services, daemons, scheduled jobs).
+- **Never use the Implicit grant.** **Never use ROPC (password grant).** Both are
+  removed in OAuth 2.1 and exist only as legacy footguns.
+- **Use OIDC (id_token) for authentication;** use the **access token only to call
+  APIs**. Do not authenticate users with an access token, and do not call APIs
+  with an id_token.
+- **Prefer asymmetric signing (RS256/ES256) with a JWKS endpoint when:** many
+  services must verify tokens — they need only the public key, and you can rotate
+  the private key centrally. **HS256 (shared secret) is acceptable when:** a
+  single trusted party both issues and verifies.
+- **Validate every claim, every time.** Pin `alg`, verify the signature against a
+  trusted key, and check `exp`, `iss`, and `aud`. Reject anything that fails.
+
+**Common JWT mistakes (anti-patterns to design against):**
+
+- **`alg=none`** — a token claiming "no signature." If your library honors it, an
+  attacker forges any token. **Always pin the expected algorithm; reject `none`.**
+- **Not verifying the signature at all** — decoding and trusting claims without
+  checking the signature. The claims are attacker-controlled until verified.
+- **Algorithm confusion (RS256 → HS256)** — an attacker switches `alg` to HS256
+  and signs with your *public* key as if it were the HMAC secret. Pinning the
+  algorithm prevents this.
+- **Missing `exp` / no expiry** — a token valid forever cannot be timed out;
+  always set and enforce `exp`.
+- **Not checking `aud`/`iss`** — accepting a token minted for a *different*
+  service, enabling token reuse across audiences.
+- **Putting secrets in the payload** — it is encoded, not encrypted; readable by
+  anyone holding the token.
+
+## Tradeoffs
+
+| Concern | Access token (OAuth) | id_token (OIDC) |
+| ------- | -------------------- | --------------- |
+| Audience (who consumes it) | The API / resource server | The client app |
+| Purpose | Authorization ("may do X") | Authentication ("is user Y") |
+| Should you parse its claims? | No — it's opaque to the client | Yes — validate to identify the user |
+| Lifetime | Short (minutes) | Short (login session) |
+| Misuse risk | Treating it as identity | Calling APIs with it |
+
+| Concern | Symmetric (HS256) | Asymmetric (RS256/ES256) |
+| ------- | ----------------- | ------------------------ |
+| Key model | One shared secret | Private signs, public verifies |
+| Verifier needs | The secret (can also forge) | Only the public key (cannot forge) |
+| Best fit | Single issuer+verifier | Many independent verifiers (microservices) |
+| Key distribution | Manual, sensitive | JWKS endpoint, rotatable |
+
+**Token storage (browser).** No option is perfect. A **cookie** with
+`HttpOnly` + `Secure` + `SameSite` is unreadable by JavaScript (resists XSS theft)
+but must be defended against **CSRF**. `localStorage` is easy but **fully exposed
+to any XSS** — an injected script reads the token outright. The pragmatic modern
+pattern: keep tokens **out of JS-readable storage**, use HttpOnly cookies (or a
+backend-for-frontend that holds tokens server-side), and keep access tokens
+short-lived so a leak is brief.
+
+## Diagram
+
+The Authorization Code + PKCE flow: the client proves it started the flow before
+exchanging the one-time code for tokens.
+
+<Mermaid code={`sequenceDiagram
+  participant U as User / Browser
+  participant C as Client app
+  participant AS as Authorization Server
+  participant API as Resource Server
+  C->>C: generate code_verifier, derive code_challenge
+  U->>AS: authorize request (+ code_challenge)
+  AS->>U: authenticate user, get consent
+  AS->>C: redirect with one-time authorization code
+  C->>AS: exchange code + code_verifier for tokens
+  AS->>AS: verify code_verifier matches code_challenge
+  AS->>C: access_token (+ id_token, refresh_token)
+  C->>API: request with access_token
+  API->>API: validate signature, alg, exp, iss, aud
+  API->>C: protected resource`} />
+
+## Try it
+
+Compare the OAuth grant types so the dead ones stay dead and the live ones land
+on the right use case.
+
+<CompareMatrix
+  client:visible
+  caption="OAuth 2.0 grant types — which to use"
+  columns={['Auth Code + PKCE', 'Client Credentials', 'Implicit', 'Password (ROPC)']}
+  rows={[
+    { criterion: 'User involved?', cells: ['Yes', 'No (machine)', 'Yes', 'Yes'] },
+    { criterion: 'Client type', cells: ['Web / SPA / mobile', 'Backend service', '(SPA, legacy)', '(trusted, legacy)'] },
+    { criterion: 'Sees user password?', cells: ['No', 'N/A', 'No', 'YES — defeats OAuth'] },
+    { criterion: 'Token delivery', cells: ['Back-channel code exchange', 'Direct token response', 'Token in URL fragment', 'Direct token response'] },
+    { criterion: 'PKCE protection', cells: ['Yes (mandatory)', 'N/A', 'No', 'No'] },
+    { criterion: 'MFA / SSO compatible?', cells: ['Yes', 'N/A', 'Yes', 'No'] },
+    { criterion: 'Status in OAuth 2.1', cells: ['Recommended default', 'Recommended (M2M)', 'REMOVED', 'REMOVED'] },
+    { criterion: 'Verdict', cells: ['Use for users', 'Use for machines', 'Dead — never use', 'Dead — never use'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **Sign in with Google / Apple / Microsoft** are OIDC: the id_token is how the
+  relying app learns who logged in, while the access token (if requested) calls
+  Google/Microsoft APIs.
+- **Auth0, Okta, and Keycloak** are Authorization Servers that implement these
+  grants and publish a **JWKS** endpoint so resource servers verify RS256
+  signatures with rotatable public keys.
+- **GitHub Apps / Stripe / cloud provider APIs** use the **Client Credentials**
+  grant for machine-to-machine access with scoped tokens under the app's own
+  identity.
+- **The `alg=none` and RS256→HS256 confusion bugs** were found in numerous JWT
+  libraries and real APIs; they remain the textbook reason to **pin the expected
+  algorithm** rather than trusting the token's header.
+
+## Further reading
+
+- [RFC 6749 — OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) and [RFC 7636 — PKCE](https://www.rfc-editor.org/rfc/rfc7636) — the framework and the proof-key extension.
+- [OAuth 2.1 draft](https://oauth.net/2.1/) — the consolidation that mandates PKCE and removes implicit and ROPC.
+- [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html) — the identity layer and id_token semantics.
+- [RFC 7519 — JWT](https://www.rfc-editor.org/rfc/rfc7519) and [Auth0: JWT validation best practices](https://auth0.com/blog/a-look-at-the-latest-draft-for-jwt-bcp/) — token structure and how to validate it safely.

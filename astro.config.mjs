@@ -142,6 +142,17 @@ export default defineConfig({
             { label: 'Dashboards & debugging', slug: 'observability/dashboards-debugging' },
           ],
         },
+        {
+          label: 'Security & Auth',
+          items: [
+            { label: 'Security foundations', slug: 'security' },
+            { label: 'Authentication', slug: 'security/authentication' },
+            { label: 'Authorization', slug: 'security/authorization' },
+            { label: 'OAuth, OIDC & JWT', slug: 'security/oauth-oidc-jwt' },
+            { label: 'Common vulnerabilities', slug: 'security/common-vulnerabilities' },
+            { label: 'Cryptography & secrets', slug: 'security/crypto-secrets' },
+          ],
+        },
       ],
     }),
   ],

@@ -1,0 +1,261 @@
+---
+title: Authentication
+description: Proving who someone is — authn vs authz, password hashing with bcrypt/argon2 and salts, MFA/TOTP/WebAuthn/passkeys, session vs token auth, SSO, and the account-recovery weak link.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import DecisionTree from '../../../components/DecisionTree';
+
+## Overview
+
+**Authentication (authn)** answers a single question: *who are you?* It is the
+gate that establishes identity before any authorization decision can be made.
+Get it wrong and nothing downstream matters — a perfect permission model is
+worthless if an attacker can log in as the admin. This page covers the building
+blocks: how to store passwords so a database leak is not game over (**hashing
+with bcrypt/argon2 and per-user salts**), how to add factors beyond a password
+(**MFA, TOTP, WebAuthn, passkeys**), how to keep a user logged in (**session vs
+token auth**), how to authenticate once across many apps (**SSO**), and the part
+teams consistently under-secure: **account recovery**, which is almost always
+the weakest link in the whole chain.
+
+## Mental model
+
+**Authentication is proving a claim with one or more factors.** A factor is
+evidence in one of three categories:
+
+- **Something you know** — a password, PIN, or recovery answer.
+- **Something you have** — a phone running an authenticator app, a hardware
+  security key, a passkey bound to a device.
+- **Something you are** — a fingerprint, face, or other biometric.
+
+A single factor is a single point of failure; **multi-factor** means combining
+*different categories* so that compromising one (a leaked password) is not enough
+(the attacker still lacks your security key). Two passwords are not MFA — they
+are two of the same factor.
+
+The second durable idea: **never store the secret, store a verifier.** You do not
+keep the user's password; you keep a slow, salted **hash** of it. At login you
+hash the supplied password the same way and compare. If the database leaks, the
+attacker gets verifiers, not passwords — and a *slow* hash makes cracking them
+prohibitively expensive. The whole discipline of password storage is making the
+verifier useless to a thief.
+
+## Types / Variants
+
+**Authn vs authz.** **Authentication** establishes identity ("you are Alice").
+**Authorization** decides what that identity may do ("Alice may read this
+invoice but not delete it"). They are sequential and distinct — authn first,
+authz second — and conflating them is a classic source of broken access control.
+This page is authn; authz has its own page.
+
+**Password hashing.** Passwords must be stored as the output of a **password
+hashing function** designed to be *slow and memory-hard*, never a fast
+general-purpose hash (MD5, SHA-256) and never plaintext or reversible
+encryption.
+
+- **Salt** — a unique random value per user, stored alongside the hash. It
+  ensures two users with the same password get different hashes, defeating
+  precomputed **rainbow tables** and making each password crackable only
+  individually.
+- **bcrypt** — battle-tested, with a tunable **work factor** (cost) you raise as
+  hardware speeds up. Solid default; capped at 72 bytes of input.
+- **argon2** (specifically **argon2id**) — the modern winner of the Password
+  Hashing Competition; **memory-hard**, so it resists GPU/ASIC cracking far
+  better than bcrypt. Preferred for new systems.
+- **scrypt / PBKDF2** — also memory-hard / standardized respectively; PBKDF2 is
+  acceptable where FIPS compliance is required but offers the weakest GPU
+  resistance.
+- A **pepper** — a secret added to all hashes, stored separately from the
+  database (e.g., in a secrets manager) — adds defense if only the DB leaks.
+
+**MFA / second factors**, from weakest to strongest:
+
+- **SMS OTP** — a code texted to you. Better than nothing, but vulnerable to
+  **SIM-swapping** and SS7 interception. Avoid as a primary second factor.
+- **TOTP** (Time-based One-Time Password, e.g. Google Authenticator) — a 6-digit
+  code derived from a shared secret + the current time, rotating every 30s. No
+  network needed, resists SIM-swap, but **phishable** (a user can be tricked into
+  typing the code into a fake site).
+- **Push approval** — approve a prompt in an app. Convenient but subject to
+  **MFA-fatigue** attacks (spam the user until they tap "approve").
+- **WebAuthn / FIDO2** — public-key authentication with a hardware authenticator
+  (security key or platform TPM). The private key never leaves the device and
+  the challenge is **bound to the origin**, making it **phishing-resistant** —
+  the gold standard.
+- **Passkeys** — WebAuthn credentials that **sync** across a user's devices via a
+  platform keychain (Apple, Google, Microsoft). They deliver phishing-resistant,
+  passwordless login with the UX of "use Face ID," and are the direction the
+  industry is heading.
+
+**Session vs token authentication** — how you stay logged in after authenticating.
+
+- **Server-side sessions** — the server creates a session record, stores it
+  (memory, Redis, DB), and hands the client an opaque **session ID** in a cookie.
+  State lives server-side; the cookie is just a pointer. Easy to revoke (delete
+  the record), but requires a session store the whole fleet can reach.
+- **Token (JWT) auth** — the server issues a signed, self-contained token the
+  client sends on each request; the server verifies the signature and trusts the
+  claims **without a lookup**. Stateless and horizontally scalable, but **hard to
+  revoke** before expiry and prone to storage/handling mistakes. (Tokens, OAuth,
+  and OIDC get their own page.)
+
+**Single Sign-On (SSO).** Authenticate once with a central **Identity Provider
+(IdP)** and access many applications without re-entering credentials.
+Enterprise SSO uses **SAML** (XML, legacy but ubiquitous) or **OIDC** (JSON/OAuth,
+modern). The win is one strong, MFA-protected login and centralized
+deprovisioning; the risk is concentration — the IdP becomes a single high-value
+target and a single point of failure.
+
+**Account recovery.** The "forgot password" path is a *parallel authentication
+mechanism*, and attackers attack the weakest one. Email-reset links, SMS codes,
+and security questions are all routinely abused — security questions in
+particular are guessable or OSINT-able and should be abandoned. Recovery must be
+designed with the same rigor as the primary login, or it silently becomes the
+front door.
+
+## When to use / When NOT
+
+- **Use argon2id for new systems; bcrypt is a fine, well-supported default.**
+  **Never** use fast hashes (MD5/SHA-x alone), encryption, or plaintext for
+  passwords — these are defects, not choices.
+- **Always salt, per user, with a random value.** There is no scenario where an
+  unsalted password hash is acceptable.
+- **Require MFA for anything valuable** (admin panels, financial actions, PII
+  access). **Prefer WebAuthn/passkeys** where you can; **use TOTP** as a strong,
+  cheap default; **avoid SMS** as your only second factor.
+- **Use server-side sessions when:** it's a classic web app (especially with a
+  browser), you need instant revocation, and a session store is acceptable.
+  **Use tokens when:** stateless horizontal scale, mobile/SPA clients, or
+  service-to-service auth dominate — and you accept the revocation tradeoff.
+- **Use SSO when:** you run multiple internal apps or a workforce — centralized,
+  MFA-backed identity and instant deprovisioning are worth it. **Be cautious
+  when:** the IdP's availability and blast radius are unacceptable to concentrate.
+- **Treat account recovery as a primary auth path.** **Drop security questions.**
+  Rate-limit and monitor reset flows; require step-up auth for sensitive recovery.
+
+## Tradeoffs
+
+| Concern | Server-side sessions | Token (JWT) auth |
+| ------- | -------------------- | ---------------- |
+| State | Server holds session store | Stateless; client holds the token |
+| Scaling | Needs shared/sticky store | Scales horizontally, no lookup |
+| Revocation | Instant (delete record) | Hard before expiry (needs denylist) |
+| Latency per request | Store lookup | Signature verify only |
+| Failure mode if leaked | Steal a session ID | Steal a self-contained credential |
+| Best fit | Browser web apps | SPAs, mobile, service-to-service |
+
+| Factor | Phishing-resistant? | SIM-swap risk | UX | Verdict |
+| ------ | ------------------- | ------------- | -- | ------- |
+| SMS OTP | No | High | Easy | Weakest; avoid as primary |
+| TOTP | No | None | Moderate | Strong cheap default |
+| Push approval | No | None | Easy | Watch for MFA fatigue |
+| WebAuthn / passkey | **Yes** | None | Easy (biometric) | Gold standard |
+
+## Diagram
+
+The password lifecycle: registration stores a salted slow hash; login re-derives
+and compares it in constant time.
+
+<Mermaid code={`sequenceDiagram
+  participant U as User
+  participant S as Server
+  participant DB as User store
+  Note over U,DB: Registration
+  U->>S: username + password
+  S->>S: salt = random(); hash = argon2id(password, salt)
+  S->>DB: store username, salt, hash
+  Note over U,DB: Login
+  U->>S: username + password
+  S->>DB: fetch salt, stored hash
+  S->>S: candidate = argon2id(password, salt)
+  S->>S: constant-time compare(candidate, stored hash)
+  S-->>U: session / token if match, generic error if not`} />
+
+## Try it
+
+Compare the two ways to keep a user logged in, then walk the decision tree for
+choosing a second factor.
+
+<CompareMatrix
+  client:visible
+  caption="Server-side sessions vs JWT tokens"
+  columns={['Server-side session', 'JWT token']}
+  rows={[
+    { criterion: 'Where state lives', cells: ['Server-side store', 'Inside the token (client)'] },
+    { criterion: 'Per-request cost', cells: ['Session store lookup', 'Signature verification'] },
+    { criterion: 'Horizontal scaling', cells: ['Needs shared/sticky store', 'Trivial — no lookup'] },
+    { criterion: 'Revocation', cells: ['Instant: delete the record', 'Hard until expiry; needs denylist'] },
+    { criterion: 'Logout / "log out everywhere"', cells: ['Easy', 'Awkward without a store'] },
+    { criterion: 'Typical transport', cells: ['HttpOnly Secure cookie', 'Authorization header or cookie'] },
+    { criterion: 'Best fit', cells: ['Browser web apps', 'SPAs, mobile, microservices'] },
+    { criterion: 'Main risk', cells: ['Store availability', 'Storage/handling & revocation mistakes'] },
+  ]}
+/>
+
+<DecisionTree
+  client:visible
+  caption="Which second factor (MFA) should I require?"
+  root={{
+    question: 'Is this a high-value target (admin, finance, PII, infra access)?',
+    branches: [
+      {
+        label: 'Yes — high value',
+        next: {
+          question: 'Can you require a hardware key or platform authenticator?',
+          branches: [
+            {
+              label: 'Yes — users can use security keys / passkeys',
+              next: { leaf: { recommendation: 'WebAuthn / FIDO2 (passkeys)', detail: 'Phishing-resistant public-key auth; the private key never leaves the device and the challenge is origin-bound. The strongest option and the industry direction.' } },
+            },
+            {
+              label: 'No — need broad device support',
+              next: { leaf: { recommendation: 'TOTP + push, never SMS-only', detail: 'TOTP resists SIM-swap and needs no network. Add push for UX but defend against MFA-fatigue (number matching, rate limits). Never rely on SMS as the only factor for high-value accounts.' } },
+            },
+          ],
+        },
+      },
+      {
+        label: 'No — consumer-grade account',
+        next: {
+          question: 'Do you want passwordless UX, or just a cheap second factor on top of passwords?',
+          branches: [
+            {
+              label: 'Passwordless / best UX',
+              next: { leaf: { recommendation: 'Passkeys', detail: 'Synced WebAuthn credentials give phishing-resistant, passwordless login with a Face ID / fingerprint UX, removing the password as an attack surface entirely.' } },
+            },
+            {
+              label: 'Cheap second factor',
+              next: { leaf: { recommendation: 'TOTP (authenticator app)', detail: 'A strong, free, widely understood second factor. Prefer it over SMS, which is vulnerable to SIM-swapping and interception.' } },
+            },
+          ],
+        },
+      },
+    ],
+  }}
+/>
+
+## Real-world examples
+
+- **GitHub, Google, and Microsoft** ship **passkeys** as a passwordless,
+  phishing-resistant login, and Google has begun making them the default for many
+  accounts — the clearest signal of where authn is heading.
+- **Okta, Auth0, and Microsoft Entra ID** are managed IdPs that centralize
+  authentication and SSO so teams do not roll their own — and their breaches
+  (e.g., Okta's 2023 support-system incident) illustrate IdP concentration risk.
+- **1Password / Bitwarden** demonstrate why per-user salts and slow KDFs matter:
+  a vault leak yields only argon2/PBKDF2-protected verifiers, useless without the
+  master password.
+- **Reddit's 2018 breach** is the canonical lesson that **SMS-based MFA is not
+  enough** — attackers intercepted SMS codes to bypass it; the fix was
+  app/hardware-based factors.
+
+## Further reading
+
+- [OWASP — Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) — current argon2id/bcrypt parameters and salting guidance.
+- [OWASP — Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) — session management, MFA, and recovery design.
+- [WebAuthn Guide (webauthn.guide)](https://webauthn.guide/) — a clear walkthrough of how FIDO2/WebAuthn public-key auth works.
+- [NIST SP 800-63B — Digital Identity Guidelines](https://pages.nist.gov/800-63-3/sp800-63b.html) — authoritative requirements for authenticators and assurance levels.

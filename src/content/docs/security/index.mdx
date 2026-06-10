@@ -1,0 +1,228 @@
+---
+title: Security Foundations
+description: The principles every secure system is built on — the CIA triad, defense in depth, least privilege, zero trust, STRIDE threat modeling, attack surface, secure-by-design, and the shared responsibility model.
+last_reviewed: "2026-06-10"
+decision_guidance: true
+---
+
+import Mermaid from '../../../components/Mermaid.astro';
+import CompareMatrix from '../../../components/CompareMatrix';
+import WhenWhyTabs from '../../../components/WhenWhyTabs';
+
+## Overview
+
+Security is not a feature you bolt on at the end — it is a set of properties a
+system either has or lacks by design. Before any specific control (a password
+hash, an OAuth flow, a firewall rule) makes sense, you need the vocabulary and
+principles that tell you *what* you are protecting, *from whom*, and *how much
+effort* is justified. This page covers the load-bearing ideas: the **CIA triad**
+(what "secure" even means), **defense in depth** and **least privilege** (how to
+arrange controls), **zero trust** (the modern network posture), **threat
+modeling** with STRIDE (how to find what to defend), **attack surface** (what to
+shrink), **secure-by-design** (when to apply all this), and the **shared
+responsibility model** (who owns which control in the cloud). Everything in the
+rest of this cluster is an instance of these principles.
+
+## Mental model
+
+**Security is risk management under an adversary, not a checklist.** A defender
+has finite time and money; an attacker only needs one mistake. So you do not try
+to make a system "unbreakable" — you make the cost of breaking it exceed the
+value of what is inside, and you assume some controls will fail. Three habits
+fall out of that:
+
+1. **Think in terms of CIA.** Every requirement reduces to **Confidentiality**
+   (only authorized parties can read it), **Integrity** (data is not tampered
+   with undetectably), or **Availability** (authorized parties can actually use
+   it). A control that improves one can hurt another — encrypting everything
+   helps confidentiality but can hurt availability if you lose the key.
+2. **Assume breach.** Do not design as if the perimeter holds. Layer controls
+   (**defense in depth**) so one failure is survivable, and grant the minimum
+   access needed (**least privilege**) so a compromised component is contained.
+3. **Model the threat before choosing the control.** You cannot defend what you
+   have not enumerated. **Threat modeling** turns "are we secure?" (unanswerable)
+   into "what can go wrong with *this* data flow, and what do we do about each?"
+   (actionable).
+
+## Types / Variants
+
+**The CIA triad (and friends).** The three core properties are
+**Confidentiality**, **Integrity**, **Availability**. Two more are often added:
+**Authenticity** (the data/actor is who it claims to be) and **Non-repudiation**
+(an actor cannot later deny an action — provided by signatures and audit logs).
+Map every security requirement to one of these so it is concrete.
+
+**Defense in depth.** Multiple independent layers of control so that no single
+failure is catastrophic: network segmentation, *plus* authentication, *plus*
+authorization, *plus* input validation, *plus* encryption, *plus* monitoring. If
+the WAF misses an attack, parameterized queries still stop the SQL injection; if
+those fail, least privilege limits the blast radius. The layers must be
+**independent** — five controls that all fail to the same root cause are one
+control.
+
+**Least privilege.** Every user, service, and process gets exactly the access it
+needs to do its job — no more, and only for as long as it needs it. A reporting
+service gets read-only access to one schema, not `db_owner`. This shrinks the
+blast radius of any compromise and is the single highest-leverage principle in
+the list. Its sibling is **separation of duties**: no single actor can complete
+a sensitive action alone (the person who requests a payout cannot also approve
+it).
+
+**Zero trust.** "Never trust, always verify." The network location of a request
+grants it *nothing* — being "inside the corporate network" or "inside the VPC"
+is not authentication. Every request is authenticated, authorized, and encrypted
+on its own merits, every time. This replaces the old "hard shell, soft center"
+perimeter model (firewall good, internal network implicitly trusted), which
+collapses the moment an attacker gets a foothold inside. mTLS service meshes and
+identity-aware proxies are zero-trust implementations.
+
+**Threat modeling with STRIDE.** A structured way to enumerate threats against a
+data flow. STRIDE is a mnemonic for six threat categories, each the violation of
+a security property:
+
+| STRIDE threat | Violates | Example | Mitigation family |
+| ------------- | -------- | ------- | ----------------- |
+| **S**poofing | Authenticity | Pretending to be another user/service | Strong authentication, mTLS |
+| **T**ampering | Integrity | Modifying data in transit or at rest | Signatures, checksums, TLS |
+| **R**epudiation | Non-repudiation | Denying an action was performed | Audit logs, signed receipts |
+| **I**nformation disclosure | Confidentiality | Leaking data to unauthorized parties | Encryption, access control |
+| **D**enial of service | Availability | Exhausting resources so legit users fail | Rate limiting, autoscaling, quotas |
+| **E**levation of privilege | Authorization | Gaining rights you should not have | Least privilege, input validation |
+
+You walk each trust boundary in a data-flow diagram and ask which STRIDE threats
+apply, then assign a mitigation to each.
+
+**Attack surface.** The sum of all points where an attacker can attempt entry:
+every endpoint, port, input field, dependency, credential, and admin interface.
+The goal is to **minimize** it — disable unused endpoints, close ports, remove
+dead dependencies, drop unneeded permissions. Less surface is less to defend.
+
+**Secure-by-design / secure defaults.** Security is a design input, not a
+post-hoc audit. The system should be safe in its **default** configuration (deny
+by default, encryption on by default, no default passwords) so that *doing
+nothing* is the safe path and a developer has to actively opt out of safety. The
+inverse — insecure defaults that everyone must remember to harden — guarantees
+breaches at scale.
+
+**Shared responsibility model.** In the cloud, security is split between provider
+and customer, and the line moves with the service model. The provider always
+secures the underlying hardware and facilities; you always own your data,
+identities, and access policies. What sits in between depends on IaaS vs PaaS vs
+SaaS. Misunderstanding this line ("I assumed AWS encrypts my S3 bucket") is a
+top cause of cloud breaches.
+
+## When to use / When NOT
+
+- **Apply the CIA framing when:** writing any security requirement — it forces
+  precision. **Don't treat the three as equal weight:** rank them per system. A
+  payments ledger weights integrity highest; a public CDN weights availability;
+  a medical record store weights confidentiality.
+- **Use defense in depth when:** the asset is valuable enough that a single
+  control failure is unacceptable (which is almost always). **Don't stack
+  *dependent* layers:** controls that share a failure mode give a false sense of
+  depth.
+- **Apply least privilege everywhere, always.** There is no system where "grant
+  more than needed" is the right call. The only cost is upfront friction; the
+  payoff is a smaller blast radius forever.
+- **Adopt zero trust when:** you have an internal network of services, remote
+  workforce, or multi-tenant infrastructure — i.e., when "inside" is no longer a
+  meaningful trust boundary. **It's overkill for:** a single isolated process
+  with no network exposure, though even there least privilege still applies.
+- **Threat model when:** designing a new system or a significant feature, *before*
+  you build it, and revisit when the data flows change. **Don't threat-model
+  everything to exhaustion:** focus on trust boundaries and high-value data
+  flows; a model nobody finishes protects nothing.
+- **Demand secure defaults when:** building anything others configure (a library,
+  a service, a platform) — insecure defaults scale into mass breaches.
+
+## Tradeoffs
+
+| Principle | Buys you | Costs you |
+| --------- | -------- | --------- |
+| Defense in depth | Survives single-control failure; raises attacker cost | More controls to build, operate, and reason about |
+| Least privilege | Small blast radius; contains compromise | Upfront access-design friction; permission management overhead |
+| Zero trust | No implicit network trust; foothold ≠ free movement | Every hop needs identity + crypto; latency and ops complexity |
+| Threat modeling | Finds threats before attackers do; prioritizes spend | Analyst time upfront; goes stale if not maintained |
+| Secure-by-design | Safe default path; fewer config-error breaches | Constrains flexibility; harder to retrofit onto legacy |
+
+The meta-tradeoff is **security vs friction**: every control adds work for
+legitimate users and developers. Good security makes the secure path the *easy*
+path so the friction is invisible; bad security makes people route around it.
+
+## Diagram
+
+A trust-boundary view for STRIDE threat modeling: every arrow crossing a dashed
+boundary is where you enumerate Spoofing, Tampering, and the rest.
+
+<Mermaid code={`flowchart LR
+  U[User] -->|HTTPS| GW[API Gateway / WAF]
+  subgraph Trusted["Trust boundary: your platform"]
+    GW --> SVC[Application service]
+    SVC --> DB[(Database)]
+    SVC --> SEC[(Secrets store)]
+  end
+  SVC -->|outbound call| EXT[Third-party API]
+  classDef boundary stroke-dasharray: 5 5
+  class Trusted boundary`} />
+
+## Try it
+
+Read when each principle earns its keep, then compare the cloud responsibility
+split across service models.
+
+<WhenWhyTabs
+  client:visible
+  caption="Zero trust vs the perimeter model"
+  tabs={[
+    {
+      label: 'When to use',
+      content: 'Adopt zero trust when you have many internal services, a remote or hybrid workforce, or multi-tenant infrastructure — anywhere the question "is this request inside our network?" no longer tells you whether to trust it. Concretely: mTLS between services, identity-aware proxies in front of internal apps, and per-request authorization regardless of source IP.',
+    },
+    {
+      label: 'Why',
+      content: 'The perimeter model assumes a hard outer shell and a trusted soft interior. The moment an attacker gets one foothold inside — a phished laptop, a compromised dependency, an SSRF — they can move laterally with no further friction, because the network itself granted trust. Zero trust removes that implicit trust: a foothold buys an attacker access to exactly one identity\'s permissions, nothing more, and every further hop must re-authenticate.',
+    },
+    {
+      label: 'Why NOT',
+      content: 'Zero trust is not free. Every internal hop now needs an identity, a credential, and encryption, which adds latency, certificate lifecycle management, and operational complexity. For a small system with one process and no internal network to traverse, the perimeter is the boundary and full zero-trust machinery is overkill — though least privilege and authenticated APIs still apply. Adopt it incrementally, starting at the highest-value trust boundaries.',
+    },
+  ]}
+/>
+
+<CompareMatrix
+  client:visible
+  caption="Shared responsibility: who secures what"
+  columns={['On-prem', 'IaaS', 'PaaS', 'SaaS']}
+  rows={[
+    { criterion: 'Physical / facility', cells: ['You', 'Provider', 'Provider', 'Provider'] },
+    { criterion: 'Host / hypervisor', cells: ['You', 'Provider', 'Provider', 'Provider'] },
+    { criterion: 'OS patching', cells: ['You', 'You', 'Provider', 'Provider'] },
+    { criterion: 'Runtime / middleware', cells: ['You', 'You', 'Provider', 'Provider'] },
+    { criterion: 'Application code', cells: ['You', 'You', 'You', 'Provider'] },
+    { criterion: 'Identity & access (IAM)', cells: ['You', 'You', 'You', 'You'] },
+    { criterion: 'Data & encryption config', cells: ['You', 'You', 'You', 'You'] },
+    { criterion: 'Your data classification', cells: ['You', 'You', 'You', 'You'] },
+  ]}
+/>
+
+## Real-world examples
+
+- **AWS / Azure / GCP** publish explicit shared-responsibility diagrams; the
+  consistent rule is "provider secures the cloud, you secure what you put *in*
+  the cloud" — your IAM, data, and encryption config are always yours.
+- **Google BeyondCorp** is the canonical zero-trust deployment: employees access
+  internal apps through an identity-aware proxy with no VPN, trust derived from
+  device + user identity rather than network location.
+- **Microsoft's STRIDE** (from the Security Development Lifecycle) is the most
+  widely used threat-modeling taxonomy; the SDL itself is the reference
+  secure-by-design process.
+- **The 2019 Capital One breach** was a shared-responsibility and least-privilege
+  failure: an SSRF reached an over-permissioned instance role that could read
+  100M+ records from S3 — a smaller role would have contained it.
+
+## Further reading
+
+- [OWASP — Threat Modeling](https://owasp.org/www-community/Threat_Modeling) — practical STRIDE-based process and tooling.
+- [NIST SP 800-207 — Zero Trust Architecture](https://csrc.nist.gov/pubs/sp/800/207/final) — the authoritative zero-trust reference model.
+- [Google BeyondCorp](https://cloud.google.com/beyondcorp) — a real zero-trust deployment and the papers behind it.
+- [CISA — Secure by Design](https://www.cisa.gov/securebydesign) — principles and the case for safe defaults.
